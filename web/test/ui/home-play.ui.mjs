@@ -131,9 +131,9 @@ try {
         } else {
           assert.equal(await page.getByTestId('journey-line').textContent(), 'This play found 0 companies.')
           assert.equal(await page.getByTestId('journey-empty').isVisible(), true)
-          assert.deepEqual(await page.getByTestId('journey-empty').getByRole('link').allTextContents(), ['Widen to 180 days', 'Change the place', 'Change the signal'])
-          // Place and signal are changed by the user from the full request; nothing claims to have dropped anything.
-          for (const t of ['widen-city', 'widen-signal']) assert.equal(decodeURIComponent((await page.getByTestId(t).getAttribute('href')).split('q=')[1]), QUERY)
+          assert.deepEqual(await page.getByTestId('journey-empty').getByRole('link').allTextContents(), ['Widen to 180 days', 'Change the place or signal'])
+          // #1722: place and signal are one edit of the full request, one button; nothing claims to have dropped anything.
+          assert.equal(decodeURIComponent((await page.getByTestId('widen-edit').getAttribute('href')).split('q=')[1]), QUERY)
           await page.getByTestId('widen-window').click()
           await page.waitForURL(/\/app\/leads\?q=/)
           await page.locator('#play').waitFor()

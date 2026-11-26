@@ -25,6 +25,7 @@
 import type { Db } from '../db/client.ts'
 import { NOT_A_PERSON, PERSON_REPLY as PERSON_REPLY_CLASSES, sqlList } from './needs-owner.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
+import { companyKey } from '../scan/evidence.ts'
 import { companyFirstShownDb, heldByChecksOf, type ShownJob } from './campaigns.ts'
 
 export const RESULTS_WINDOW_DAYS = 30
@@ -42,6 +43,11 @@ export interface HomeResults {
   reply_reading: boolean
   tiles: { leads: number; contacted: number; replied: number | null; interested: number | null }
   by_signal: { signal: string; leads: number; contacted: number; replied: number | null }[]
+  // #1772: the by-signal Leads total counts lead rows; the rest of the app talks in companies. companies = distinct
+  // companyKey values among the same shown leads (the key people-search and home-ready count with, lib/scan/evidence.ts),
+  // so the numbers agree; unnamed_leads = shown leads with no company name, not attributed to any company.
+  companies: number
+  unnamed_leads: number
   latest_leads: { id: string; company: string; signal: string; job_id: string; created_at: number }[]
   latest_replies: { thread_id: string; company: string; classification: string; received_at: number }[]
 }
@@ -98,6 +104,13 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   for (const r of sentRows) row(kind(r.kind, r.src)).contacted += Number(r.sent)
   for (const r of replyRows) { row(kind(r.kind, r.src)).replied += Number(r.replied); interested += Number(r.interested ?? 0) }
   const by_signal = [...by.values()].sort((a, b) => b.replied - a.replied || b.contacted - a.contacted || b.leads - a.leads || a.signal.localeCompare(b.signal))
+  const companyKeys = new Set<string>()
+  let unnamed_leads = 0
+  for (const l of leadsShown) { const name = (l.company ?? '').trim(); if (!name) { unnamed_leads += 1; continue }
+  // Only a name blank after trimming is 'without a company name': a real name whose key strips to empty
+  // (one made only of generic legal-form words) still names a company, keyed by the trimmed name itself.
+  companyKeys.add(companyKey(name) || name.toLowerCase()) }
+  const companies = companyKeys.size
   const sum = (k: 'leads' | 'contacted' | 'replied') => by_signal.reduce((n, r) => n + r[k], 0)
   const latest_leads = leadsShown.slice(0, 5)
     .map(r => ({ id: r.id, company: r.company || 'Unnamed company', signal: r.signal || '', job_id: r.job_id, created_at: Number(r.created_at) }))
@@ -112,10 +125,10 @@ export async function homeResults(db: Db, tenantId: string, now: number = Math.f
   // stored stay listed as what was seen
   if (!replyReading && tiles.contacted > 0) {
     tiles.replied = null; tiles.interested = null
-    return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: false, tiles, by_signal: by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })), latest_leads, latest_replies }
+    return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: false, tiles, by_signal: by_signal.map(s => ({ ...s, replied: s.contacted > 0 ? null : 0 })), companies, unnamed_leads, latest_leads, latest_replies }
   }
-  return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, latest_leads, latest_replies }
+  return { window_days: RESULTS_WINDOW_DAYS, since, reply_reading: replyReading, tiles, by_signal, companies, unnamed_leads, latest_leads, latest_replies }
 }
 
 // signalLabel lives in ./signal-label.ts (browser-safe: Home's client imports it; this module reads the scan store's gate).
-export { signalLabel } from './signal-label.ts'
+export { signalLabel, bySignalFootnote } from './signal-label.ts'

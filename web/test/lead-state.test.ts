@@ -58,7 +58,7 @@ test('recovery never offers date widening for a missing date, and always offers 
   const icp = { window_days: 90, where: ['NYC'], signals: ['opening a second office'] }
   const undated = widenActions(job.query, icp, ['undated', 'customer']).map(a => a.testid)
   assert.ok(!undated.includes('widen-window'), 'no window widening for undated/customer leads')
-  assert.ok(undated.includes('recover-dated') && undated.includes('widen-signal') && undated.includes('recover-source'))
+  assert.ok(undated.includes('recover-dated') && undated.includes('widen-edit') && undated.includes('recover-source'))
   assert.ok(widenActions(job.query, icp, ['older']).map(a => a.testid).includes('widen-window'), 'a dated lead that was only too old can widen')
   assert.ok(widenActions(job.query, icp).map(a => a.testid).includes('widen-window'), 'no causes: the generic list is unchanged')
 })
