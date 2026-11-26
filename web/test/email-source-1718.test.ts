@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { type TestContext } from 'node:test'
+import https from 'node:https'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import vm from 'node:vm'
@@ -11,7 +14,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
-import { htmlToText } from '../lib/scan/fetch-page.ts'
+import { fetchPageDetailed, htmlToText } from '../lib/scan/fetch-page.ts'
 import { checkEmailSource, checkLead } from '../lib/discover/check.ts'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
@@ -215,6 +218,69 @@ test('the own-fetch proof retains published mailto and Cloudflare addresses', as
   const hidden = await checkLead(discoveryResult('').leads[0], [], async () =>
     new Response(`<p data-email="${email}">${quote}</p><script>const internal = "${email}";</script>`))
   assert.equal(hidden.email, null)
+})
+
+type CitationResponse = { status: number; body?: string; location?: string }
+
+function stubCitationTransport(t: TestContext, pages: Record<string, CitationResponse>): string[] {
+  const hits: string[] = []
+  t.mock.method(https, 'request', (target: URL, _options: unknown, receive: (response: PassThrough) => void) => {
+    hits.push(target.href)
+    const fixture = pages[target.href]
+    if (!fixture) throw new Error(`Unexpected citation request: ${target.href}`)
+    return Object.assign(new EventEmitter(), {
+      end() {
+        const response = Object.assign(new PassThrough(), {
+          statusCode: fixture.status,
+          headers: { 'content-type': 'text/html', location: fixture.location },
+        })
+        receive(response)
+        response.end(fixture.body)
+      },
+      destroy() {},
+    })
+  })
+  return hits
+}
+
+test('a 404 proof response clears the cited email even if the error body contains it', async t => {
+  const hits = stubCitationTransport(t, {})
+  const result = await checkLead(discoveryResult('').leads[0], [], async () => new Response(email, { status: 404 }))
+  assert.equal(result.proof, 'gone')
+  assert.deepEqual([result.email, result.email_source_url], [null, null])
+  assert.deepEqual(hits, [])
+})
+
+test('the unread proof branch checks the real citation and clears its unreadable address', async t => {
+  const citation = 'https://example.com/contact'
+  const hits = stubCitationTransport(t, { [citation]: { status: 404, body: email } })
+  const lead = { ...discoveryResult('').leads[0], email_source_url: citation }
+  const result = await checkLead(lead, [], async () => new Response('Unavailable', { status: 503 }))
+  assert.equal(result.proof, 'unseen')
+  assert.deepEqual([result.email, result.email_source_url], [null, null])
+  assert.deepEqual(hits, [citation])
+})
+
+test('the real citation reader refuses to follow a cross-host redirect', async t => {
+  const foreign = 'https://other.example/contact'
+  const hits = stubCitationTransport(t, {
+    [url]: { status: 302, location: foreign },
+    [foreign]: { status: 200, body: `<p>${quote}. ${email}</p>` },
+  })
+  const result = await checkEmailSource({ email, email_source_url: url }, [])
+  assert.deepEqual(result, { email: null, email_source_url: null })
+  assert.deepEqual(hits, [url])
+})
+
+test('the real citation reader extracts mailto evidence only with the opt-in', async t => {
+  const body = `<html><body><p>${quote}. Contact our office for details.</p><a href="mailto:${email}">Email the office</a></body></html>`
+  const hits = stubCitationTransport(t, { [url]: { status: 200, body } })
+  const ordinary = await fetchPageDetailed(url, async () => null)
+  assert.ok('text' in ordinary)
+  assert.ok(!ordinary.text.includes(email))
+  const lead = { email, email_source_url: url }
+  assert.deepEqual(await checkEmailSource(lead, []), lead)
+  assert.deepEqual(hits, [url, url])
 })
 
 test('the lead card disables Approve when the recipient source is hidden', () => {
