@@ -33,7 +33,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
     return {
       platform: 'greenhouse',
       apiUrl: `https://boards-api.greenhouse.io/v1/boards/${enc(seg[0])}/jobs/${seg[2]}`,
-      read: j => { const r = obj(j); return r.first_published ?? r.updated_at },
+      read: j => obj(j).first_published, // an edit date (updated_at) is not a posting date
     }
 
   if (/^jobs\.(?:eu\.)?lever\.co$/.test(host) && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))

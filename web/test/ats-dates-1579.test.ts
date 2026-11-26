@@ -31,13 +31,14 @@ test('DATES the board is recognised from the posting URL, for every platform we 
   assert.equal(atsPosting('https://example.com/careers/123'), null, 'an ordinary page is not an ATS posting')
 })
 
-test('DATES Greenhouse: first_published, else updated_at, with the record URL as the source', async () => {
+test('DATES Greenhouse: first_published, and nothing when the board prints only an edit date', async () => {
   const u = 'https://boards.greenhouse.io/brightloop/jobs/4567890'
   const api = 'https://boards-api.greenhouse.io/v1/boards/brightloop/jobs/4567890'
   const first = await atsDate(u, stub({ [api]: { body: { id: 4567890, first_published: '2026-11-18T09:30:00-05:00', updated_at: '2026-11-24T10:00:00-05:00' } } }).f, NOW)
   assert.deepEqual(first, { date: '2026-11-18', sourceUrl: api, platform: 'greenhouse' })
-  const updated = await atsDate(u, stub({ [api]: { body: { id: 4567890, first_published: null, updated_at: '2026-11-24T10:00:00-05:00' } } }).f, NOW)
-  assert.equal(updated?.date, '2026-11-24', 'updated_at stands in when the board prints no first date')
+  // Ziggy's review: an edit date is not a posting date, so updated_at alone gives no date at all.
+  const edited = await atsDate(u, stub({ [api]: { body: { id: 4567890, first_published: null, updated_at: '2026-11-24T10:00:00-05:00' } } }).f, NOW)
+  assert.equal(edited, null, 'a record with only updated_at gives no date')
 })
 
 test('DATES Lever: createdAt is epoch milliseconds, and the EU board uses the EU API', async () => {
