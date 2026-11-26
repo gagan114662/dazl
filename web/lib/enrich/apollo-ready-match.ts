@@ -44,7 +44,8 @@ export async function matchReadyApolloBuyer(
   if (!await reserveApolloLead(db, tenantId, leadId, options.env, { id: options.scanId, limit: options.scanLimit })) return null
   let match: ApolloMatch | null
   try {
-    match = await apolloPersonMatch(key, query, options.fetchImpl)
+    const dispatch = options.fetchImpl ?? fetch
+    match = await apolloPersonMatch(key, query, (input, init) => dispatch(input, { ...init, redirect: 'error' }))
   } catch (error) {
     await recordApolloResult(db, tenantId, leadId, 'uncertain').catch(() => {
       // The durable reservation still accounts for this credit.
