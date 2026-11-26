@@ -30,6 +30,17 @@ const nextConfig: NextConfig = {
   env: { NEXT_PUBLIC_DAZL_BUILD: process.env.NEXT_DEPLOYMENT_ID || buildCommit() || '', NEXT_PUBLIC_DAZL_STAGING: process.env.DAZL_ENV === 'staging' ? '1' : '' },
   cacheComponents: true,
   partialPrefetching: true,
+  // #1929: legacy auth aliases redirect at the routing layer (308). The page-level permanentRedirect
+  // approach (#1763) serves HTTP 200 under cacheComponents even on dynamic renders (proof run
+  // 45811853159), so these answer before any rendering. Next preserves the query string on them.
+  async redirects() {
+    return [
+      { source: '/login', destination: '/sign-in', permanent: true },
+      { source: '/signin', destination: '/sign-in', permanent: true },
+      { source: '/signup', destination: '/sign-up', permanent: true },
+      { source: '/register', destination: '/sign-up', permanent: true },
+    ]
+  },
   async headers() {
     // staging (DAZL_ENV=staging, lib/staging.ts) is never indexed
     const staging = process.env.DAZL_ENV === 'staging' ? [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }] : []
