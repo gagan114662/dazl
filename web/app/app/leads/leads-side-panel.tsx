@@ -1,8 +1,9 @@
 'use client'
 // #1038 (PR 2 of 3): the side panel a table row opens. Same display logic as the cards and the table
 // (leadCardSummary / leadPerson / ContactStatusLine), prev/next walking the visible (tab-filtered,
-// sorted) order via the client. No actions here on purpose: Approve/Reject stay on the cards, bulk is
-// the next PR.
+// sorted) order via the client. No approve/reject actions here on purpose: they stay on the cards,
+// bulk is the next PR. Review in Cards (Quest on #1869) is navigation only: it jumps to this lead's
+// card, where the actions live.
 import { leadCardSummary } from '@/lib/scan/lead-card'
 import { leadPerson } from '@/lib/people/lead-person'
 import { identityOf } from '@/lib/scan/opportunity'
@@ -11,7 +12,7 @@ import { Pill } from '../ui/bits'
 
 type TableLead = Parameters<typeof leadCardSummary>[0] & { id: string }
 
-export default function LeadsSidePanel({ lead, icpWho, drafted, approved, hasPrev, hasNext, onPrev, onNext, onClose }: {
+export default function LeadsSidePanel({ lead, icpWho, drafted, approved, hasPrev, hasNext, onPrev, onNext, onClose, onReviewInCards }: {
   lead: TableLead
   icpWho: string
   drafted: Set<string> | null | undefined
@@ -21,6 +22,7 @@ export default function LeadsSidePanel({ lead, icpWho, drafted, approved, hasPre
   onPrev: () => void
   onNext: () => void
   onClose: () => void
+  onReviewInCards: (id: string) => void
 }) {
   const c = leadCardSummary(lead, icpWho)
   const person = leadPerson(lead.enrichments, icpWho, undefined, identityOf({ id: lead.id, contact: lead.contact }, lead.enrichments ?? []))
@@ -70,6 +72,9 @@ export default function LeadsSidePanel({ lead, icpWho, drafted, approved, hasPre
               : approved[lead.id] || drafted?.has(lead.id)
               ? <Pill tone="mint">Approved</Pill>
               : <span className="text-xs text-[var(--ink-3)]">To decide</span>}
+            {/* Quest on #1869: a jump to this lead's card, where Approve/Reject live. Navigation only -
+                no Approve/Reject in the panel. A rejected lead has no card decision to make, so no button. */}
+            {!lead.quarantined_at && <div className="mt-2"><button type="button" data-testid="side-panel-review-in-cards" className="btn-ghost btn-sm" onClick={() => onReviewInCards(lead.id)}>Review in Cards</button></div>}
           </dd>
         </div>
       </dl>

@@ -472,6 +472,17 @@ export default function LeadsClient() {
   // #1038: the list defaults to a dense table; the choice survives reloads like the sort does.
   const [leadsView, setLeadsView] = useState<'table' | 'cards'>(() => { try { return typeof localStorage !== 'undefined' && localStorage.getItem('leads-view') === 'cards' ? 'cards' : 'table' } catch { return 'table' } })
   const chooseLeadsView = (v: 'table' | 'cards') => { setLeadsView(v); try { localStorage.setItem('leads-view', v) } catch { /* the choice just will not persist */ } }
+  // Quest on #1869: the panel's Review in Cards jumps to the lead's card, where Approve/Reject live.
+  // Switch view, close the panel, then after the cards render scroll to the card and focus it.
+  const reviewLeadInCards = (id: string) => {
+    chooseLeadsView('cards')
+    setPanelLeadId(null)
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = document.getElementById(`lead-card-${id}`)
+      el?.scrollIntoView({ block: 'center' })
+      el?.focus({ preventScroll: true })
+    }))
+  }
   // #1038: the table sort lives here (lifted from the table) so the side panel's prev/next follows the
   // exact visible order; the open panel is just the selected lead id in that order.
   const [leadsSort, setLeadsSortState] = useState<LeadsSort>(() => readLeadsSort())
@@ -1560,6 +1571,7 @@ export default function LeadsClient() {
         onPrev={() => setPanelLeadId(adjacentLeadId(panelIds, panelLead.id, -1))}
         onNext={() => setPanelLeadId(adjacentLeadId(panelIds, panelLead.id, 1))}
         onClose={() => setPanelLeadId(null)}
+        onReviewInCards={reviewLeadInCards}
       />}
       <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
@@ -1577,7 +1589,7 @@ export default function LeadsClient() {
         ) : leadsView === 'table' ? (
           <LeadsTable leads={sortedTabLeads} icpWho={icpWho} drafted={draftedLeads} approved={approved} sort={leadsSort} onSort={setLeadsSort} onOpen={setPanelLeadId} selectedId={panelLeadId} />
         ) : tabLeads.map(l => (
-          <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
+          <div key={l.id} id={`lead-card-${l.id}`} tabIndex={-1} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
               const c = leadCardSummary(l, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')
               const timing = l.timing === 'proof_backed' ? timingHeadline({ timing: l.timing }) : c.timing

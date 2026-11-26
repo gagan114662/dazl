@@ -23,6 +23,26 @@ test('#1038 the side panel renders the promised structure', () => {
   assert.match(PANEL, /disabled=\{!hasNext\}/, 'next disables at the last row')
 })
 
+test('#1038 the panel Approval section offers Review in Cards for leads that are not rejected (Quest on #1869)', () => {
+  // The button is navigation, not an action: Approve/Reject stay on the cards, the table and panel get none.
+  assert.match(PANEL, /data-testid="side-panel-review-in-cards"/, 'the button is identifiable')
+  assert.match(PANEL, /Review in Cards/, 'the button says what it does')
+  assert.match(PANEL, /!lead\.quarantined_at/, 'never shown for a rejected lead')
+  assert.match(PANEL, /onReviewInCards\(lead\.id\)/, 'it hands the lead id to the client')
+  assert.doesNotMatch(PANEL, /onApprove|onReject|approve-lead|reject-lead|quarantine\(/, 'no Approve/Reject actions in the panel')
+})
+
+test('#1038 Review in Cards switches to Cards, closes the panel, scrolls to and focuses the card (Quest on #1869)', () => {
+  assert.match(CLIENT, /onReviewInCards=\{/, 'the panel gets the handler')
+  assert.match(CLIENT, /reviewLeadInCards/, 'the client names the handler')
+  assert.match(CLIENT, /chooseLeadsView\('cards'\)/, 'it switches to the Cards view')
+  assert.match(CLIENT, /setPanelLeadId\(null\)/, 'it closes the panel')
+  assert.match(CLIENT, /id=\{`lead-card-\$\{l\.id\}`\}/, 'each card is addressable by lead id')
+  assert.match(CLIENT, /tabIndex=\{-1\}/, 'a card can take programmatic focus')
+  assert.match(CLIENT, /scrollIntoView\(\{ block: 'center' \}\)/, 'the card scrolls into view')
+  assert.match(CLIENT, /\.focus\(\{ preventScroll: true \}\)/, 'the card takes focus without a second scroll')
+})
+
 test('#1038 adjacentLeadId walks the visible order and clamps at the ends', () => {
   const ids = ['a', 'b', 'c']
   assert.equal(adjacentLeadId(ids, 'a', 1), 'b')
