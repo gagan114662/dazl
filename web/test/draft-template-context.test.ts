@@ -2,7 +2,7 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
-import { createDraft } from '../lib/outreach/service.ts'
+import { OutreachError, createDraft } from '../lib/outreach/service.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
@@ -76,7 +76,7 @@ test('internal QA signal and fabricated event claims cannot enter initial draft'
  assert.equal((db.prepare('SELECT signal FROM leads WHERE id=?').get('one') as {signal:string}).signal,'OPERATOR QA ONLY - recently raised $10M. No outreach authorized.')
 })
 test('no seller context fails before saving words and never fabricates an offer',()=>{
- const db=setup();assert.throws(()=>createDraft(db,'A','one','  ', { manual: true }),/seller_context_required/)
+ const db=setup();assert.throws(()=>createDraft(db,'A','one','  ', { manual: true }), (e: unknown) => e instanceof OutreachError && e.code === 'seller_context_required')
  assert.equal((db.prepare('SELECT count(*) n FROM outreach_messages').get() as {n:number}).n,0)
 })
 

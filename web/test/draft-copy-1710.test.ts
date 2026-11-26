@@ -10,7 +10,7 @@ import { composeDraftCopy, DraftCopyError } from '../lib/outreach/draft-copy.ts'
 // The prod repro shape (Quest, MadeThis draft): address page differs from the source page, excerpt present,
 // offer is the raw stored profile line.
 const lead = (over: Record<string, unknown> = {}) => ({
-  name: 'Alex Chen', company: 'MadeThis', signal: 'MadeThis is hiring SDRs',
+  name: 'Alex Chen', company: 'MadeThis', confidence: 90, signal: 'MadeThis is hiring SDRs',
   evidence_excerpt: 'MadeThis is hiring two SDRs to sell its AI design tool',
   source_url: 'https://madethis.example/about', ...over,
 })
@@ -81,4 +81,27 @@ test('(Qodo) the 120-word cap holds even when every field is many short words', 
   const d = composeDraftCopy(lead({ evidence_excerpt: `MadeThis ${many(300)}` }), 'dazl', many(300))
   const words = d.body.split(/\s+/).filter(Boolean).length
   assert.ok(words <= 120, `body is ${words} words`)
+})
+
+test('unverified and human-only excerpts never produce an I saw opener', () => {
+  for (const unverified of [
+    { ...lead(), confidence: null, human_confirmed_at: null },
+    { ...lead(), confidence: null, human_confirmed_at: 1 },
+    { ...lead(), evidence_excerpt: null },
+  ]) {
+    const draft = composeDraftCopy(unverified, 'dazl', OFFER)
+    assert.doesNotMatch(draft.body, /\bI saw\b|hiring|SDRs/i)
+  }
+})
+
+test('a capitalized article is lowered in the offer while B2B and SaaS keep their casing', () => {
+  for (const offer of [OFFER, 'A' + OFFER.slice(1)]) {
+    assert.match(composeDraftCopy(lead(), 'dazl', offer).body, /At dazl, we offer a B2B sales-automation SaaS to small marketing agencies\./)
+  }
+  assert.match(composeDraftCopy(lead(), 'dazl', 'B2B sales-automation SaaS').body, /At dazl, we offer B2B sales-automation SaaS\./)
+})
+
+test('a held signal with a stored excerpt still gets a neutral opener', () => {
+  const held = { ...lead(), review_reason: 'quote_unconfirmed' }
+  assert.doesNotMatch(composeDraftCopy(held, 'dazl', OFFER).body, /\bI saw\b|hiring|SDRs/i)
 })
