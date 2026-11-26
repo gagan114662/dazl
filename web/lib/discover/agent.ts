@@ -148,18 +148,23 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
     const reservation = await searches.reserve(allowance)
-    if (allowance > 0 && reservation.allowance === 0) {
-      // A paused turn may already contain usable results. Keep them instead of sending a search with its tool removed.
+    const finalAnswer = allowance > 0 && reservation.allowance === 0
+    if (finalAnswer && turn === 0) {
       stop = 'search_cap'
       break
     }
+    // A paused response may contain paid tool results without a final answer. Reuse that transcript once.
+    const system = finalAnswer
+      ? SYSTEM + '\nThe search allowance is exhausted. Return the final JSON now with every supported company you already found. Do not call tools or invent results.'
+      : SYSTEM
     const res = await client.beta.messages.stream({
       model: DISCOVER_MODEL, max_tokens: 16000, service_tier: 'standard_only',
       output_config: { effort: 'medium' },
       // Caching is what keeps this loop affordable: every search adds its results to the prompt, and without a cache point the whole
       // growing prompt is billed at full price on each step (measured: US$2.16 a prompt without it, US$0.41 with it).
       cache_control: { type: 'ephemeral' },
-      system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      ...(finalAnswer ? { tool_choice: { type: 'none' as const } } : {}),
       tools: [
         ...(reservation.allowance > 0 ? [{ type: 'web_search_20260209' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
         { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
@@ -187,7 +192,15 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
         seen.set(b.content.url, { url: b.content.url, title: b.content.content?.title ?? seen.get(b.content.url)?.title ?? null, page_age: seen.get(b.content.url)?.page_age ?? null, text: src && src.type === 'text' ? src.data.slice(0, 400_000) : null })
       }
     }
-    text = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map(b => b.text).join('')
+    const answer = res.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text').map(b => b.text).join('')
+    if (finalAnswer) {
+      if ((res.usage.server_tool_use?.web_search_requests ?? 0) !== 0) throw new Error('The final discovery answer reported a search outside its allowance')
+      const hasEarlierLeads = parseLeads(text, max).leads.length > 0
+      if (stop !== 'refusal' && (!hasEarlierLeads || parseLeads(answer, max).leads.length > 0)) text = answer
+      if (stop !== 'refusal' || hasEarlierLeads) stop = 'search_cap'
+      break
+    }
+    text = answer
     // The server-side tool loop paused: send the turn back unchanged and it resumes where it stopped.
     if (stop !== 'pause_turn') break
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })

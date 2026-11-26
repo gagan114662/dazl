@@ -82,7 +82,7 @@ test('#1886 the small run spends ten searches on its first pass and finds a cand
 test('#1886 a paused turn at the durable ceiling keeps the candidate it already found', async () => {
   const r = await fixture({ paused: true })
   assert.equal(r.candidates, 1)
-  assert.deepEqual(r.allowances, [15])
+  assert.deepEqual(r.allowances, [15, 0])
   assert.equal(r.used, 15)
   assert.equal(r.spend.status, 'settled')
 })
