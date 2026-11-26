@@ -24,7 +24,8 @@ function pages(dir, route) {
 const routes = pages(path.join(root, 'app'), '/').sort()
 // renamed pages, as in app-pages.smoke.mjs; /pricing and /plans redirect to the homepage's #pricing section (#534),
 // /about to its "How it works" section (#1428)
-const REDIRECTS = { '/app/replies': '/app/social', '/pricing': '/', '/plans': '/', '/about': '/' }
+const REDIRECTS = { '/app/replies': '/app/social', '/pricing': '/', '/plans': '/', '/about': '/', '/signup': '/sign-up', '/register': '/sign-up', '/signin': '/sign-in', '/login': '/sign-in' }
+const EXPECTED_REDIRECTS = { '/signup': '/sign-up', '/register': '/sign-up', '/signin': '/sign-in', '/login': '/sign-in' }
 const VIEWPORTS = { desktop: { width: 1280, height: 800 }, mobile: { width: 390, height: 844 } }
 const file = (route, vp) => `${route === '/' ? 'home' : route.slice(1).replaceAll('/', '_')}.${vp}.png`
 
@@ -39,11 +40,17 @@ try {
     for (const route of routes) {
       const page = await ctx.newPage(); await page.setViewportSize(viewport); const errs = []
       page.on('pageerror', e => errs.push(`page error: ${e.name}: ${e.message.split('\n')[0]}`))
+      let redirectRes
+      page.on('response', response => { if (new URL(response.url()).pathname === route) redirectRes = response })
       const res = await page.goto(srv.base + route, { waitUntil: 'networkidle' })
       await page.waitForTimeout(300)
       if (!res || res.status() >= 400) errs.push(`HTTP ${res?.status()}`)
       const landed = new URL(page.url()).pathname
       if (landed !== (REDIRECTS[route] ?? route)) errs.push(`landed on ${landed}`)
+      if (EXPECTED_REDIRECTS[route]) {
+        if (!redirectRes || redirectRes.status() !== 308) errs.push(`expected HTTP 308 redirect, got ${redirectRes?.status() ?? 'no response'}`)
+        else if (new URL(redirectRes.headers()['location'] ?? '', srv.base).pathname !== EXPECTED_REDIRECTS[route]) errs.push(`redirect location ${redirectRes.headers()['location'] ?? '(missing)'}`)
+      }
       await page.screenshot({ path: path.join(out, file(route, vp)), fullPage: true })
       shots.push({ route, vp, file: file(route, vp), errs })
       console.log(`${errs.length ? 'FAIL' : 'ok  '} ${vp} ${route}`)
