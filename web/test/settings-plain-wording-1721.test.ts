@@ -52,13 +52,22 @@ test('#1715 screen 4: the badge tells the reader what to expect, honestly per pl
   // A platform whose adapter IS built (consent + session below the badge) is not "not available": the badge says
   // what it needs (Gagan 2026-11-26 on #1917). Only an unbuilt adapter (supported === false) reads "Not available yet".
   assert.match(s, /worker: 'Needs your session'/, 'a built session platform says what it needs, in plain words')
-  // "Needs your session" is only honest where the worker has the platform's fetcher wired (worker/server.js
-  // HANDLERS: reddit, x). Instagram/bilibili carry supported: true without a wired fetcher - an unverified
-  // "available after consent" claim - so they and unbuilt adapters (supported === false) keep "Not available yet".
+  // The badge cases (Quest on #1917, 2026-11-26): 'Not available yet' when the platform row is missing (!p),
+  // the adapter is unbuilt (supported === false), or advanced connectors are off (!p.allowed) - the row below
+  // then says "Not available on dazl yet.", so the badge must not contradict it. 'Needs your session' otherwise.
+  assert.match(s, /!p \|\| p\.supported === false \|\| !p\.allowed/, 'missing row, unbuilt adapter and disallowed all read unavailable')
+  // Plus the conservative guard this branch verified: the worker wires fetchers for reddit and x only
+  // (worker/server.js HANDLERS; collection dispatches a generic POST {platform}), so a supported+allowed
+  // platform with no wired fetcher (instagram, bilibili) still cannot deliver a read after consent.
   assert.match(s, /const SESSION_READY = new Set\(\['reddit', 'x'\]\)/, 'the session-ready set matches the wired worker fetchers')
-  assert.match(s, /SESSION_READY\.has\(c\.platform\)\) \? 'Not available yet'/, 'only a wired, built platform escapes the unavailable badge')
-  const reddit = CHANNELS.find(c => c.id === 'reddit')!
-  assert.doesNotMatch(reddit.note, /^Not available yet\./, 'the Reddit note does not claim unavailable: its adapter is built')
+  assert.match(s, /SESSION_READY\.has\(c\.platform\)\)\) \? 'Not available yet'/, 'an unwired reader keeps the unavailable badge even when supported and allowed')
+  // No supported worker note starts with the unavailable claim: the badge alone carries availability (Facebook,
+  // supported: false, keeps its prefix by design).
+  for (const c of CHANNELS) {
+    if (c.status !== 'worker' || !c.platform) continue
+    if (c.id === 'facebook') { assert.match(c.note, /^Not available yet\./, 'Facebook keeps the unavailable prefix (unbuilt adapter)'); continue }
+    assert.doesNotMatch(c.note, /^Not available yet\./, `${c.id} is supported: its note does not claim unavailable`)
+  }
 })
 
 test('#1721 the audit panel states the retention rule without guessing who set it', () => {
