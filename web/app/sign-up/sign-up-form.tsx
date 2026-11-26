@@ -3,13 +3,12 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
-import { signUpPlanLine } from '@/lib/trial-copy'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
 
 // sentWithoutScript / errorWithoutScript (#1116): the outcome of a NATIVE post of this form (it was submitted before or
 // without its script; the route redirected back with a code). Rendered on the server, so they show with no script.
 // trialRule (#1704): the free-search rule line (lib/trial-copy.ts trialRuleLine), read by the page on the server; sign-in shows the same one.
-export default function SignUpForm({ trialFunded, emailTrial = true, trialRule = '', sentWithoutScript = false, errorWithoutScript = '' }: { trialFunded: boolean; /** an email sign-up can run its first search free here (the page reads it on the server) */ emailTrial?: boolean; trialRule?: string; sentWithoutScript?: boolean; errorWithoutScript?: string }) {
+export default function SignUpForm({ trialRule = '', sentWithoutScript = false, errorWithoutScript = '' }: { trialRule?: string; sentWithoutScript?: boolean; errorWithoutScript?: string }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(errorWithoutScript)
@@ -64,7 +63,7 @@ export default function SignUpForm({ trialFunded, emailTrial = true, trialRule =
         <Link href="/" className="text-xl font-medium tracking-tight block text-center mb-1.5 sm:mb-4">dazl<span className="text-[#111]">.</span></Link>
         <h1 className="text-2xl font-medium mb-1 text-center">Create your account</h1>
         <p className="text-[#555] text-sm mb-1 sm:mb-4 text-center">
-          {signUpPlanLine(trialFunded, emailTrial)}
+          A search is one run that looks for businesses that need what you sell. {trialRule ? 'No card needed.' : 'Free searches are unavailable right now.'}
         </p>
         <ClaimContextBanner business={claim.business} action="Create your account" />
         <a href={claim.googleHref} data-testid="google-primary" className="btn-primary !py-3 w-full flex items-center justify-center gap-2 text-sm">Continue with Google</a>

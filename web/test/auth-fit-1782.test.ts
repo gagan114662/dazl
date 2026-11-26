@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { signUpPlanLine, trialRuleLine } from '../lib/trial-copy.ts'
+import { trialRuleLine } from '../lib/trial-copy.ts'
 
 // #1782: /sign-up scrolled at 1440x900 and the auth pages were taller than a 390x844 phone screen. Both pages render
 // <main class="min-h-screen ... py-10">, so the card carried a 100vh floor (taller than a phone's visible area) plus
@@ -91,7 +91,10 @@ function cardHeight(viewportWidth: number): number {
   const pad = wide ? Number(/sm:p-(\d+(?:\.\d+)?)/.exec(cardCls)?.[1] ?? 0) * 4 : spacing(cardCls, 'p')
   const maxW = cardCls.includes('max-w-md') ? 448 : 384
   const content = Math.min(maxW, viewportWidth - 32) - pad * 2
-  const plan = signUpPlanLine(true, true)
+  const intro = /<p className="([^"]*)">\s*(.*?) \{trialRule \? '([^']+)' : '[^']+'\}/.exec(card)
+  assert.ok(intro, 'the sign-up introduction and funded notice are rendered')
+  const [, planClass, definition, fundedNotice] = intro
+  const plan = `${definition} ${fundedNotice}`
   const rule = trialRuleLine({ funded: true, emailPath: true, cap: 3, emailCap: 1 })
   const terms = 'By creating an account you agree to the Terms and Privacy Policy.'
   const rules = 'Use at least 10 characters, including a letter and a number.'
@@ -112,7 +115,7 @@ function cardHeight(viewportWidth: number): number {
   return pad * 2
     + 28 + spacingR(classOf(/<Link href="\/" className="([^"]*)"/, 'the logo'), 'mb', wide)
     + 32 + spacing(classOf(/<h1 className="([^"]*)"/, 'the heading'), 'mb')
-    + lines(plan.length, content, 6.6) * 20 + spacingR(classOf(/<p className="([^"]*)">\s*\{signUpPlanLine/, 'the plan line'), 'mb', wide)
+    + lines(plan.length, content, 6.6) * 20 + spacingR(planClass, 'mb', wide)
     + 44
     + spacing(classOf(/<p className="([^"]*)" data-testid="trial-rule"/, 'the trial rule'), 'mt')
     + lines(rule.length, content, 5.6) * 16 + spacingR(classOf(/<p className="([^"]*)" data-testid="trial-rule"/, 'the trial rule'), 'mb', wide)
