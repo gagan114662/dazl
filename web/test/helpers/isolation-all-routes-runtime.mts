@@ -268,6 +268,13 @@ const CASES: Case[] = [
 ]
 const label = (c: Case) => c.note ? `${c.route} (${c.note})` : c.route
 
+const LEAD_EVIDENCE_READS = new Set([
+  'GET /api/leads/evidence',
+  'GET /api/leads/evidence-recheck',
+  'GET /api/leads/page-signals',
+  'GET /api/leads/qualify-preview',
+])
+
 test("every id-taking route: tenant B with tenant A's id is refused (404/403), A's rows stay byte-unchanged, and A's own call works", async () => {
   // The case list and the manifest's list of id-taking routes are the same set.
   const covered = new Set(CASES.map(c => c.route)), listed = new Set(ID_ROUTES.filter(r => !r.undriven).map(r => r.route))
@@ -286,6 +293,13 @@ test("every id-taking route: tenant B with tenant A's id is refused (404/403), A
     refusals[res.status] = (refusals[res.status] ?? 0) + 1
     if (res.status !== 404 && res.status !== 403) failures.push(`${label(c)}: B with A's id got ${res.status} ${text.slice(0, 140)}`)
     for (const k of MARK) if (text.includes(k)) failures.push(`${label(c)}: response leaks A's ${k}`)
+    if (LEAD_EVIDENCE_READS.has(c.route)) {
+      const missing = await c.call({ ...f, review: hex() })
+      assert.equal(res.status, 404, `${label(c)}: foreign lead`)
+      assert.equal(missing.status, 404, `${label(c)}: missing lead`)
+      assert.equal(res.headers.get('content-type'), missing.headers.get('content-type'), label(c))
+      assert.equal(text, await missing.text(), label(c))
+    }
     const after = aRows(f.db)
     if (after !== before) { failures.push(`${label(c)}: A's data changed in ${changedTables(before, after).join(', ')}`); break }
   }
