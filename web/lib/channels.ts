@@ -14,7 +14,7 @@ export const CHANNELS: Channel[] = [
   { id: 'search', name: 'Web search', tier: 0, status: 'live', note: 'On. The dazl web search when dazl has its own key for it, otherwise your own model provider search. A paid search service is not used.' },
   { id: 'v2ex', name: 'V2EX', tier: 0, status: 'live', note: 'On. Pick it in a scan under Sources. Keyword search goes through sov2ex.com, a third-party service that receives the keywords. Most posts are Chinese; only topics with English text can be verified.' },
   { id: 'x', name: 'Twitter / X', tier: 1, status: 'worker', platform: 'x', note: 'Found through web search of the public index when dazl has its own key for it - no session needed and no account at risk; results go to review. Otherwise it needs a saved session from a spare account. X disallows automated access in robots.txt and its terms.' },
-  { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Not available yet. Reddit limits automated access under its terms.' },
+  { id: 'reddit', name: 'Reddit', tier: 1, status: 'worker', platform: 'reddit', note: 'Reddit limits automated access under its terms.' },
   { id: 'instagram', name: 'Instagram', tier: 1, status: 'worker', platform: 'instagram', note: 'Not available yet. Instagram disallows automated access in robots.txt and its terms.' },
   { id: 'facebook', name: 'Facebook', tier: 1, status: 'worker', platform: 'facebook', note: 'Not available yet. Facebook disallows automated access in robots.txt and its terms. dazl does not fetch Facebook yet.' },
   { id: 'linkedin', name: 'LinkedIn', tier: 2, status: 'worker', platform: 'linkedin', note: 'Not available yet. It carries the highest risk of getting the account banned.' },

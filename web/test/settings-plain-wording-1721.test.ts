@@ -46,10 +46,15 @@ test('#1715 screen 3: the team panel says what you can do, and the operator role
   assert.match(s, /send\('\/api\/workspace\/invitations', 'POST', \{ email, role \}\)/, 'the invite still sends the stored value')
 })
 
-test('#1715 screen 4: the "Needs worker" badge tells the reader what to expect', () => {
+test('#1715 screen 4: the badge tells the reader what to expect, honestly per platform', () => {
   const s = src('settings/advanced-panel.tsx')
   assert.doesNotMatch(s, /Needs worker/, 'the "Needs worker" badge is gone')
-  assert.match(s, /worker: 'Not available yet'/, 'the worker status reads as a plain, honest state')
+  // A platform whose adapter IS built (consent + session below the badge) is not "not available": the badge says
+  // what it needs (Gagan 2026-11-26 on #1917). Only an unbuilt adapter (supported === false) reads "Not available yet".
+  assert.match(s, /worker: 'Needs your session'/, 'a built session platform says what it needs, in plain words')
+  assert.match(s, /supported === false \? 'Not available yet'/, 'only an unbuilt adapter reads "Not available yet"')
+  const reddit = CHANNELS.find(c => c.id === 'reddit')!
+  assert.doesNotMatch(reddit.note, /^Not available yet\./, 'the Reddit note does not claim unavailable: its adapter is built')
 })
 
 test('#1721 the audit panel states the retention rule without guessing who set it', () => {
