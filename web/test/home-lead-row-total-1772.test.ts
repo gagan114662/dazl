@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import * as jsxRuntime from 'react/jsx-runtime'
 import ts from 'typescript'
 import { bothEngines } from './helpers/engines.ts'
-import { homeResults } from '../lib/outreach/home-results.ts'
+import { bySignalFootnote, homeResults } from '../lib/outreach/home-results.ts'
 
 bothEngines('#1772: Home signal rows and the Leads row total use the same count', async ({ db }) => {
   const now = 1_800_000_000
@@ -27,7 +27,10 @@ bothEngines('#1772: Home signal rows and the Leads row total use the same count'
   assert.equal(results.by_signal.reduce((total, row) => total + row.leads, 0), displayedLeadsTotal)
 
   const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
-  assert.match(read('../app/app/home-results.tsx'), /fetch\('\/api\/home\/results'\)/)
+  const home = read('../app/app/home-results.tsx')
+  assert.match(home, /fetch\('\/api\/home\/results'\)/)
+  const footer = home.match(/<p[^>]+data-testid="by-signal-companies"[^>]*>[\s\S]+?<\/p>/)?.[0]
+  assert.ok(footer, 'Home renders the lead total in the signal table footer')
   const leads = read('../app/app/leads/leads-client.tsx')
   const load = leads.match(/void (fetch\('\/api\/home\/results'[\s\S]+?)\n    return \(\) => request.abort\(\)/)?.[1]
   assert.ok(load, 'Leads reads the same result as Home')
@@ -54,6 +57,19 @@ bothEngines('#1772: Home signal rows and the Leads row total use the same count'
     return renderToStaticMarkup(exports.default)
   }
 
-  assert.match(await renderTotal(Response.json(results)), /Across your workspace, last 30 days: 3 lead rows found\./)
+  const leadsHtml = await renderTotal(Response.json(results))
+  assert.match(leadsHtml, /Across your workspace, last 30 days: 3 lead rows found\./)
+  const homeOutput = ts.transpileModule(`export default (${footer})`, {
+    fileName: 'home-signal-footer.tsx',
+    compilerOptions: options,
+  }).outputText
+  const homeExports: { default?: Parameters<typeof renderToStaticMarkup>[0] } = {}
+  runInNewContext(homeOutput, { exports: homeExports, r: results, bySignalFootnote, require: () => jsxRuntime })
+  assert.ok(homeExports.default)
+  const homeHtml = renderToStaticMarkup(homeExports.default)
+  const homeCount = homeHtml.match(/>(\d+) leads? from \d+ compan[^<]+</)?.[1]
+  const leadsCount = leadsHtml.replaceAll('<!-- -->', '').match(/last 30 days: (\d+) lead rows? found\./)?.[1]
+  assert.equal(homeCount, '3', 'the rendered footer counts all rows, including repeated companies')
+  assert.equal(leadsCount, homeCount, 'Home footer and Leads display the same lead-row count')
   assert.match(await renderTotal(new Response(null, { status: 503 })), /Could not load the total number of lead rows\./)
 })
