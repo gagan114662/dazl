@@ -23,7 +23,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/leads/verification-fixture/route.staging.ts': 0,
   'app/api/outreach/[id]/route.ts': 0,
   'app/api/outreach/autopilot/route.ts': 0,
-  'app/api/outreach/inbox/route.ts': 0,
   'app/api/outreach/polish/route.ts': 0,
   'app/api/outreach/reopen/route.ts': 0,
   'app/api/outreach/replies/route.ts': 0,

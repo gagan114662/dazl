@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getScanDb, requireUser } from '@/lib/scan/service'
-import { hasReadConsent, threadMessages } from '@/lib/outreach/replies'
-import { inboxPage, markThreadRead, parseInboxQuery, InboxQueryError } from '@/lib/outreach/inbox'
-import { gmailStatus } from '@/lib/gmail/oauth'
-import { getSettings } from '@/lib/outreach/service'
+import { requireUser } from '@/lib/scan/service'
+import { getDb, type Db } from '@/lib/db/client'
+import { hasReadConsentDb } from '@/lib/outreach/reply-reading'
+import { inboxPage, markThreadRead, parseInboxQuery, InboxQueryError, threadMessages } from '@/lib/outreach/inbox'
+import { readGmailStatus } from '@/lib/gmail/oauth'
 import { sameOriginJson } from '@/lib/same-origin'
 import { denied } from '@/lib/workspace-access'
 
-function ownsInboxThread(db: ReturnType<typeof getScanDb>, tenantId: string, threadId: string): boolean {
-  return !!db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ?')
-    .get(tenantId, threadId, tenantId, threadId)
+async function ownsInboxThread(db: Db, tenantId: string, threadId: string): Promise<boolean> {
+  return !!(await db.get('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? UNION ALL SELECT 1 FROM followup_threads WHERE tenant_id = ? AND thread_id = ?',
+    [tenantId, threadId, tenantId, threadId]))
 }
 
 // GET ?thread_id=<id>             one thread's messages (owner-scoped; another tenant's thread answers like an unknown one)
@@ -19,21 +19,21 @@ function ownsInboxThread(db: ReturnType<typeof getScanDb>, tenantId: string, thr
 export async function GET(req: NextRequest) {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getScanDb()
+  const db = await getDb()
   const threadId = req.nextUrl.searchParams.get('thread_id')
   if (threadId) {
     // Owner-scoped: threadMessages returns empty for another tenant's thread.
-    const messages = threadMessages(db, user.tenantId, threadId)
+    const messages = await threadMessages(db, user.tenantId, threadId)
     // #830: a thread this workspace has no part of (another workspace's, or unknown) is not found, never an empty 200
-    if (!messages.length && !ownsInboxThread(db, user.tenantId, threadId)) return NextResponse.json({ error: 'not_found' }, { status: 404 })
+    if (!messages.length && !(await ownsInboxThread(db, user.tenantId, threadId))) return NextResponse.json({ error: 'not_found' }, { status: 404 })
     return NextResponse.json({ messages })
   }
   let page
   try {
     const query = parseInboxQuery(req.nextUrl.searchParams)
     const tenantId = user.tenantId
-    if ((query.jobId && !db.prepare('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?').get(query.jobId, tenantId))
-      || (query.threadId && !ownsInboxThread(db, tenantId, query.threadId))) {
+    if ((query.jobId && !(await db.get('SELECT 1 FROM scan_jobs WHERE id = ? AND user_id = ?', [query.jobId, tenantId])))
+      || (query.threadId && !(await ownsInboxThread(db, tenantId, query.threadId)))) {
       return NextResponse.json({ error: 'not_found' }, { status: 404 })
     }
     page = await inboxPage(db, tenantId, query)
@@ -42,18 +42,21 @@ export async function GET(req: NextRequest) {
     throw e
   }
 
-  const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
-  const gmail = gmailStatus(db, user.tenantId)
+  const [gmail, consent, settings] = await Promise.all([
+    readGmailStatus(db, user.tenantId),
+    hasReadConsentDb(db, user.tenantId),
+    db.get<{ booking_url: string | null }>('SELECT booking_url FROM outreach_settings WHERE tenant_id = ?', [user.tenantId]),
+  ])
   return NextResponse.json({
     available: true,
-    consent_accepted: hasReadConsent(db, user.tenantId),
-    read_granted: acc?.read_granted === 1,
+    consent_accepted: consent,
+    read_granted: gmail?.read_granted ?? false,
     account: gmail?.status === 'active' ? gmail.email : null,
     ...page,
 
     // The tenant's own booking link, shown back only to that tenant. Validated https-only
     // on save (cleanBookingUrl). Display is a handoff - it never proves availability or books.
-    booking_url: getSettings(db, user.tenantId)?.booking_url ?? null,
+    booking_url: settings?.booking_url ?? null,
   })
 }
 
@@ -68,6 +71,6 @@ export async function POST(req: NextRequest) {
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const b = await req.json().catch(() => null) as { thread_id?: unknown; action?: unknown } | null
   if (!b || typeof b.thread_id !== 'string' || !b.thread_id || b.thread_id.length > 200 || b.action !== 'read') return NextResponse.json({ error: 'bad_request' }, { status: 400 })
-  const ok = await markThreadRead(getScanDb(), user.tenantId, b.thread_id)
+  const ok = await markThreadRead(await getDb(), user.tenantId, b.thread_id)
   return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ error: 'not_found' }, { status: 404 })
 }
