@@ -11,6 +11,7 @@
   --color-dazl-neutral: #A3A3A3;
   --color-dazl-neutral-light: #EDEDED;
 
+  /* Bright accent for focus rings and dots. Use accent-text or ready for text. */
   --color-dazl-accent: #FE3C01;
   --color-dazl-accent-hover: #E03500;
   --color-dazl-accent-tint: #FFEDE5;
