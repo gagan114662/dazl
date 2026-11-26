@@ -1,3 +1,8 @@
+const INSTITUTION_FORMS = new Set([
+  'school board', 'school district', 'public schools', 'public library', 'public health',
+  'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
+]);
+
 export function isPublicSectorBody(input: {
   company: string;
   domain?: string | null;
@@ -24,11 +29,16 @@ export function isPublicSectorBody(input: {
   const civicPlace = /^[a-z0-9]+$/.test(place) ||
     /^.+ (?:bay|creek|falls|harbour|harbor|heights|hills|island|lake|mountain|rapids|river|springs|valley)$/.test(place) ||
     (place.includes(' ') && domain.replace(/^www\./, '').split('.')[0].replace(/-/g, '') === place.replace(/ /g, ''));
-  const namedBody = civicPlace ||
-    /^(?:city|town) of .+ council$/.test(company) ||
-    /^(?!the\b).+ (?:county|township|city council|town council)$/.test(company) ||
-    /(?:^| )(?:school board|school district|public schools|public library|public health|police department|fire department|public agency|housing authority|transit authority|public works)$/.test(company);
-  const requiresGovernmentDomain = /^(?:ministry|department|government)(?: |$)/.test(company);
+  const words = company.split(' ');
+  const first = words[0];
+  const last = words.at(-1);
+  const lastTwo = words.slice(-2).join(' ');
+  const council = (first === 'city' || first === 'town') && words[1] === 'of' && words.length >= 4 && last === 'council';
+  const localGovernment = first !== 'the' && words.length > 1 && (
+    last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
+  );
+  const namedBody = civicPlace || council || localGovernment || INSTITUTION_FORMS.has(lastTwo);
+  const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 
   if (govDomain || (namedBody && !requiresGovernmentDomain)) {
     return { nonBuyer: true, reason: govDomain ? 'The domain identifies a government or public-sector organization.' : 'The organization name identifies a government or public-sector body.' };
