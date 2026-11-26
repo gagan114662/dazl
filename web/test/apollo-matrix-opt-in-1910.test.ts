@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import Database from 'better-sqlite3'
 
 function dry(...args: string[]) {
   return spawnSync(process.execPath, [
@@ -30,4 +34,27 @@ test('matrix refuses Apollo without both explicit opt-ins', () => {
   const both = dry('--contacts', '--apollo-budget', '2')
   assert.equal(both.status, 0, both.stderr)
   assert.match(both.stdout, /Apollo budget 2/)
+})
+
+test('matrix dry mode reports the bounded call count from an evidence snapshot', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apollo-dry-'))
+  try {
+    const dbPath = join(dir, 'ledger.sqlite')
+    new Database(dbPath).close()
+    const input = join(dir, 'scan.json')
+    const evidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+      dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' }
+    writeFileSync(input, JSON.stringify({ tenantId: 'tenant', scanId: 'scan', scanLimit: 1, candidates: [
+      { leadId: 'eligible', evidence },
+      { leadId: 'eligible', evidence },
+      { leadId: 'held', evidence: { ...evidence, otherwiseReady: false } },
+    ] }))
+    const result = dry('--contacts', '--apollo-budget', '2', '--apollo-plan-db', dbPath, '--apollo-plan-input', input)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Apollo calls planned: 1/)
+    const db = new Database(dbPath, { readonly: true })
+    try {
+      assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'apollo_credit_ledger'").get(), undefined)
+    } finally { db.close() }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
