@@ -88,7 +88,7 @@ import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-pa
 import { sourceCap } from './source-quality.ts'
 import { SourceRunLedger } from './source-runs.ts'
 import { collectLinkedInPeople, PEOPLE_CONNECTOR } from '../signals/linkedin-people.ts'
-import { addEnrichment, audit, writeAudit } from '../connectors/store.ts'
+import { addEnrichment, audit, enrichmentsForLeads, writeAudit } from '../connectors/store.ts'
 import { newsEnabled, newsSearch, NEWS_PER_SCAN, NEWS_SOURCE, type NewsFailureClasses, type NewsQueryClasses } from '../search/news.ts'
 import { safeGet } from '../sources/http.ts'
 import type { SafeGet } from '../sources/types.ts'
@@ -1584,6 +1584,20 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
         signal: AbortSignal.timeout(postFinishBudgetMs()),
         ...(crawlGet ? { get: crawlGet } : {}),
       })
+      if (postFinishAliveStrict(db, job)) {
+        // Discovery cards read their own connector. Carry over the strict crawl's
+        // single buyer and any personal address proven on that buyer's page.
+        const contacts = enrichmentsForLeads(db, job.user_id, needsContactCrawl.map(row => row.id))
+        for (const { id } of needsContactCrawl) {
+          const siteRows = (contacts[id] ?? []).filter(row => row.connector === 'sitecrawl')
+          const buyers = siteRows.filter(row => row.kind === 'person')
+          if (buyers.length !== 1) continue
+          const [buyer] = buyers
+          addEnrichment(db, job.user_id, id, { ...buyer, connector: 'discover' })
+          const addresses = siteRows.filter(row => row.kind === 'email' && row.source_url === buyer.source_url)
+          if (addresses.length === 1) addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover' })
+        }
+      }
     } finally {
       endEnrichment(db, job.id, job.attempts)
     }
