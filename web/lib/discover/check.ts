@@ -87,26 +87,36 @@ export function statesSignal(signal: string, company: string, textToSearch: stri
 export type AskSignal = (signal: string, company: string, statements: string[]) => Promise<boolean>
 // The page's own statements: a line or block, cut again where a full stop, question mark, exclamation mark or semicolon ends one.
 const statements = (page: string): string[] => page.split(/\n+|(?<=[.!?…;])\s+/).map(s => s.trim()).filter(Boolean)
-// The quoted evidence as the page states it. Compare every word after formatting normalization. An explicit ellipsis can omit
+// The quoted evidence must be contiguous after formatting normalization, even if its edges clip a word. An explicit ellipsis can omit
 // words inside a single statement, but each quoted fragment must still occur there in order.
 // This, not the run's excerpt, is what a claim is judged against: an excerpt stops where the run cut it (300 characters at most), and
 // words in an excerpt that the page does not print are not evidence. A word in the next statement is not this statement's word.
 // Each place is its own evidence and is judged alone. The same words often stand in several places (a heading, a menu, two unrelated
 // sentences); pooling them let one place's words finish another's claim (review of #1575 at 0db467b5).
 export function quoteStatements(quote: string | null, page: string): string[] {
-  const q = fold(quote ?? '').split(' ').filter(Boolean)
-  if (q.join(' ').length < 12) return []
-  const all = statements(page), words: string[] = [], at: number[] = []
-  all.forEach((s, i) => { for (const w of fold(s).split(' ')) if (w) { words.push(w); at.push(i) } })
+  const q = fold(quote ?? '')
+  if (q.length < 12) return []
+  const all = statements(page)
+  const parts: string[] = [], starts: number[] = [], statementIndices: number[] = []
+  let offset = 0
+  all.forEach((statement, i) => {
+    const part = fold(statement)
+    if (!part) return
+    parts.push(part)
+    starts.push(offset)
+    statementIndices.push(i)
+    offset += part.length + 1
+  })
+  const normalized = parts.join(' ')
   const places = new Set<string>()
-  const find = (needle: string[]): boolean => {
-    let found = false
-    for (let i = words.indexOf(needle[0]); i >= 0 && i + needle.length <= words.length; i = words.indexOf(needle[0], i + 1)) {
-      if (needle.every((w, j) => words[i + j] === w)) { found = true; places.add(all.slice(at[i], at[i + needle.length - 1] + 1).join(' ')) }
-    }
-    return found
+  let first = 0, last = 0
+  for (let at = normalized.indexOf(q); at >= 0; at = normalized.indexOf(q, at + 1)) {
+    while (starts[first + 1] <= at) first++
+    const end = at + q.length - 1
+    while (starts[last + 1] <= end) last++
+    places.add(all.slice(statementIndices[first], statementIndices[last] + 1).join(' '))
   }
-  if (!find(q)) {
+  if (places.size === 0) {
     const fragments = (quote ?? '').split(/…|\.{3}/).map(fold).filter(Boolean)
     if (fragments.length > 1) for (const statement of all) {
       const line = ` ${fold(statement)} `

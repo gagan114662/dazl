@@ -48,3 +48,21 @@ test('#1910 Austin replay: punctuation and case vary, but a paraphrase or invent
     assert.equal(isShown(result), shown, quote)
   }
 })
+
+test('#1910 a literal quote can start or end inside a source word', async () => {
+  // Synthetic Toronto dental source; the original before/after matrix did not save its rows.
+  const company = 'Example Dental Clinic'
+  const url = 'https://clinic.example/careers'
+  const signal = 'Hiring a registered dental hygienist in Toronto'
+  const opening = 'We are hiring a registered dental hygienist in Toronto'
+  const paragraph = opening + ' for our ' + 'busy clinic '.repeat(24) + 'starting this month.'
+  const saved = candidate(company, url, signal, paragraph)
+  assert.equal(saved.evidence_quote?.length, 300)
+  assert.match(paragraph.slice(298, 302), /^\p{L}{4}$/u, 'the cap splits a word')
+  const fetchPage = async () => new Response(`<h1>${company}</h1><p>${paragraph}</p>`)
+  for (const quote of [saved.evidence_quote!, opening.slice(9), opening.slice(9, -2)]) {
+    const checked = await checkLead({ ...saved, evidence_quote: quote }, [], fetchPage)
+    assert.equal(checked.quote_on_page, true, quote)
+    assert.equal(isShown(checked), true, quote)
+  }
+})
