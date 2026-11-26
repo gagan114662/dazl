@@ -1,6 +1,8 @@
 import { autopilotAvailable } from '@/lib/outreach/autopilot'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
+import { readBusinessName } from '@/lib/auth-db'
+import { getDb } from '@/lib/db/client'
 import { createDraft, listMessages, OutreachError } from '@/lib/outreach/service'
 import { draftFailure } from '@/lib/outreach/draft-error'
 import { captureError } from '@/lib/ops/errors'
@@ -51,7 +53,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, user.business_name, { manual: true })
+    const businessName = user.business_name.trim() || await readBusinessName(await getDb(), user.tenantId)
+    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, businessName, { manual: true })
     // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
     // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })

@@ -17,12 +17,17 @@ export default function RepliesPanel() {
   useEffect(() => {
     let alive = true
     void (async () => { try { const r = await fetch('/api/outreach/replies'); if (r.ok && alive) setI(await r.json()) } catch { /* no status yet: the panel stays hidden */ } })()
-    return () => { alive = false }
+    const refresh = () => { void load().then(ok => { if (!ok && alive) setStale(true) }) }
+    window.addEventListener('reply-reading-updated', refresh)
+    return () => {
+      alive = false
+      window.removeEventListener('reply-reading-updated', refresh)
+    }
   }, [])
   async function act(action: string, version?: string) {
     const res = await performReplyAction(fetch, action, version ?? i?.consent.version)
     setMsg(res.message)
-    if (!(await load())) setStale(true)
+    window.dispatchEvent(new Event('reply-reading-updated'))
   }
   if (!i || !i.available) return null
   const state = replyReadingState(i)
