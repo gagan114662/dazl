@@ -85,3 +85,16 @@ test('the run can follow a single employer posting already found by the search w
   const { lead } = await scan({ source: indeed, status: 401, page: `<p>${quote}.</p><p>Posted ${posted}.</p>`, returnedAlternate: false })
   assert.deepEqual([lead.evidence_url, lead.date, lead.date_on_page], [careers, posted, true])
 })
+
+test('a date in unrelated JobPosting markup does not date an employer careers listing', async () => {
+  const alternate = 'https://ferndental.example/careers'
+  const page = `<p>${quote}.</p><script type="application/ld+json">{"@type":"JobPosting","title":"Bookkeeper","datePosted":"${posted}"}</script>`
+  const { lead } = await scan({ source: indeed, status: 401, alternate, page })
+  assert.deepEqual([lead.evidence_url, lead.date, lead.date_source], [indeed, null, null])
+})
+
+test('an ATS page cannot promote unrelated markup when its posting record has no publication date', async () => {
+  const page = `<p>${quote}.</p><script type="application/ld+json">{"@type":"JobPosting","title":"Bookkeeper","datePosted":"${posted}"}</script>`
+  const { lead } = await scan({ source: zip, status: 403, alternate: ats, page })
+  assert.deepEqual([lead.evidence_url, lead.date, lead.date_source], [zip, null, null])
+})
