@@ -138,7 +138,7 @@ try {
   await shot('hiring-provenance')
   await brightDetails.getByText('Details', { exact: true }).click()
   assert.equal(await bright.getByRole('link', { name: 'news.example' }).getAttribute('href'), 'https://www.news.example/aaaa')
-  assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), false, 'Details are closed by default')
+  assert.equal(await page.getByText('Reported event: Bright Dental opened a second office').isVisible(), false, 'Details are closed by default')
 
   // Held leads: Approve disabled, with the reason on the card.
   const lakeside = cards.filter({ hasText: 'Lakeside Smiles' })
@@ -204,7 +204,7 @@ try {
 
   await page.getByTestId('tab-approved').click() // Bright Dental is under Approved now
   await page.locator('summary:not([data-testid=caveat] summary)', { hasText: 'Details' }).first().click() // a lead's Details, not a page caveat's
-  assert.equal(await page.getByText('Saved signal claim: Bright Dental opened a second office').isVisible(), true, 'everything else is still there under Details')
+  assert.equal(await page.getByText('Reported event: Bright Dental opened a second office').isVisible(), true, 'everything else is still there under Details')
 
   // 5. A HELD (interrupted) enrichment lookup surfaces with its exact cost wording; the owner's Retry posts once and the notice clears.
   heldMode = true
