@@ -1,4 +1,5 @@
 import { discoverContact, discoverSite, emailOnCompanySite } from '../../../lib/discover/card.ts'
+import { peopleSearchable } from '../../../lib/people/searchable-holds.ts'
 import { domainBasisFor, publishedContact, type PublishedEmailLead } from '../../../lib/outreach/published-email.ts'
 
 function webUrl(raw: string | null | undefined): URL | null {
@@ -30,7 +31,8 @@ export function WebsiteProvenance({ lead }: { lead: WebsiteLead }) {
   const sameSite = pageHost === domain || pageHost?.endsWith(`.${domain}`)
   const stored = lead.enrichments?.find(row =>
     row.connector === 'discover' && row.kind === 'domain' && discoverSite(row.value) === domain)
-  const basisSource = basis.kind !== 'unrecorded' && basis.domain === domain
+  // Legacy crawl rows can cite a page on the saved site without an ownership classification.
+  const basisSource = basis.domain === domain
     && (sameSite || basis.kind === 'linked' || basis.kind === 'link_text_only') ? page?.href : null
 
   return <span className="inline-flex flex-wrap items-center gap-x-2 text-[var(--ink-2)]">
@@ -61,17 +63,34 @@ function emailEvidence(lead: EmailLead): { address: string; source: string | nul
     row.connector === 'sitecrawl' && row.kind === 'email' && row.value.trim().toLowerCase() === contact.email)
   const crawl = matchingRows.reduce<(typeof matchingRows)[number] | undefined>((latest, row) =>
     !latest || (row.retrieved_at ?? 0) > (latest.retrieved_at ?? 0) ? row : latest, undefined)
+  if (crawl) return { address: contact.email, source: crawl.source_url }
+
   const context = lead.contact_context
-  const citedAddress = context?.excerpt.toLowerCase().split(/[\s"'<>(),;:]+/).includes(contact.email)
-  return { address: contact.email, source: crawl ? crawl.source_url : citedAddress ? context?.source_url : null }
+  const citesAddress = (excerpt?: string | null) => {
+    const addresses = excerpt?.match(/(?<![a-z0-9._%+@-])[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9_@-]|\.[a-z0-9-])/gi)
+    return addresses?.some(address => address.toLowerCase() === contact.email)
+  }
+  const contactSource = context && citesAddress(context.excerpt) ? webUrl(context.source_url)?.href : null
+  const signalSource = citesAddress(lead.evidence_excerpt) ? lead.source_url : null
+  return { address: contact.email, source: contactSource ?? signalSource }
+}
+
+function EmailProvenance({ email, displayOnly }: { email: NonNullable<ReturnType<typeof emailEvidence>>; displayOnly: boolean }) {
+  return <div className="text-xs text-[var(--ink-2)] break-words" data-testid={displayOnly ? 'company-first-published-email' : 'published-work-email'}>
+    Published work email{displayOnly ? ' (display only)' : ''}: {email.address}{' '}
+    <FieldSource field="Email" source={email.source} />
+  </div>
 }
 
 export function PublishedEmailProvenance({ lead }: { lead: EmailLead }) {
   const email = emailEvidence(lead)
   if (!email) return <div className="text-xs text-[var(--ink-2)]">Published work email unavailable</div>
+  return <EmailProvenance email={email} displayOnly={lead.company_first_published_email?.display_only === true} />
+}
 
-  return <div className="text-xs text-[var(--ink-2)] break-words" data-testid={lead.company_first_published_email?.display_only ? 'company-first-published-email' : 'published-work-email'}>
-    Published work email{lead.company_first_published_email?.display_only ? ' (display only)' : ''}: {email.address}{' '}
-    <FieldSource field="Email" source={email.source} />
-  </div>
+export function ResearchPublishedEmail({ lead }: { lead: EmailLead & { review_reason?: string | null } }) {
+  if (lead.company_first_published_email?.display_only !== true && !peopleSearchable(lead.review_reason)) return null
+  const email = emailEvidence(lead)
+  if (!email || !webUrl(email.source)) return null
+  return <EmailProvenance email={email} displayOnly />
 }

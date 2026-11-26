@@ -8,7 +8,8 @@ interface Member { member_id: string; email: string; name: string | null; role: 
 interface Invite { id: string; email: string; role: Role; expires_at: number }
 
 const ROLES: Role[] = ['viewer', 'operator', 'admin', 'owner']
-const ROLE_HELP: Record<Role, string> = { viewer: 'reads and exports', operator: 'also runs scans and sends', admin: 'also keys, connectors and members', owner: 'also billing and owners' }
+const ROLE_HELP: Record<Role, string> = { viewer: 'read and export leads', operator: 'run scans and send messages', admin: 'manage keys, connectors and members', owner: 'manage billing and workspace owners' }
+const ROLE_LABEL: Record<Role, string> = { viewer: 'Viewer', operator: 'Scan and send', admin: 'Admin', owner: 'Owner' }
 const ERRORS: Record<string, string> = { last_owner: 'A workspace needs at least one owner.', only_workspace: 'That is their only workspace, so it cannot be left or removed.', forbidden: 'Your role cannot do that.', already_member: 'Already a member.', too_many_invites: 'Too many pending invitations.', not_found: 'Not found.' }
 const rank = (r: Role) => ROLES.indexOf(r)
 
@@ -52,15 +53,16 @@ export default function TeamPanel() {
   if (!ws) return null
   const mine = ws.current.role, admin = rank(mine) >= rank('admin'), owner = mine === 'owner'
   const current = ws.workspaces.find(w => w.tenant_id === ws.current.tenant_id)
+  const place = current?.kind === 'personal' && current.tenant_id === ws.you.id ? 'your own workspace' : current?.name || 'this workspace'
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Team</h2>
-      <p className="text-[#555] text-sm mb-3">You are <span className="font-medium">{mine}</span> in {current?.kind === 'personal' && current.tenant_id === ws.you.id ? 'your own workspace' : `${current?.name || 'this workspace'}`}: {ROLE_HELP[mine]}.</p>
+      <p className="text-[#555] text-sm mb-3">In {place} you can {ROLE_HELP[mine]}.</p>
       {ws.workspaces.length > 1 && (
         <div className="text-sm mb-4">
           <label htmlFor="team-workspace" className="block text-xs text-gray-500 mb-1">Workspace</label>
           <select id="team-workspace" className="field" value={ws.current.tenant_id} onChange={e => void switchTo(e.target.value)}>
-            {ws.workspaces.map(w => <option key={w.tenant_id} value={w.tenant_id}>{(w.tenant_id === ws.you.id ? 'Your workspace' : w.name || 'Workspace')} ({w.role})</option>)}
+            {ws.workspaces.map(w => <option key={w.tenant_id} value={w.tenant_id}>{(w.tenant_id === ws.you.id ? 'Your workspace' : w.name || 'Workspace')} ({ROLE_LABEL[w.role]})</option>)}
           </select>
         </div>
       )}
@@ -71,9 +73,9 @@ export default function TeamPanel() {
             <span className="flex items-center gap-3 shrink-0">
               {admin && m.member_id !== ws.you.id && (owner || m.role !== 'owner') ? (
                 <select className="field" aria-label={`Role for ${m.email}`} value={m.role} onChange={async e => { if (await send('/api/workspace/members', 'PATCH', { member_id: m.member_id, role: e.target.value })) load() }}>
-                  {ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{r}</option>)}
+                  {ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
                 </select>
-              ) : <span className="text-[#555]">{m.role}</span>}
+              ) : <span className="text-[#555]">{ROLE_LABEL[m.role]}</span>}
               {admin && m.member_id !== ws.you.id && (owner || m.role !== 'owner') && <button className="underline underline-offset-2" onClick={async () => { if (await send('/api/workspace/members', 'DELETE', { member_id: m.member_id })) load() }}>Remove</button>}
             </span>
           </li>
@@ -83,13 +85,13 @@ export default function TeamPanel() {
         <div className="text-sm space-y-2">
           <div className="flex flex-wrap gap-2">
             <input className="field flex-1 min-w-[12rem]" type="email" aria-label="Teammate email" placeholder="teammate@company.com" value={email} onChange={e => setEmail(e.target.value)} />
-            <select className="field" aria-label="Role for the invite" value={role} onChange={e => setRole(e.target.value as Role)}>{ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{r}</option>)}</select>
+            <select className="field" aria-label="Role for the invite" value={role} onChange={e => setRole(e.target.value as Role)}>{ROLES.filter(r => owner || r !== 'owner').map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}</select>
             <button className="btn-primary" disabled={!email.trim()} onClick={() => void invite()}>Invite</button>
           </div>
           {link && <p className="text-[#555]">Send this one-time link to them (it works for 7 days, only for that email, and is shown only now): <code className="break-all select-all">{link}</code></p>}
           {invites.length > 0 && (
             <ul className="divide-y divide-[var(--line)]">
-              {invites.map(i => <li key={i.id} className="flex justify-between py-2"><span className="truncate">{i.email} ({i.role}, pending)</span>{(owner || i.role !== 'owner') && <button className="underline underline-offset-2" onClick={async () => { if (await send('/api/workspace/invitations', 'DELETE', { id: i.id })) load() }}>Revoke</button>}</li>)}
+              {invites.map(i => <li key={i.id} className="flex justify-between py-2"><span className="truncate">{i.email} ({ROLE_LABEL[i.role]}, pending)</span>{(owner || i.role !== 'owner') && <button className="underline underline-offset-2" onClick={async () => { if (await send('/api/workspace/invitations', 'DELETE', { id: i.id })) load() }}>Revoke</button>}</li>)}
             </ul>
           )}
         </div>

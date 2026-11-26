@@ -1,5 +1,5 @@
-// Refs #1504: on push to main, web-ci, release-gate and release-preflight share one concurrency group per workflow and a
-// newer main push cancels the older run; and every web-ci PR run type-checks the whole of web/ in shard 1 (npm run
+// Refs #1504 and #1895: main pushes share a group per workflow. Web CI and release-gate let active
+// runs finish; release-preflight still cancels stale runs. Web CI type-checks the whole of web/ (npm run
 // check:unused = tsc --noEmit over all of web/ plus unused symbols), not only the changed files.
 // Run: node --test '.github/scripts/*.test.mjs'
 import test from 'node:test'
@@ -34,11 +34,11 @@ const pr = { event: 'pull_request', pr: 1504, runId: 333, sha: 'ccc', ref: 'refs
 const dispatch = { event: 'workflow_dispatch', pr: undefined, runId: 444, sha: 'ddd', ref: 'refs/heads/main' }
 
 for (const [name, mainGroup] of [['web-ci', 'web-ci-main'], ['release-gate', 'release-gate-main'], ['release-preflight', 'release-preflight-main']]) {
-  test(`${name}: every push to main shares the ${mainGroup} group and cancels the older run`, () => {
+  test(`${name}: main pushes share ${mainGroup} and follow the workflow’s cancellation policy`, () => {
     const text = wf(name)
     assert.equal(groupFor(text, push), mainGroup)
     assert.equal(groupFor(text, push2), mainGroup, 'a second main push lands in the same group')
-    assert.equal(evalExpr(concurrency(text).cancel, push), 'true', 'cancel-in-progress is true on push')
+    assert.equal(evalExpr(concurrency(text).cancel, push), String(name === 'release-preflight'))
   })
   test(`${name}: pull requests keep their own per-PR group and still cancel; a manual run is never cancelled`, () => {
     const text = wf(name)

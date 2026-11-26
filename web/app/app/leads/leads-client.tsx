@@ -6,7 +6,7 @@ import type { HomeReady } from '@/lib/outreach/home-ready'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
-import { FieldSource, PublishedEmailProvenance, WebsiteProvenance } from './field-provenance'
+import { FieldSource, PublishedEmailProvenance, ResearchPublishedEmail, WebsiteProvenance } from './field-provenance'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
@@ -28,6 +28,7 @@ import { currencyText, splitByCurrency } from '@/lib/people/currency'
 import { ResearchRationale } from './research-rationale'
 import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
+import LeadsTable from './leads-table'
 import { reviewAction } from '@/lib/scan/review-action'
 import { uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
@@ -111,7 +112,7 @@ type PersonLineProps = { p: LeadPerson | null; nameOnly?: boolean; children?: Re
 function PersonLine({ p, nameOnly, children, sourceLink }: PersonLineProps & { sourceLink?: ReactNode }) {
   if (!p) return <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
 
-  const title = p.title.trim()
+  const title = p.title?.trim() ?? ''
   const missing = title ? (p.linkedin ? null : 'No LinkedIn profile found')
     : p.linkedin ? 'No job title found' : 'No job title or LinkedIn profile found'
   return <div className="text-sm mt-0.5" data-testid="lead-person">
@@ -158,7 +159,13 @@ const REASON: Record<string, string> = {
 }
 const REVIEW: Record<string, string> = { posting_not_specific: 'The source is a report, search or listing page, not one job posting, so it proves no opening and no posting date', job_role_mismatch: 'The posting is for a different role than the one you asked for', research_unverified: 'The event is quoted on the source page, but its day or a named decision-maker is not proven there - read the source before you use it', legacy_currentness_review: 'Legacy research reviewed by you for drafting, not verified current need or consent', event_timing_unconfirmed: 'The quote was found, but its event timing and current need are unconfirmed', event_date_bad_date: 'The claimed event date is invalid - review the source', event_date_stale: 'The claimed event date is outside the freshness window - check the date on the source before you use it', event_date_future_date: 'The claimed event date is in the future - current need unconfirmed',  source_review_required: 'Review the source. We haven’t confirmed what happened, when it happened, whether the company is looking to buy, or whether you have permission to contact them', self_description: 'Text its owner wrote about their own project. This evidence does not establish fit, date or need',  counterparty_signal: 'Names this company as someone else\'s customer - not evidence of its own buying intent', job_closed: 'Source says applications are closed - historical hiring evidence, not an active opening', quote_unconfirmed: 'The saved quote could not be confirmed on the source', location_unconfirmed: 'The source page does not name the place you asked for, so it cannot be tied to a company there - not verified', location_mismatch: 'The source page names a different place than you asked for - possibly a same-name business elsewhere. Not verified', login_required: 'Source requires sign-in - evidence unknown', blocked_by_site: 'The site blocked our check', needs_javascript: 'The page needs JavaScript to show its content', outside_window: 'The event date is older than the time window you asked for - not a current lead', no_event_evidence: 'The request asks for a funding or other event as well as hiring, and the saved quote shows only hiring (a job ad alone does not show that) - check the source for the event before you use it', no_sales_hiring_evidence: 'The request asks for a hiring posting, and no dated posting for the requested role was found on a public job board tied to this company - the other evidence alone is not enough', sales_hiring_check_failed: 'The sales-hiring check could not run, so the lead is not verified. Run the scan again', outside_window_undated: 'No event date was found, so it cannot be placed inside the time window you asked for - research only', trial_budget_reached: 'Found before this free scan reached its spending limit - some checks did not run, so it is not verified', first_party_signal: 'From your own site or form (signed, consent recorded) - an account-level visit does not identify a person; buying need and outreach consent are not verified' }
 // Own keys only: a stored reason such as 'constructor' or 'toString' is an unknown reason, never an Object.prototype member rendered as text.
-const reviewLabel = (r: string | null | undefined): string | undefined => (r && Object.hasOwn(REVIEW, r) ? REVIEW[r] : undefined)
+function reviewLabel(reason: string | null | undefined, sourceKind?: string | null): string | undefined {
+  if (reason === 'source_review_required') {
+    if (sourceKind === 'hiring_feed') return 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent'
+    if (sourceKind !== 'manual_source') return "dazl couldn't confirm the signal on the source page. Review the evidence before using this lead."
+  }
+  return reason && Object.hasOwn(REVIEW, reason) ? REVIEW[reason] : undefined
+}
 
 // Enrichment labels join example titles with '; ' - older rows can repeat one
 // title per posting. Show each distinct title once; the count stays untouched.
@@ -194,7 +201,7 @@ function SourceAvailability({ core, social, keyState }: { core: SourceRow[] | nu
   const enrichment = enrichmentLabels(core)
   return (
     <div className="text-xs text-[#555] mt-2 space-y-1" data-testid="source-availability">
-      {analysis && !analysis.usable && <p data-testid="analysis-prerequisite">A scan needs an AI key for analysis and extraction ({analysis.reason}). <a className="underline text-[#111]" href={analysis.fix!.href}>Add key</a>. Adding a key does not enable discovery sources.</p>}
+      {analysis && !analysis.usable && <p data-testid="analysis-prerequisite">A scan needs analysis and extraction ({analysis.reason}). <a className="underline text-[#111]" href={analysis.fix!.href}>{analysis.fix!.label}</a>.</p>}
       <p data-testid="sources-usable">{on ? <>Discovery sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No usable primary discovery source is available on this server. Optional sources can be chosen under More sources; an AI key does not enable web research.</>}</p>
       {enrichment && <p data-testid="sources-enrichment">After discovery: {enrichment}. This enriches leads already found; it does not discover leads.</p>}
       {off.length > 0 && <p data-testid="sources-unavailable">Not available: {off.map((r, i) => <span key={r.id} data-testid={`source-off-${r.id}`}>{i > 0 && '; '}{r.label} ({r.reason}{r.fix && <>, <a className="underline text-[#111]" href={r.fix.href}>{r.fix.label}</a></>})</span>)}.</p>}
@@ -459,6 +466,9 @@ export default function LeadsClient() {
   // The cards open on what is left to decide; an approved card moves to Approved (it became a draft) and a rejected one to
   // Rejected (it leaves the list), each with a one-line result above the list.
   const [leadTab, setLeadTab] = useState<'review' | 'approved' | 'rejected'>('review')
+  // #1038: the list defaults to a dense table; the choice survives reloads like the sort does.
+  const [leadsView, setLeadsView] = useState<'table' | 'cards'>(() => { try { return typeof localStorage !== 'undefined' && localStorage.getItem('leads-view') === 'cards' ? 'cards' : 'table' } catch { return 'table' } })
+  const chooseLeadsView = (v: 'table' | 'cards') => { setLeadsView(v); try { localStorage.setItem('leads-view', v) } catch { /* the choice just will not persist */ } }
   const [cardResult, setCardResult] = useState<{ kind: 'approved' | 'rejected'; id: string; company: string; reason?: string } | null>(null)
   const [otherActiveJobId, setOtherActiveJobId] = useState<string | null>(null)
   const [otherActiveReadFailed, setOtherActiveReadFailed] = useState(false)
@@ -1094,7 +1104,9 @@ export default function LeadsClient() {
         </p>}
         </div>
       </form>
-      {jobId && status === 'done' && <PlayResearch key={jobId} jobId={jobId} />}
+      {/* #1038: the results list owns the top of a finished scan (the dense table needs 15 rows on a
+          1440x900 screen); saved research moves below the list with the play box and settings. */}
+      {jobId && status === 'done' && <div className="order-last"><PlayResearch key={jobId} jobId={jobId} /></div>}
       {/* Everything that tunes a play lives in one drawer, closed by default: sources, imports, past source results and
           warm paths. The play box above stays the only thing asking for attention. */}
       <details className={`drawer card ${jobId ? 'order-last' : 'mb-6'}`} data-testid="play-settings">
@@ -1112,7 +1124,7 @@ export default function LeadsClient() {
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useV2ex} onChange={e => setUseV2ex(e.target.checked)} /> Also search public V2EX topics</label>
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useBrreg} onChange={e => setUseBrreg(e.target.checked)} /> Also check Norway&apos;s business register for new businesses and new locations (requests that name a Norwegian place and an industry)</label>
                   <label className="flex items-center gap-2 text-gray-300"><input type="checkbox" checked={useJobboards} onChange={e => setUseJobboards(e.target.checked)} /> Also read public job postings (Greenhouse, Ashby, Lever) for a US state in your request</label>
-                  <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through Jina Reader, a third-party service: the URLs are sent to it, and it rate limits requests without a key.</label>
+                  <label className="block text-xs text-gray-500">Web page URLs to read (https only, one per line, up to 3). Pages are read through a third-party reader service: the URLs are sent to it, and it rate limits requests without a key.</label>
                   <textarea className={`${input} w-full`} rows={2} value={pageText} onChange={e => setPageText(e.target.value)} placeholder="https://example.com/blog/post" />
                   <label className="block text-xs text-gray-500">RSS or Atom feed URLs to include (https only, one per line, up to 5)</label>
                   <textarea className={`${input} w-full`} rows={2} value={feedText} onChange={e => setFeedText(e.target.value)} placeholder="https://example.com/news/feed.xml" />
@@ -1520,6 +1532,10 @@ export default function LeadsClient() {
           : <><Pill tone="pink">Rejected</Pill><span className="flex-1"><span className="font-semibold">{cardResult.company}</span>{cardResult.reason ? ` (${cardResult.reason})` : ''} left the list.<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button type="button" className="btn-ghost btn-sm" onClick={() => void quarantine(cardResult.id, true)}>Undo</button></>}
         <button type="button" aria-label="Dismiss" className="text-[var(--ink-3)] hover:text-[var(--ink)]" onClick={() => setCardResult(null)}><Icon name="x" className="w-4 h-4" /></button>
       </div>}
+      {visibleLeads.length > 0 && <div className="flex items-center justify-end gap-1 mb-2" data-testid="leads-view-toggle">
+        <button type="button" data-testid="view-table" aria-pressed={leadsView === 'table'} onClick={() => chooseLeadsView('table')} className={leadsView === 'table' ? 'btn-ghost btn-sm font-semibold' : 'btn-ghost btn-sm text-[var(--ink-3)]'}>Table</button>
+        <button type="button" data-testid="view-cards" aria-pressed={leadsView === 'cards'} onClick={() => chooseLeadsView('cards')} className={leadsView === 'cards' ? 'btn-ghost btn-sm font-semibold' : 'btn-ghost btn-sm text-[var(--ink-3)]'}>Cards</button>
+      </div>}
       <div className={visibleLeads.length ? 'card overflow-hidden divide-y divide-[var(--line)]' : ''}>
         {visibleLeads.length === 0 ? (
           // Loading, failed and status-error states have their own truthful copy above.
@@ -1533,6 +1549,8 @@ export default function LeadsClient() {
               : status === 'done' && currentView?.marked && !currentView.counts
               ? 'Lead results could not be checked. Refresh to try again.'
               : emptyLeadsMessage(status, 0, hiddenCount, currentView && !currentView.marked ? (currentView.discover ? quality?.needs_review : countLine?.needsReview) : 0, !showSeen && repeats.collapsible ? repeats.repeats : 0, !jobId && pastJobs ? pastJobs.filter(j => j.lead_count > 0).length : 0) ?? ''}</p>
+        ) : leadsView === 'table' ? (
+          <LeadsTable leads={visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id]))} icpWho={icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : ''} drafted={draftedLeads} approved={approved} />
         ) : visibleLeads.filter(l => leadTab === 'rejected' ? !!l.quarantined_at : leadTab === 'approved' ? !l.quarantined_at && !!(draftedLeads?.has(l.id) || approved[l.id]) : !l.quarantined_at && !(draftedLeads?.has(l.id) || approved[l.id])).map(l => (
           <div key={l.id} className="p-4 sm:p-5 text-sm bg-[var(--panel)] hover:bg-white transition-colors">
             {(() => {
@@ -1561,8 +1579,8 @@ export default function LeadsClient() {
                     </ul>}
                   </div>
                   </div>
-                  {!l.quarantined_at && <div className="flex gap-2 shrink-0 pl-[52px] sm:pl-0" data-testid="card-actions">
-                    <button onClick={() => approveLead(l.id)} disabled={!c.approve.ok || !!approving[l.id] || !!approved[l.id]} title={c.approve.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : c.approve.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>
+                  {!l.quarantined_at && <div className="flex flex-wrap gap-2 min-w-0 pl-[52px] sm:pl-0 sm:shrink-0" data-testid="card-actions">
+                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!!approving[l.id] || !!approved[l.id]} title="Creates a draft for you to review in Outreach. Nothing is sent." className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
                     {!c.approve.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
@@ -1576,7 +1594,7 @@ export default function LeadsClient() {
                     <button type="button" className="underline" onClick={() => setRejecting(null)}>Cancel</button>
                   </form>
                 </div>}
-                <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
+                <p className="mt-3 font-semibold text-[15px] leading-snug break-words">{c.why}</p>
                 {timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{timing}</p>}
                 <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />Proof: {c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span><WebsiteProvenance lead={l} /></p>
                 {l.quarantined_at
@@ -1704,7 +1722,7 @@ export default function LeadsClient() {
             {l.timing_note && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-note">Researched opportunity - {l.timing_note}</p>}
             <span className="text-gray-500 text-xs mr-3">{l.confidence === null ? (l.human_confirmed_at ? quoteNote(l.source_check?.quote_match).confirmed : 'not verified') : `confidence ${l.confidence}`}{`, ${leadCardDateLine(l)}`}</span>
             {l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && (
-              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${reviewLabel(l.human_confirmed_from) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
+              <button onClick={() => withdrawConfirm(l.id)} className="text-gray-600 hover:text-red-400 text-xs mr-3" title={l.human_confirmed_from ? `Was in review: ${reviewLabel(l.human_confirmed_from, l.source_kind) ?? l.human_confirmed_from}` : undefined}>withdraw confirmation</button>
             )}
             <a className="underline text-[#111] text-xs" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">source</a>
             <DiscoveredVia l={l} />
@@ -1770,12 +1788,13 @@ export default function LeadsClient() {
             {rows.map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <ReviewCompanyWebsite lead={l} />
-                {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} /><PublishedEmailProvenance lead={l} /></div>}
+                {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} />{part === 'review' && <PublishedEmailProvenance lead={l} />}</div>}
+                {part === 'research' && !l.quarantined_at && <ResearchPublishedEmail lead={l} />}
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Reported event: ${l.signal}`}</div>{hiringTimingLine(l.signal, l.signal_kind) && <div className="text-gray-400 text-xs" data-testid="hiring-not-buying">{hiringTimingLine(l.signal, l.signal_kind)}</div>}
-                <span className="text-[#333] text-xs mr-3">{reviewTimingCopy(unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified'), l.timing_note)}</span>
+                <span className="text-[#333] text-xs mr-3">{reviewTimingCopy(unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : (reviewLabel(l.review_reason, l.source_kind) ?? 'Not verified'), l.timing_note)}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 <DiscoveredVia l={l} />
                 {/* #1036: the buyer's work email does not wait for the review (lib/people/work-email-review-lane.ts): same targets, same lookup. */}
@@ -1791,12 +1810,16 @@ export default function LeadsClient() {
                   <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}&quot;{l.evidence_excerpt}&quot;</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
-                {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
+                {(() => {
+                  const a = reviewAction(l)
+                  const showAction = !unconfirmedIds.has(l.id) &&
+                    (part === 'review' || a.label === 'Keep as research' || a.label === 'Keep this signal')
+                  return <div className="mt-3" data-testid="review-actions">
                   <div className="flex flex-wrap gap-2">
                     <a className="btn-ghost text-xs px-3 py-1.5" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">Open source</a>
-                    {!unconfirmedIds.has(l.id) && <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>}
+                    {showAction && <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>}
                   </div>
-                  {!unconfirmedIds.has(l.id) && <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>}
+                  {showAction && <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>}
                 </div> })()}
               </div>
             ))}

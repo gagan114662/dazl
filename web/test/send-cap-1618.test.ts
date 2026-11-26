@@ -97,10 +97,15 @@ test('#1618 the send itself checks the same cap, and the page says how many were
   const service = src('lib/outreach/service.ts')
   // a person's click: age cap per Toronto day; an automated caller (it passes authorize): the fixed cap over a rolling 24 hours
   assert.match(service, /if \(d\.authorize \? accountSendCount\(db, tenantId, nowS\(d\)\) > DAILY_CAP : sentToday\(db, tenantId, nowS\(d\)\) > manualSendCap\(db, tenantId, nowS\(d\)\)\) release\('daily_cap'\)/)
-  assert.match(src('app/api/outreach/[id]/route.ts'), /e\.code === 'daily_cap' && tenantId \? \{ cap: sendCapToday\(getScanDb\(\), tenantId\)\.cap \}/)
+  assert.match(src('app/api/outreach/[id]/route.ts'), /e\.code === 'daily_cap' && tenantId \? \{ cap: sendCapToday\(getScanDb\(\), tenantId\)\.cap, resets_at: sendDayStart\(Math\.floor\(Date\.now\(\) \/ 1000\)\) \+ 86400 \}/)
   const page = src('app/app/outreach/outreach-client.tsx')
-  assert.match(page, /`Sent \$\{cap\} today, more tomorrow to keep your Gmail safe\.`/)
-  assert.match(page, /j\.error === 'daily_cap' && Number\.isInteger\(j\.cap\) \? sendCapNote\(j\.cap\)/)
+  // #1805: the note is the shared builder's, fed the cap and the reset instant the route returned;
+  // the copy never promises the rest send themselves (a refused send returns to approved).
+  assert.match(page, /dailyCapMessage\(cap, resetsAt, Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone\)/)
+  assert.match(page, /j\.error === 'daily_cap' && Number\.isInteger\(j\.cap\) \? sendCapNote\(j\.cap, Number\.isInteger\(j\.resets_at\) \? j\.resets_at : null\)/)
+  assert.doesNotMatch(page, /Sent \$\{cap\} today, more tomorrow/)
+  assert.match(src('lib/outreach/send-cap-copy.ts'), /You can send the rest after midnight\./)
+  assert.doesNotMatch(src('lib/outreach/send-cap-copy.ts'), /go out|9:00 AM/)
   assert.doesNotMatch(page, /Daily sending limit reached/)
   // Settings shows the same cap and the same day's count, not a fixed 20 over 24 hours
   assert.match(src('app/api/outreach/settings/route.ts'), /daily_cap: today\.cap, sent_today: today\.sent_today,/)

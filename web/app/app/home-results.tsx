@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
 import { holdWords, homeWindowHeading, homeWindowScope, latestLeadsCount } from '@/lib/outreach/hold-words'
-import { signalLabel, bySignalFootnote } from '@/lib/outreach/signal-label'
+import { signalLabel } from '@/lib/outreach/signal-label'
 
 const REPLY_WORD: Record<string, string> = { positive: 'Interested', negative: 'Not interested', other: 'Replied', opt_out: 'Opted out', uncertain: 'Replied' }
 const day = (s: number) => new Date(s * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
@@ -85,7 +85,9 @@ export default function HomeResultsPanel() {
           <table className="w-full text-sm" data-testid="by-signal"><caption className="sr-only">Leads, contacted and replied in the last {r.window_days} days by signal type, or the source of leads with no graded type</caption><thead><tr className="text-left text-[var(--ink-3)]"><th scope="col" className="font-normal pr-3">Signal or source</th><th scope="col" className="font-normal pr-3 text-right">Leads</th><th scope="col" className="font-normal pr-3 text-right">Contacted</th><th scope="col" className="font-normal text-right">Replied</th></tr></thead>
             <tbody>{r.by_signal.map(s => <tr key={s.signal} className="border-t border-black/5"><th scope="row" className="pr-3 py-1 text-left font-normal">{signalLabel(s.signal)}</th><td className="pr-3 text-right tabular-nums">{s.leads}</td><td className="pr-3 text-right tabular-nums">{s.contacted}</td><td className="text-right tabular-nums">{s.replied === null ? <><span aria-hidden="true">-</span><span className="sr-only">unknown</span></> : s.replied}</td></tr>)}</tbody>
           </table>
-          <p className="text-xs text-[var(--ink-3)] mt-2" data-testid="by-signal-companies">{bySignalFootnote(r.tiles.leads, r.companies, r.unnamed_leads)}</p></div>}
+          <p className="text-xs text-[var(--ink-3)] mt-2" data-testid="by-signal-companies">{`${r.tiles.leads} ${r.tiles.leads === 1 ? 'lead' : 'leads'} from ${r.companies} ${r.companies === 1 ? 'company' : 'companies'}`}
+            {r.unnamed_leads > 0 && `; ${r.unnamed_leads} without a company name`}
+            {ready && ready !== 'failed' && `. ${ready.judged} ${ready.judged === 1 ? 'company' : 'companies'} checked${ready.capped ? ' so far' : ''}.`}</p></div>}
       </>}
     </section>)
 }

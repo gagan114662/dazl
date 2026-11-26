@@ -31,7 +31,7 @@ test('seven steps in order; all done -> complete; sources name only what can run
 test('a new account: one fix per step it can act on; later steps wait without a button', () => {
   const i: ReadinessInput = { ...all, profile: { website: 'https://brightsmile.example', buyer: null }, usage: { has_key: false }, keys: [], outreach: { ...all.outreach, gmail: null }, jobs: [], totals: { searches: 0, finished: 0 }, campaigns: [], messages: [] }
   assert.deepEqual(st(i), [
-    'profile:todo*>Build profile@/app?setup=brain', 'search:todo>Add key@/app/settings#model-key', 'play:todo>Run a search@/app/leads',
+    'profile:todo*>Build profile@/app?setup=brain', 'search:todo>See your plan@/app/settings#plan', 'play:todo>Run a search@/app/leads',
     'qualified:todo', 'contact:todo', 'draft:todo', 'sender:todo>Connect@/app/settings#gmail'])
   assert.equal(readyComplete(readyItems(i)), false)
   assert.equal(st({ ...i, profile: { sells: 'x', buyer: null } })[0], 'profile:todo*>Add website@/app?setup=site')
@@ -55,10 +55,10 @@ test('contact then draft: each fix opens the latest search\'s leads', () => {
   assert.equal(st({ ...all, campaigns: [camp({ you: 1 })] })[3], 'qualified:done', 'a lead you confirmed counts')
 })
 
-test('a running first search links to its live view; free searches count as a working key; a rejected key is Replace key', () => {
+test('a running first search links to its live view; free searches count as working; a saved-key error reads unknown, never a key ask (#1703)', () => {
   assert.equal(st({ ...all, jobs: [job('r1', 'running')], totals: { searches: 1, finished: 0 }, campaigns: [] })[2], 'play:todo*>Watch it live@/app/leads?job_id=r1')
   assert.equal(st({ ...all, usage: { has_key: false, trial: { funded: true, remaining: 2 } }, keys: [] })[1], 'search:done')
-  assert.equal(st({ ...all, rejection: { error: 'key_rejected' } })[1], 'search:todo*>Replace key@/app/settings#model-key')
+  assert.equal(st({ ...all, rejection: { error: 'key_rejected' } })[1], 'search:unknown', 'a key error is not ready, and nobody is sent to a key form (#1703)')
 })
 
 test('failed or capped reads are "could not check": no button, never a tick, card kept up', () => {
@@ -146,7 +146,7 @@ test('a complete manual profile (sells + buyer, no website) completes the busine
 
 test('manual profile: search-can-run stays a separate step when no key/trial is available', () => {
   const i: ReadinessInput = { ...all, profile: { sells: 'x', buyer: { summary: 'dental practices', who: [] } }, usage: { has_key: false }, keys: [], jobs: [], totals: { searches: 0, finished: 0 }, campaigns: [], messages: [] }
-  assert.deepEqual(st(i).slice(0, 3), ['profile:done', 'search:todo*>Add key@/app/settings#model-key', 'play:todo>Run a search@/app/leads'])
+  assert.deepEqual(st(i).slice(0, 3), ['profile:done', 'search:todo*>See your plan@/app/settings#plan', 'play:todo>Run a search@/app/leads'])
   assert.equal(readyComplete(readyItems(i)), false)
 })
 

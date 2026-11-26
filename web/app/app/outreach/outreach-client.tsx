@@ -7,12 +7,14 @@ import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
 import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
+import { dailyCapMessage } from '@/lib/outreach/send-cap-copy'
 import Caveat from '@/app/app/caveat'
 
 interface Msg { lead_id: string; send_footer?: string | null; currentness_held?: boolean; provenance?: OutreachProvenance | null; id: string; to_email: string; subject: string; body: string; status: string; error: string | null; sent_at: number | null; test?: number; evidence_state?: 'machine' | 'human' | 'unverified' }
 
-// #1618: said when the day's cap is reached. The count starts again at midnight Toronto time.
-const sendCapNote = (cap: number) => `Sent ${cap} today, more tomorrow to keep your Gmail safe.`
+// #1805: said when the day's cap is reached — the shared builder, with the reset time the route
+// returns, in the reader's own timezone.
+const sendCapNote = (cap: number, resetsAt: number | null) => dailyCapMessage(cap, resetsAt, Intl.DateTimeFormat().resolvedOptions().timeZone)
 const ERR: Record<string, string> = {
   not_sales_contact: 'The published address is for recruitment, support, privacy or another restricted purpose. Saved words remain unchanged; approval and sending are blocked.',
   sender_identity_missing: 'Add your name and mailing address in the form at the top of this page first.',
@@ -90,7 +92,7 @@ export default function OutreachClient() {
     setNote('')
     const r = await fetch(`/api/outreach/${id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }) })
     const j = await r.json()
-    if (!r.ok) setNote(j.error === 'daily_cap' && Number.isInteger(j.cap) ? sendCapNote(j.cap) : ERR[j.error] || 'That did not work')
+    if (!r.ok) setNote(j.error === 'daily_cap' && Number.isInteger(j.cap) ? sendCapNote(j.cap, Number.isInteger(j.resets_at) ? j.resets_at : null) : ERR[j.error] || 'That did not work')
     else if (j.result === 'uncertain') setNote('Gmail did not confirm the send. Check your Sent folder, then choose whether it went out.')
     else if (j.result === 'test_sent') setNote(`Test sent to ${j.to} — the exact email, with the footer and unsubscribe link as the prospect would get them. This draft is unchanged.`)
     void load()

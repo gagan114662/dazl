@@ -35,6 +35,7 @@ export interface DiscoveredLead {
   signal_date: string | null        // YYYY-MM-DD as printed on the proof page, or null
   evidence_url: string              // the page that shows the signal
   evidence_quote: string | null     // the sentence on that page that states the signal, word for word
+  alternate_evidence?: { url: string; quote: string; date: string | null }
   person: string | null
   title: string | null
   person_source_url: string | null  // the page that names the person
@@ -62,6 +63,7 @@ How to work:
 - evidence_url must be a page you opened or one that appeared in your search results, and the company's name must be on it.
 - evidence_quote is the sentence on the proof page that states the event itself, copied word for word, 300 characters at most. A job posting usually has no such sentence: there, evidence_quote is the posting's own title line exactly as the page prints it (the role, with the place when it stands on the same line), never a sentence of your own such as "X is hiring a Y". A line that only describes the company (its services, its address, its opening hours) is not a quote for the event. Write signal as one short line that says what that sentence says, keeping the sentence's own words for what happened and its numbers and names. Leave out of signal any detail the proof page does not state.
 - The proof page must be about this one company: a single job posting, one news item, a press release, the company's own page. A search-results page, a job-board listing or a directory that shows many companies is not proof, even when the company appears in it. When a listing page shows a promising company, open that company's own posting or careers page and use that as the proof; if you cannot reach one, leave the company out.
+- For hiring, prefer a readable employer careers page or the employer's own posting. If a job board requires sign-in, blocks the read, or returns no posting text, use your existing searches and reads to open a source that proves the same opening. Prefer the employer's own page, then another readable page about the same opening. Cite only text actually read. If keeping a job-board citation and you also read an alternative, return alternate_evidence with its URL, its own literal quote and its own printed event date (or null). Otherwise set alternate_evidence to null.
 - Prefer signals from the last 90 days unless the request gives its own time window. Skip anything clearly older.
 - Every qualifier in the request is a requirement, not a hint: "first" (a first sales hire means no sales team yet), "new", a funding stage, a size, an industry, a place. When the page shows the company does not meet one (it already has a sales team, it is a different industry), it is not a lead: leave it out.
 - Then find the person the seller should contact at that company: look at the proof page first, then the company's own team, about or contact page. Give a name and title only when a page prints them. Give the person's own LinkedIn profile address (it contains /in/) only when a page links it or a search result shows it for this name at this company; never build one. If you cannot find a person, leave the person fields null and still return the lead.
@@ -74,7 +76,7 @@ How to work:
 confidence: "high" when the proof page clearly shows the dated signal and the company clearly matches the request; "medium" when one of those is partly unclear; "low" when you are unsure but it is still worth a look.
 
 When you are done, reply with ONLY a JSON object inside <json></json> tags, in this shape:
-<json>{"leads":[{"company":"","domain":null,"signal":"","signal_date":null,"evidence_url":"","evidence_quote":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"email":null,"email_source_url":null,"confidence":"medium","why":""}],"note":null}</json>
+<json>{"leads":[{"company":"","domain":null,"signal":"","signal_date":null,"evidence_url":"","evidence_quote":null,"alternate_evidence":null,"person":null,"title":null,"person_source_url":null,"linkedin_url":null,"email":null,"email_source_url":null,"confidence":"medium","why":""}],"note":null}</json>
 Use "note" for one sentence when you found fewer leads than asked for, saying why.`
 
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '')
@@ -106,8 +108,11 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
     seen.add(key)
     const person = str(l.person, 120) || null
     const linkedin = httpUrl(l.linkedin_url)
+    const alternate = l.alternate_evidence as { url?: unknown; quote?: unknown; date?: unknown } | null | undefined
+    const alternateUrl = httpUrl(alternate?.url), alternateQuote = str(alternate?.quote, 300)
     out.push({
       company, signal, evidence_url, domain: host(l.domain), signal_date: day(l.signal_date), evidence_quote: str(l.evidence_quote, 300) || null,
+      ...(alternateUrl && alternateQuote ? { alternate_evidence: { url: alternateUrl, quote: alternateQuote, date: day(alternate?.date) } } : {}),
       person, title: person ? str(l.title, 150) || null : null, person_source_url: person ? httpUrl(l.person_source_url) : null,
       // a person's own profile only (/in/<name>): a company page is not the person's LinkedIn (#1037)
       linkedin_url: linkedin && /(^|\.)linkedin\.com$/.test(new URL(linkedin).hostname) && /^\/in\/[^/]{2,}\/?$/.test(new URL(linkedin).pathname) ? linkedin : null,
@@ -166,8 +171,8 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
       ...(finalAnswer ? { tool_choice: { type: 'none' as const } } : {}),
       tools: [
-        ...(reservation.allowance > 0 ? [{ type: 'web_search_20260209' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
-        { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
+        ...(reservation.allowance > 0 ? [{ type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: reservation.allowance }] : []),
+        { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: Math.max(1, input.maxFetches ?? MAX_FETCHES), max_content_tokens: 6000 },
       ],
       messages,
     }, { signal: deps.signal }).finalMessage()

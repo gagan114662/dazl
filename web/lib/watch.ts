@@ -13,6 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { countActiveJobs, countActiveJobsStep, queryJobStep } from './scan/store-db.ts'
 import { readHasKey } from './llm/key-store.ts'
 import { readScanQuota } from './plans.ts'
+import { trialQaExempt } from './billing/trial-budget.ts'
 import { scheduledPlayOffer } from './scan/play-offer.ts'
 import { admitTrialRun, isFirstPlayRepeat, isFirstPlayRepeatStep, lockScanAdmission, markTrialJobStep, releaseTrialRun, trialFunder, trialPauseReason, type TrialRun } from './play-funding.ts'
 import { LeaseLost, StaleLeaseWrite } from './shared/lease.ts'
@@ -103,7 +104,7 @@ export async function listWatches(db: Db, userId: string) {
 // an already-active watch is a no-op that keeps its next_run_at.
 export async function watchAction(db: Db, userId: string, id: string, action: 'pause' | 'resume' | 'delete', now = nowS()): Promise<boolean | WatchRefusal> {
   if (action === 'delete') return (await db.run('DELETE FROM watches WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
-  if (action === 'pause') return (await db.run('UPDATE watches SET active = 0 WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
+  if (action === 'pause') return (await db.run('UPDATE watches SET active = 0, paused_reason = NULL WHERE id = ? AND user_id = ?', [id, userId])).changes === 1
   return db.tx(function* (t): TxBody<boolean | WatchRefusal> {
     // lock first, then read the watch, so a concurrent resume of the same or a sibling watch is seen
     if (t.kind === 'pg') yield* t.get("SELECT pg_advisory_xact_lock(hashtextextended('watch_activate:' || ?, 0)) AS x", [userId])
@@ -254,12 +255,35 @@ export async function pullInWeeklyRepeats(db: Db, now: number, fence: Fence = no
   return db.tx(function* (t) { yield* fence(t); return (yield* t.run(PULL_IN_SQL, [now, now, now + DAY_S + 3600, cutoff, PLAY_SKIPPED])).changes })
 }
 
+// Before manual pause cleared its reason, an explicit pause and a scheduler pause could leave the same row.
+async function clearExemptTrialPauseReasons(db: Db, fence: Fence, env: Record<string, string | undefined>) {
+  if (!env.DAZL_TRIAL_QA_EXEMPT?.trim()) return
+  const paused = await db.all<{ id: string; user_id: string; email: string }>(`
+    SELECT w.id, w.user_id, u.email FROM watches w
+    JOIN organizations o ON o.id = w.user_id AND o.kind = 'personal' AND o.created_by = o.id
+    JOIN users u ON u.id = o.id
+    WHERE w.active = 0 AND w.paused_reason = 'trial_used'`)
+  for (const w of paused) {
+    if (!trialQaExempt(w.email, env)) continue
+    await db.tx(function* (t) {
+      yield* fence(t)
+      if (!(yield* isFirstPlayRepeatStep(t, w.user_id, w.id))) return
+      yield* t.run("UPDATE watches SET paused_reason = NULL WHERE id = ? AND user_id = ? AND active = 0 AND paused_reason = 'trial_used'",
+        [w.id, w.user_id])
+    })
+  }
+}
+
 export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; env?: Record<string, string | undefined>; weeklyCutoff?: number } = {}): Promise<{ ran: number; paused: number; skipped: number }> {
   const now = o.now ?? nowS(), fence = o.fence ?? noFence
   try { await pullInWeeklyRepeats(db, now, fence, o.weeklyCutoff) } catch (e) {
     // a failed pull-in leaves those repeats on their old schedule this tick; it never stops the due runs
     if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
     captureError(e, { source: 'worker', where: 'watch:pull-in-weekly-repeats' })
+  }
+  try { await clearExemptTrialPauseReasons(db, fence, o.env ?? process.env) } catch (e) {
+    if (e instanceof LeaseLost || e instanceof StaleLeaseWrite) throw e
+    captureError(e, { source: 'worker', where: 'watch:clear-exempt-pause-reason' })
   }
   const due = await db.all<Watch>('SELECT * FROM watches WHERE active = 1 AND next_run_at <= ? ORDER BY next_run_at, id', [now])
   let ran = 0, paused = 0, skipped = 0
@@ -302,7 +326,7 @@ export async function runDueWatches(db: Db, o: { now?: number; fence?: Fence; en
     let trial: TrialRun | null = null
     if (funder) {
       const a = await admitTrialRun(db, funder, now, o.env)
-      if (!a.ok) { const why = trialPauseReason(a.reason); if (why) await pause(why); continue }
+      if (!a.ok) { const why = trialPauseReason(a.reason, trialQaExempt(funder.email, o.env)); if (why) await pause(why); continue }
       trial = a.run
     }
     let job: string | null = null
