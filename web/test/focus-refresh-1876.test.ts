@@ -118,7 +118,7 @@ test('#1876/#1880 a save during an in-flight read starts a new read, and the new
   }) as unknown as typeof fetch
   try {
     const mount = loadReadinessInput()                    // the shared mount read, still in flight
-    const afterSave = loadReadinessInput({ fresh: true }) // the profile save: a NEW read, never the one in flight
+    const afterSave = loadReadinessInput({ fresh: 1 }) // the profile save: a NEW read, never the one in flight
     releaseOld!()
     const [old, next] = await Promise.all([mount, afterSave])
     assert.equal(hits['/api/settings/profile'], 2, 'the save started a second profile read instead of joining the in-flight one')
@@ -126,5 +126,54 @@ test('#1876/#1880 a save during an in-flight read starts a new read, and the new
     assert.equal((old.input.profile as { business_name?: string }).business_name, 'before the save', 'fixture: the in-flight read was the older one')
   } finally {
     globalThis.fetch = realFetch
+  }
+})
+
+test('#1876/#1880 one focus is one read per endpoint, with both panels subscribing', async () => {
+  const { subscribeFocusRefresh } = await import('../lib/focus-refresh.ts')
+  const { loadReadinessInput } = await import('../app/app/readiness-input.ts')
+  const f = fake()
+  const realFetch = globalThis.fetch
+  const hits: Record<string, number> = {}
+  globalThis.fetch = (async (u: string) => {
+    hits[String(u)] = (hits[String(u)] ?? 0) + 1
+    await new Promise(r => setTimeout(r, 1))
+    return new Response(JSON.stringify({}), { status: 200 })
+  }) as unknown as typeof fetch
+  const read = (epoch: number) => { void loadReadinessInput({ fresh: epoch }) }
+  const offA = subscribeFocusRefresh(read, f)
+  const offB = subscribeFocusRefresh(read, f)
+  try {
+    f.fire('focus'); f.fire('visibilitychange'); f.runTimers()
+    await new Promise(r => setTimeout(r, 60))
+    const urls = Object.keys(hits)
+    assert.equal(urls.length, 9, `nine endpoints read: ${urls.join(', ')}`)
+    for (const u of urls) assert.equal(hits[u], 1, `${u} was read ${hits[u]} times for one focus`)
+  } finally {
+    offA(); offB(); globalThis.fetch = realFetch
+  }
+})
+
+test('#1876/#1880 one save is one read per endpoint, with both panels subscribing', async () => {
+  const { subscribeFocusRefresh } = await import('../lib/focus-refresh.ts')
+  const { loadReadinessInput } = await import('../app/app/readiness-input.ts')
+  const f = fake()
+  const realFetch = globalThis.fetch
+  const hits: Record<string, number> = {}
+  globalThis.fetch = (async (u: string) => {
+    hits[String(u)] = (hits[String(u)] ?? 0) + 1
+    await new Promise(r => setTimeout(r, 1))
+    return new Response(JSON.stringify({}), { status: 200 })
+  }) as unknown as typeof fetch
+  const read = (epoch: number) => { void loadReadinessInput({ fresh: epoch }) }
+  const offA = subscribeFocusRefresh(read, f)
+  const offB = subscribeFocusRefresh(read, f)
+  try {
+    f.fire('profile-updated'); f.runTimers()
+    await new Promise(r => setTimeout(r, 60))
+    for (const [u, n] of Object.entries(hits)) assert.equal(n, 1, `${u} was read ${n} times for one save`)
+    assert.equal(Object.keys(hits).length, 9)
+  } finally {
+    offA(); offB(); globalThis.fetch = realFetch
   }
 })

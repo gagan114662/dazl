@@ -34,11 +34,11 @@ export default function Readiness() {
   // untouched ones keep their empty initial state and a save posts that over the stored profile (data loss).
   const siteDirtyRef = useRef<Record<'website' | 'sells' | 'business_name', boolean>>({ website: false, sells: false, business_name: false })
   const editSite = (k: 'website' | 'sells' | 'business_name', v: string) => { siteDirtyRef.current[k] = true; setSite(cur => ({ ...cur, [k]: v })) }
-  async function load(refreshSite = true, fresh = false) {
+  async function load(refreshSite = true, epoch?: number) {
     // #1471: the plays are GET /api/plays, the same list the Plays page shows; each row's outcome comes from the jobs read
     // #1722: overlapping loads (mount vs wake) apply in start order - a slow earlier read must not revert a newer status.
     const seq = ++loadSeqRef.current
-    const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput({ fresh }), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
+    const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(epoch === undefined ? {} : { fresh: epoch }), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
     const profile = next.profile
     // The form seeds once from a profile read, and only over untouched input: a wake re-read (refreshSite=false)
     // can win the race and never seeds it, so a discarded older read still applies the seed - otherwise the form
@@ -61,12 +61,10 @@ export default function Readiness() {
   }
   useEffect(() => {
     void load()
-    const refresh = () => void load(true, true) // a save starts a new read, never joins one in flight (#1880)
-    window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
     // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
-    // #1876: one shared listener for the page, so a focus refreshes once instead of once per panel and event.
-    const offWake = subscribeFocusRefresh(() => void load(false, true))
-    return () => { window.removeEventListener('profile-updated', refresh); offWake() }
+    // #1876/#1880: one shared listener for the page and one epoch per focus or save, so the panels share that read.
+    const offWake = subscribeFocusRefresh(() => void load(false))
+    return () => { offWake() }
   }, [])
 
   async function saveSite(e: React.FormEvent) {
