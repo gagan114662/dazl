@@ -1,9 +1,11 @@
 import { cookies } from 'next/headers'
+import { connection } from 'next/server'
 import { getSessionUser } from '@/lib/auth-db'
 import { getDb } from '@/lib/db/client'
 import { workspaceStallReasons, WORKSPACE_STALL_COPY } from '@/lib/ops/workspace-stalls'
 
 export default async function WorkspaceStalls() {
+  await connection()
   const token = (await cookies()).get('dazl_session')?.value
   if (!token) return null
   const db = await getDb()

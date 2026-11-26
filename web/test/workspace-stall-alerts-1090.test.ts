@@ -33,11 +33,12 @@ function fixture() {
   return { raw, db, account, progress, alerts, run, reasons, addresses }
 }
 
-test('#1090 reconnect alerts start after an hour, coalesce per workspace for a day and clear after reconnect', async () => {
+test('#1090 reconnect alerts start after an hour, coalesce per workspace for a day and clear without notifying another tenant', async () => {
   const { raw, account, alerts, run, reasons, addresses } = fixture()
   try {
     const tenant = 'mailbox-owner'
     account(tenant)
+    account('another-workspace')
     raw.prepare("INSERT INTO gmail_accounts(tenant_id,email,refresh_ct,status) VALUES(?, 'sender@example.test', 'ct', 'needs_reconnect')").run(tenant)
     assert.deepEqual(await run(NOW), { mail: 0, operator: 0 })
     assert.deepEqual(await reasons(tenant, NOW + HOUR - 1), [])

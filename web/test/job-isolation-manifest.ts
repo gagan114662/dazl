@@ -28,6 +28,7 @@ export const JOBS: JobEntry[] = [
   // #1042: a new account's first play gets its weekly repeat; each finished run of a live weekly play mails its own account
   { id: 'tick:first_play_repeat', worker: 'repeatFirstPlays', isolation: { covered: 'play-repeat-1042.test.ts' } },
   { id: 'tick:play_run_mail', worker: 'sendPlayRunMails', isolation: { covered: 'play-repeat-1042.test.ts' } },
+  { id: 'tick:workspace_stall_alerts', worker: 'sendWorkspaceStallAlerts', isolation: { covered: 'workspace-stall-alerts-1090.test.ts' } },
   // Queue-enqueued kinds (any enqueue( outside lib/queue internals): one entry per kind literal.
   { id: 'queue:scan', worker: 'runJob', isolation: { covered: 'runner.test.ts' } },
   // Global maintenance: no tenant id is taken; the deletion scope is the risk, so the reason and test are required.
