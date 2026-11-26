@@ -206,3 +206,12 @@ test('#1726: terminal no-candidates with a source error keeps the failure view',
   }, true, true)
   assert.equal(html, '')
 })
+
+test('the Leads client with the terminal empty branch has valid JSX', () => {
+  const { diagnostics } = ts.transpileModule(source.getFullText(), {
+    fileName: source.fileName,
+    reportDiagnostics: true,
+    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  })
+  assert.deepEqual(diagnostics?.filter(d => d.category === ts.DiagnosticCategory.Error).map(d => ts.flattenDiagnosticMessageText(d.messageText, ' ')), [])
+})
