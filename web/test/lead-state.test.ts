@@ -208,7 +208,7 @@ test('#1176 reader 2: a lead whose event day is PROVEN and that only the timing 
     assert.equal(l.review_reason, null)
     assert.equal(publishedEmail(l as never), null, 'no confirm control on the card')
   }
-  assert.match(timingHeadline({ timing: 'proof_backed' }), /^Event timing is verified against the cited source\./, 'the card\'s own headline for a proven day')
+  assert.match(timingHeadline({ timing: 'proof_backed' }), /^Event timing is from the cited source\./, 'the card\'s own headline for a proven day')
   // Home's journey for that play: research only (not "a few leads need your eyes"), each row with the new reason, and a hint that matches it
   const j = journey({ profile, jobs: [{ ...job, lead_count: 2 }], leads: PROD, drafts: null })
   assert.equal(j.stage, 'research_only'); assert.equal(j.split?.opportunities.length, 0); assert.equal(j.split?.review.length, 0)

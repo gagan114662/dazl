@@ -52,7 +52,8 @@ test('reason matrix: each gap is named, in rule order', () => {
 test('headline: proof_backed never claims timing unconfirmed, and never claims need', () => {
   const pb = { timing: 'proof_backed' as const, reason: null }
   const h = savedGradeWhy({ why: 'rationale', fit: 4 }, pb)
-  assert.match(h, /^Event timing is verified against the cited source\./)
+  assert.match(h, /^Event timing is from the cited source\./)
+  assert.doesNotMatch(h, /verified/i)
   assert.doesNotMatch(h, /timing (is |are )?unconfirmed/i)
   assert.match(h, /Current need is unconfirmed\./)
   assert.match(h, /historical, not a currentness verdict/)
