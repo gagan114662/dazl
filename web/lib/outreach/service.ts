@@ -7,6 +7,7 @@ import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
+import { composeDraftCopy, DraftCopyError } from './draft-copy.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getMasterKey } from '../secrets.ts'
@@ -449,7 +450,7 @@ export function playOfferRow(db: Database.Database, tenantId: string, leadId: st
 }
 
 function createDraftInner(db: Database.Database, tenantId: string, leadId: string, businessName: string, manual = false): string {
-  const { lead, to, addressUrl, test } = draftChecks(db, tenantId, leadId, manual)
+  const { lead, to, test } = draftChecks(db, tenantId, leadId, manual)
   // What this lead's play sells (lib/scan/play-offer-text.ts draftOffer): the offer reviewed for the play, else the one
   // it was created with, else the tenant's own context: the Memory positioning or, after onboarding only, the profile
   // offer (users.sells), so nobody needs a second hidden form to explain their offer. No default offer is fabricated,
@@ -460,7 +461,13 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const r = draftOffer(play, tenant)
   if (r.refuse) throw new OutreachError(r.refuse)
   const positioning = r.offer ?? ''
-  const t = draftTemplate(lead, businessName, positioning, addressUrl)
+  let t: ReturnType<typeof composeDraftCopy>
+  try {
+    t = composeDraftCopy(lead, businessName, positioning)
+  } catch (error) {
+    if (error instanceof DraftCopyError) throw new OutreachError(error.code)
+    throw error
+  }
   const id = id24()
   try {
     db.prepare('INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, test) VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, tenantId, lead.id, to, t.subject, t.body, test)
