@@ -16,7 +16,7 @@ bothEngines('#1772: Home signal rows and the Leads row total use the same count'
     ['a2', 'Repeated company', null, 'discover'],
     ['a3', 'Other company', 'hiring', 'watch'],
   ]) {
-    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url, signal_kind, source_kind, created_at) VALUES (?, ?, ?, 'Fixture signal', 'https://example.test/proof', ?, ?, ?)", [id, job, company, kind, source, now])
+    await db.run("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url, signal_kind, source_kind, created_at) VALUES (?, ?, ?, 'example.test', 'Fixture signal', 'https://example.test/proof', ?, ?, ?)", [id, job, company, kind, source, now])
   }
 
   const results = await homeResults(db, 'A', now)
@@ -63,13 +63,27 @@ bothEngines('#1772: Home signal rows and the Leads row total use the same count'
     fileName: 'home-signal-footer.tsx',
     compilerOptions: options,
   }).outputText
-  const homeExports: { default?: Parameters<typeof renderToStaticMarkup>[0] } = {}
-  runInNewContext(homeOutput, { exports: homeExports, r: results, bySignalFootnote, require: () => jsxRuntime })
-  assert.ok(homeExports.default)
-  const homeHtml = renderToStaticMarkup(homeExports.default)
-  const homeCount = homeHtml.match(/>(\d+) leads? from \d+ compan[^<]+</)?.[1]
+  // The readiness endpoint groups both names by their shared domain.
+  const readiness = { ready: 0, judged: 1, window_days: 30, capped: false, scans: [] }
+  const checkedSummary = leads.match(/<p[^>]+data-testid="leads-overall-total"[^>]*>[\s\S]+?<\/p>/)?.[0]
+  assert.ok(checkedSummary, 'Leads renders the checked-company total')
+  const checkedOutput = ts.transpileModule(`export default (${checkedSummary})`, {
+    fileName: 'leads-checked.tsx',
+    compilerOptions: options,
+  }).outputText
+  function renderSnippet(output: string, ready: typeof readiness | 'failed' | null) {
+    const exports: { default?: Parameters<typeof renderToStaticMarkup>[0] } = {}
+    runInNewContext(output, { exports, r: results, ready, bySignalFootnote, require: () => jsxRuntime })
+    assert.ok(exports.default)
+    return renderToStaticMarkup(exports.default).replaceAll('<!-- -->', '')
+  }
+  const footerHtml = renderSnippet(homeOutput, readiness)
   const leadsCount = leadsHtml.replaceAll('<!-- -->', '').match(/last 30 days: (\d+) lead rows? found\./)?.[1]
-  assert.equal(homeCount, '3', 'the rendered footer counts all rows, including repeated companies')
-  assert.equal(leadsCount, homeCount, 'Home footer and Leads display the same lead-row count')
+  assert.equal(footerHtml.match(/>(\d+) leads?\b/)?.[1], leadsCount, 'both surfaces show the same lead-row count')
+  const companyCount = renderSnippet(checkedOutput, readiness).match(/(\d+) compan(?:y|ies) checked/)?.[1]
+  assert.equal(companyCount, '1')
+  assert.equal(footerHtml.match(/(\d+) compan(?:y|ies) checked/)?.[1], companyCount, 'Home footer and Leads use the same checked-company total')
+  assert.match(renderSnippet(homeOutput, { ...readiness, capped: true }), /1 company checked so far/)
+  assert.doesNotMatch(renderSnippet(homeOutput, 'failed'), /compan(?:y|ies) checked/)
   assert.match(await renderTotal(new Response(null, { status: 503 })), /Could not load the total number of lead rows\./)
 })
