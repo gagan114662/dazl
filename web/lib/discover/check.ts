@@ -242,10 +242,21 @@ async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<Ch
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
 // moves it), not a day in the future, not one more than a year old.
 // #2004: the day the proof page states in its OWN typed markup, named so the proof can say which field it came from. A hiring signal
-// takes a JobPosting's datePosted; any other signal takes an Article/NewsArticle/BlogPosting's datePublished. dateModified is never read
-// (a template edit moves it), a bare "datePublished" string with no node typing it is not evidence, and the age and future guards apply
-// exactly as they do to a printed day.
-const ARTICLE_TYPES = /^(?:Article|NewsArticle|BlogPosting)$/i
+// takes a JobPosting's datePosted; any other signal takes an Article's datePublished, or that of a subtype of Article. dateModified is
+// never read (a template edit moves it), a bare "datePublished" string with no node typing it is not evidence, and the age and future
+// guards apply exactly as they do to a printed day.
+// schema.org's own hierarchy, in one place, so a subtype counts by what it IS and never by which site publishes it: NewsArticle,
+// BlogPosting, Report, ScholarlyArticle and TechArticle are subtypes of Article; the six news subtypes are subtypes of NewsArticle.
+const SCHEMA_PARENT: Record<string, string> = {
+  NewsArticle: 'Article', BlogPosting: 'Article', Report: 'Article', ScholarlyArticle: 'Article', TechArticle: 'Article',
+  ReportageNewsArticle: 'NewsArticle', AnalysisNewsArticle: 'NewsArticle', OpinionNewsArticle: 'NewsArticle',
+  BackgroundNewsArticle: 'NewsArticle', ReviewNewsArticle: 'NewsArticle', AskPublicNewsArticle: 'NewsArticle',
+}
+const schemaRoot = (type: string): string => {
+  let t = type
+  for (let i = 0; i < 8 && SCHEMA_PARENT[t]; i++) t = SCHEMA_PARENT[t]
+  return t
+}
 export function structuredDay(html: string, now: Date, hiringOnly: boolean): { day: string; field: string } | null {
   let found: { day: string; field: string } | null = null
   const visit = (value: unknown): void => {
@@ -254,7 +265,7 @@ export function structuredDay(html: string, now: Date, hiringOnly: boolean): { d
     if (!value || typeof value !== 'object') return
     const o = value as Record<string, unknown>
     const types = (Array.isArray(o['@type']) ? o['@type'] : [o['@type']]).filter((t): t is string => typeof t === 'string')
-    const type = types.find(t => hiringOnly ? /^JobPosting$/i.test(t) : ARTICLE_TYPES.test(t))
+    const type = types.find(t => schemaRoot(t) === (hiringOnly ? 'JobPosting' : 'Article'))
     const field = hiringOnly ? 'datePosted' : 'datePublished'
     const raw = type ? o[field] : undefined
     if (type && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
@@ -344,28 +355,39 @@ export function profileOnPage(html: string, person: string): string | null {
 async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetchImpl: typeof fetch, timeoutMs: number, now: Date): Promise<CheckedLead> {
   if (c.proof !== 'confirmed') return c
   const needDate = c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
-  if (!needDate && !needProfile) return c
-  let out = c
+  // a day read from the text (relative, or stated) still leaves the typed markup to read: it is the page's own statement, and only it
+  // can be proof (#2004)
+  if (!needDate && !needProfile && c.date_on_page) return c
+  let out = c, fromBoard = false
   // A posting on Greenhouse, Lever, Workable, Ashby or BambooHR carries its day in the board's own API record, with the record's URL as
   // the source. That covers first_published, createdAt, published_on and the board listings; the page/JSON-LD path stays for
   // everything else.
   if (needDate && u) {
     const ats = await atsDate(u, fetchImpl, now)
-    const posted = ats?.date ?? await postingDay(u, fetchImpl, timeoutMs, now)
+    if (ats?.date) { out = { ...out, date: ats.date, date_source: 'page' }; fromBoard = true }
+  }
+  let raw = html
+  const page = async (): Promise<string | null> => {
+    if (raw !== null || !u) return raw
+    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
+    return raw
+  }
+  // The page's own typed markup names the day before any visible-date guess does (#2004): a date read from the text after this would
+  // have to call itself printed, and a typed day is never printed.
+  if (!out.date_on_page && !fromBoard) {
+    const markup = await page(), hiring = isDiscoveryHiringLead(c), typed = markup ? structuredDay(markup, now, hiring) : null
+    if (typed) out = { ...out, date: typed.day, date_source: 'page', date_on_page: true, date_on_page_field: typed.field }
+  }
+  if (!needDate && !needProfile) return out
+  if (needDate && out.date_source !== 'page' && u) {
+    const posted = await postingDay(u, fetchImpl, timeoutMs, now)
     if (posted) out = { ...out, date: posted, date_source: 'page' }
   }
   const stillDate = needDate && out.date_source !== 'page'
   if (!stillDate && !needProfile) return out
-  let raw = html
-  if (raw === null && u) {
-    try { const r = await fetchImpl(u, { redirect: 'follow', signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)), headers: { 'user-agent': 'Mozilla/5.0 (compatible; dazl/1.0; +https://dazl.ai)', accept: 'text/html,application/xhtml+xml' } }); if (r.ok) raw = (await r.text()).slice(0, 1_500_000) } catch { /* nothing more from the page */ }
-  }
+  raw = await page()
   if (!raw) return out
-  if (stillDate) {
-    const hiring = isDiscoveryHiringLead(c), typed = structuredDay(raw, now, hiring)
-    if (typed) out = { ...out, date: typed.day, date_source: 'page', date_on_page: true, date_on_page_field: typed.field }
-    else { const day = embeddedDay(raw, now, hiring); if (day) out = { ...out, date: day, date_source: 'page' } }
-  }
+  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }

@@ -1,6 +1,6 @@
 // #2004: a day the proof page states in its own typed markup is event-date proof - but only when it is the SAME confirmed proof page,
-// only when a typed node names the field (a JobPosting's datePosted for a hiring signal, an Article/NewsArticle/BlogPosting's
-// datePublished for any other), and only through the age and future guards. It is its own proof kind (page_structured), never "printed".
+// only when a typed node names the field (a JobPosting's datePosted for a hiring signal, an Article's datePublished - or a
+// schema.org subtype's - for any other), and only through the age and future guards. It is its own proof kind (page_structured), never "printed".
 // Every page below is a real page, recorded verbatim in fixtures/structured-2004 with its URL and fetch date.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -100,25 +100,63 @@ test('#2004 control: a typed date older than the age guard gives no day (Hosting
   assert.equal(structuredDay(html(r), NOW, false), null)
 })
 
-test('#2004 control: a news subtype nobody typed as Article gives no day (CBC, ReportageNewsArticle)', () => {
-  const r = rec('cbc-ca-news.json')
-  assert.equal(structuredDay(html(r), NOW, false), null)
-})
-
 test('#2004 control: a page with no structured data gives no day', () => {
   assert.equal(structuredDay('<html><body><p>Careers</p></body></html>', NOW, true), null)
 })
 
-// The other page in the run carries the date; the proof page does not. Nothing is borrowed across pages.
+// The other page in the run carries the date; the proof page carries only a WebPage node's datePublished. Nothing is borrowed across pages.
 test('#2004 control: a typed date on a DIFFERENT page than the proof is not this lead\'s day', async () => {
-  const proof = rec('cbc-ca-news.json')   // this page's own markup carries no accepted typed date
-  const other = html(rec('yoast-nl-marketing.json'))
-  assert.ok(other.includes('datePublished'))
-  const checked = await checkLead(leadOf(proof, 'CBC reported on data breaches', 'Data breaches are coming fast and furious'), [], fetchOf(html(proof)), 5_000, NOW)
-  // the legacy reader may still carry a day from the page (unproven); what must not happen is the day counting as proof
+  const r = rec('yoast-nl-marketing.json')
+  const webpage = (JSON.parse(r.blocks[0]) as { '@graph': { '@type': string; datePublished?: string }[] })['@graph']
+    .filter(n => n['@type'] === 'WebPage')
+  assert.ok(webpage.length === 1 && webpage[0].datePublished)
+  const page = `<script type="application/ld+json">${JSON.stringify({ '@context': 'https://schema.org', '@graph': webpage })}</script>\n<p>${r.text}</p>`
+  const checked = await checkLead(leadOf(r, 'Yoast published its November 2026 SEO update recap', 'The November 2026 SEO Update by Yoast recap'), [], fetchOf(page), 5_000, NOW)
+  assert.equal(checked.proof, 'confirmed')
   assert.equal(checked.date_on_page, false)
   assert.equal(checked.date_on_page_field ?? null, null)
   const stored = discoveredLead(checked, NOW.getTime())
   assert.equal(stored.event_date_proof, null)
-  assert.equal(stored.date_status, 'unverified')
+  assert.notEqual(stored.date_status, 'verified')
+})
+
+// Ziggy, #2004: the schema.org SUBTYPES of the allowed types count too, from ONE hierarchy in one place - never a per-site rule.
+// NewsArticle is a subtype of Article; ReportageNewsArticle, AnalysisNewsArticle and the rest are subtypes of NewsArticle.
+const SUBTYPES: [string, string, string, string][] = [
+  ['cbc-ca-news.json', '2026-11-26', 'ReportageNewsArticle.datePublished', 'Canada, news'],
+  ['t3n-de-tech-news.json', '2026-11-26', 'AnalysisNewsArticle.datePublished', 'Germany, tech news'],
+]
+for (const [name, day, field, where] of SUBTYPES) {
+  test(`#2004 subtype (${where}): the page's own typed ${field} is the day`, () => {
+    assert.deepEqual(structuredDay(html(rec(name)), NOW, false), { day, field })
+  })
+}
+
+test('#2004 subtype end to end: the CBC proof page dates the lead through ReportageNewsArticle.datePublished', async () => {
+  const r = rec('cbc-ca-news.json')
+  const quote = 'Data breaches are coming fast and furious'
+  const checked = await checkLead(leadOf(r, 'CBC reported on data breaches', quote), [], fetchOf(html(r)), 5_000, NOW)
+  assert.equal(checked.proof, 'confirmed')
+  assert.equal(checked.date, '2026-11-26')
+  assert.equal(checked.date_on_page, true)
+  assert.equal(checked.date_on_page_field, 'ReportageNewsArticle.datePublished')
+  const stored = discoveredLead(checked, NOW.getTime())
+  assert.equal(stored.event_date_proof, 'page_structured')
+  assert.match(stored.event_date_proof_note ?? '', /ReportageNewsArticle\.datePublished/)
+  assert.equal(eventDayVerified({ event_date: stored.event_date, event_date_proof: stored.event_date_proof, signal: stored.signal }), true)
+})
+
+// Controls: a type outside the Article branch of the hierarchy stays held, however it spells its date. The WebPage node below is the
+// Yoast page's own, verbatim; the Product node is that same recorded node with only its @type changed.
+test('#2004 control: a WebPage with datePublished is not an article', () => {
+  const webpage = (JSON.parse(rec('yoast-nl-marketing.json').blocks[0]) as { '@graph': Record<string, unknown>[] })['@graph']
+    .filter(n => n['@type'] === 'WebPage')
+  assert.equal(webpage.length, 1)
+  assert.ok(webpage[0].datePublished)
+  assert.equal(structuredDay(`<script type="application/ld+json">${JSON.stringify(webpage[0])}</script>`, NOW, false), null)
+})
+
+test('#2004 control: a Product with datePublished is not an article', () => {
+  const node = { '@context': 'https://schema.org', '@type': 'Product', name: 'Widget', datePublished: '2026-11-25T14:14:01+00:00' }
+  assert.equal(structuredDay(`<script type="application/ld+json">${JSON.stringify(node)}</script>`, NOW, false), null)
 })
