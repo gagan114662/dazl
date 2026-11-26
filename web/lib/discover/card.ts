@@ -71,7 +71,12 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   if (person && !isPersonName(person.name)) person = null
   // The contact is the named person's OWN address: not a shared inbox, and carrying their name (dana@, dana.ruiz@, druiz@ ...). Another
   // employee's address stored beside it is not this person's (review of #1596); otherAddress says one was published.
-  const own = (r: Row) => !isGenericInbox(r.value) && !!person && nameBound(r.value!.trim().toLowerCase().split('@')[0], person.name)
+  const own = (r: Row) => {
+    if (!person || isGenericInbox(r.value)) return false
+    const local = r.value!.trim().toLowerCase().split('@')[0]
+    const doctor = /^dr\.?\s/i.test(person.name) || /\b(?:dentist|doctor|dds|dmd|[a-z]*odontist)\b/i.test(person.title ?? '')
+    return nameBound(local, person.name) || (doctor && nameBound(local.replace(/^dr[._-]?/, ''), person.name))
+  }
   const e = mails.find(own)
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
 }
