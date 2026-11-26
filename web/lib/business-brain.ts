@@ -99,6 +99,11 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   const fromRole = !!who[0]
   const ind0 = (ind[0] ?? '').toLowerCase()
   const buyer = who[0] || (ind[0] ? (ind0.endsWith('s') && !ind0.endsWith('ss') ? ind[0] : `${ind0} companies`) : '')
+  // Review on #1850: an affirmative lower bound ("no fewer than ten SDRs", "at least 10 SDRs") is not a denial, and nothing here can
+  // prove a count, so the quantity is dropped before the wording is read: the hire is read, the number is never claimed. The saved text
+  // itself is untouched, so the play still shows the user's own words.
+  const LOWER_BOUND = /\b(?:no\s+(?:fewer|less)\s+than|at\s+least)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a\s+dozen|dozens?\s+of)\s+/gi
+  const read = (x: string) => x.replace(LOWER_BOUND, ' ')
   const HIRING_NOUN = /^(?:slowdown|moratorium|ban|cap|cutbacks?|pullback|restrictions?|drought|embargo|lull|standstill|plans?|budget|freeze|pause)$/i
   const conds = (x: string) => planConditions(compileTargeting(x).root)
   // A word that cannot be part of a role: a function or particle word, or a quantifier or indefinite pronoun that turns the phrase
@@ -123,15 +128,15 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // Every role the plan gives this signal's positive hiring conditions, in plain words ("SDR or salesperson"), never only the first.
   const hiringRoles = (x: string): string[] => {
     if (!english) { const r = judged(x); return r?.kind === 'hiring' && r.role && (!words || roleShape(r.role)) ? [r.role] : [] }
-    const plan = conds(x)
+    const plan = conds(read(x))
     if (!plan.length || plan.some(p => p.cond.kind !== 'hiring')) return []
     const out: string[] = []
     for (const p of plan) {
       if (p.negated) continue
-      const at = x.lastIndexOf(p.cond.text), tail = p.cond.text.replace(/^\s*hir(?:e|es|ing|ed)\b\s*/i, '')
+      const at = read(x).lastIndexOf(p.cond.text), tail = p.cond.text.replace(/^\s*hir(?:e|es|ing|ed)\b\s*/i, '')
       if (at < 0 || !roleShape(tail)) continue
       // what follows the condition may only be more roles joined by and/or: "hiring SDRs? Nope" is not a hire
-      const after = x.trim().slice(at + p.cond.text.length)
+      const after = read(x).trim().slice(at + p.cond.text.length)
       if (!/^[\s.,;:!?]*$/.test(after) && !/^[\s.,;:]*\b(?:and|or)\b\s+[A-Za-z][A-Za-z\s&/-]*$/.test(after)) continue
       const all = conditionRoles(p.cond).join(' or ')
       const role = all.length > 80 ? all.slice(0, 80).replace(/\s+\S*$/, '') : all   // never cut a role mid-word
@@ -143,8 +148,8 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // the whole wording searches for it. The plan says so, so no word list is needed.
   const plainOk = (x: string) => {
     if (!english) { const r = judged(x); return r?.kind === 'hiring' && !r.role }
-    const plan = conds(x)
-    return !hiringRoles(x).length && !readsAsDenial(x) && !plan.some(c => c.negated) && plan.some(c => c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim())
+    const plan = conds(read(x))
+    return !hiringRoles(x).length && !readsAsDenial(read(x)) && !plan.some(c => c.negated) && plan.some(c => c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim())
   }
   const firstPlain = sig.find(plainOk)
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)

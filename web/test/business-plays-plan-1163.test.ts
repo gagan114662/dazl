@@ -64,3 +64,19 @@ test('#1163 the not-a-role words are one multilingual table, and an unread langu
   assert.deepEqual(businessPlays(de, [], { 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs' } }).map(p => p.query), ['Practice owner at companies in Ohio hiring SDRs'])
   assert.deepEqual(businessPlays(de, [], { 'Wir stellen SDRs ein': { kind: 'not_hiring' } }).map(p => p.query), [])
 })
+
+
+// Review on #1850 (CodeRabbit): an affirmative lower bound is not a denial, and its twin must still be one.
+for (const [what, signal, expect] of [
+  ['lower bound, "no fewer than"', 'hired no fewer than ten SDRs', 1],
+  ['lower bound, "at least"', 'hired at least ten SDRs', 1],
+  ['plain shrinking hire', 'hired fewer SDRs', 0],
+  ['no hires at all', 'hired no SDRs', 0],
+  ['a hire put on hold', 'hiring SDRs on hold for now', 0],
+  ['a stopped hire that never stopped', 'never stopped actively hiring SDRs', 1],
+  ['a stopped hire', 'stopped actively hiring SDRs', 0],
+] as const) {
+  test(`#1163 ${what}: "${signal}" makes ${expect ? 'a play' : 'none'}`, () => {
+    assert.equal(plays(signal).length, expect)
+  })
+}
