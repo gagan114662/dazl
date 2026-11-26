@@ -79,6 +79,14 @@ test('#1910 the hiring date ceiling includes UTC day 365 and excludes day 366', 
   }
 })
 
+test('#1910 a relative posting lower bound cannot make a hiring lead Ready', async () => {
+  assert.equal(await readiness(null, '<p>Posted 5+ days ago</p>'), 'research')
+})
+
+test('#1910 an exact relative posting age can make a hiring lead Ready', async () => {
+  assert.equal(await readiness(null, '<p>Posted 5 days ago</p>'), 'ready_email')
+})
+
 test('#1910 dates in a URL or a relative publication or update label are not posting dates', async () => {
   for (const annotation of ['', 'Published 5 days ago', 'Updated 5 days ago']) {
     const checked = await checkLead({ ...lead, evidence_url: `${url}/${day}` }, [],
