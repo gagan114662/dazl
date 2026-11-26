@@ -102,7 +102,8 @@ test('a committed reservation blocks a second tenant while the first request is 
   try {
     await matchReadyApolloBuyer(first, 'tenant-a', 'lead-a', evidence, {
       key: 'fixture-only', scanId: 'scan-a', scanLimit: 2, env,
-      fetchImpl: async () => {
+      fetchImpl: async (_input, init) => {
+        assert.equal(init?.redirect, 'error')
         attempted++
         assert.deepEqual(second.prepare('SELECT lead_id, credit, result FROM apollo_credit_ledger').all(),
           [{ lead_id: 'lead-a', credit: 1, result: 'reserved' }])
