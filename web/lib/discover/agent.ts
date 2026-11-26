@@ -153,7 +153,7 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: user }]
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 0 }
   let text = '', stop = 'unknown', model = DISCOVER_MODEL
-  let retainedLaunch: ReturnType<typeof readLaunchRegion> | undefined
+  let retainedLaunch: ReturnType<typeof readLaunchRegion>
   const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
     const reservation = await searches.reserve(allowance)
@@ -216,8 +216,9 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.BetaContentBlockParam[] })
   }
   const settled = { ...usage, usd: usd(usage) }
-  const launch = stop === 'refusal' ? null : readLaunchRegion(input, text, retainedLaunch)
+  if (stop === 'refusal') return { leads: [], note: 'the model declined this request', usage: settled, stop, model, seen: [...seen.values()] }
+  const launch = readLaunchRegion(input, text, retainedLaunch)
   if (launch && !launch.ok) return { leads: [], seen: [], usage: settled, stop: launch.stop, model, note: launch.note }
-  const parsed = launch ? filterLaunchResults(text, max, launch.places, parseLeads) : { leads: [], note: 'the model declined this request', stop: null }
+  const parsed = launch ? filterLaunchResults(text, max, launch.places, parseLeads) : { ...parseLeads(text, max), stop: null }
   return { ...parsed, usage: settled, stop: parsed.stop ?? stop, model, seen: parsed.stop ? [] : [...seen.values()] }
 }

@@ -54,7 +54,7 @@ export function launchSearchProfile(input: DiscoverInput): DiscoverInput['profil
   return { ...input.profile, where: undefined }
 }
 
-export function readLaunchRegion(input: DiscoverInput, reply: string, retained: LaunchRegion = UNCONFIRMED_RESULT): LaunchRegion {
+export function readLaunchRegion(input: DiscoverInput, reply: string, retained?: LaunchRegion): LaunchRegion | undefined {
   const tagged = /<json>([\s\S]*?)<\/json>/.exec(reply)
   let raw: unknown
   try { raw = JSON.parse(tagged ? tagged[1] : reply) } catch { return retained }

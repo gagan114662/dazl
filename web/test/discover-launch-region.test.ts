@@ -20,7 +20,7 @@ const candidate = (company: string, country: string | null, locationEvidence = c
 type Payload = { model: string; tools?: unknown; messages: unknown; system?: unknown; max_tokens?: number }
 type Place = { text: string; city: string | null; region: string | null; country: string | null }
 
-function provider(places: Place[], leads: ReturnType<typeof candidate>[] = [], searches = 0, pauseWithPlan = false) {
+function provider(places: Place[] | undefined, leads: Omit<ReturnType<typeof candidate>, 'country' | 'location_evidence'>[] = [], searches = 0, pauseWithPlan = false) {
   const requests: Payload[] = []
   const fetchImpl: typeof fetch = async (_input, init) => {
     const payload = JSON.parse(String(init?.body))
@@ -29,7 +29,7 @@ function provider(places: Place[], leads: ReturnType<typeof candidate>[] = [], s
     const plan = { offer: null, buyer_type: 'agencies', industry_code: null, places, signals: [], exclusions: [], language: 'en' }
     if (!payload.tools) return Response.json({ ...reply, model: 'claude-haiku-4-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(plan) }] })
     const paused = pauseWithPlan && requests.length === 1
-    const output = !pauseWithPlan ? { request_plan: plan, leads } : paused ? { request_plan: plan, leads: [] } : { leads }
+    const output = places === undefined ? { leads } : !pauseWithPlan ? { request_plan: plan, leads } : paused ? { request_plan: plan, leads: [] } : { leads }
     const events = [
       { type: 'message_start', message: { ...reply, model: MODEL } },
       { type: 'content_block_start', index: 0, content_block: { type: 'text', text: JSON.stringify(output) } },
@@ -154,6 +154,24 @@ test('SDR in Toronto searches the typed destination and omits saved New York', a
   const rejected = await discoverLeads({ query, profile: { where: ['New York'] } }, { apiKey: 'test', fetch: profileOnly.fetchImpl })
   assert.equal(rejected.stop, 'search_region_unconfirmed')
   assert.deepEqual(rejected.leads, [])
+})
+
+test('a legacy discovery reply without region fields still finds a lead', async () => {
+  const date = new Date().toISOString().slice(0, 10)
+  const proof = 'Cedar Fixture announced that it is opening a second office.'
+  const lead = {
+    company: 'Cedar Fixture', signal: 'Opening a second office', signal_date: date,
+    evidence_url: 'https://fixture.example/announcement', evidence_quote: proof, confidence: 'high',
+  }
+  const { fetchImpl } = provider(undefined, [lead], 1)
+  const fetch: typeof globalThis.fetch = async (url, init) => init?.body
+    ? fetchImpl(url, init)
+    : new Response(`<p>${date} ${proof}</p>`)
+  const result = await runDiscovery({ query: 'Find businesses opening a second office' }, { maxUsd: 1, wantShown: 1 }, {
+    apiKey: 'test', fetch, judge: null, enrich: null,
+  })
+  assert.equal(result.stop, 'end_turn')
+  assert.deepEqual(result.leads.map(lead => lead.company), ['Cedar Fixture'])
 })
 
 test('a final response without a repeated plan uses the complete paused plan', async () => {
