@@ -294,3 +294,54 @@ for (const [alreadyNamed, mailbox] of [[false, 'office'], [false, 'dana.ruiz'], 
     hasPersonalAddress ? ['published on a public page', origin + '/team'] : undefined)
   assert.equal(discoverApprove(contactLead, new Date(Date.now())).ok, hasPersonalAddress)
 })
+
+test('DATES review: the full cited page can prove a dated signal missing from the reader excerpt', async t => {
+  const master = randomBytes(32)
+  process.env.DAZL_MASTER_KEY = master.toString('base64')
+  const db = new Database(':memory:')
+  t.after(() => db.close())
+  migrateAllSqlite(db)
+  saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+  const id = createQueryJob(db, 'T', { query: 'Dental clinics opening a new location', seller: 'Clinic fit-out contractor' })
+  const job = claimKeyedJob(db, id)
+  assert.ok(job)
+
+  const source = 'https://news.example/northwind'
+  const unsupported = 'https://news.example/westfield'
+  const pageDate = '14 October 2026'
+  const canned: DiscoverResult = {
+    leads: [
+      lead({ evidence_url: source, email: 'dana.ruiz@northwind-dental.example', email_source_url: 'https://northwind-dental.example/team' }),
+      lead({ company: 'Westfield Dental', domain: 'westfield-dental.example', evidence_url: unsupported, evidence_quote: 'Westfield Dental will open its second clinic', email: 'dana.ruiz@westfield-dental.example', email_source_url: 'https://westfield-dental.example/team' }),
+    ],
+    seen: [
+      { url: source, title: 'Northwind Dental', page_age: null, text: `Northwind Dental news. Published ${pageDate}.` },
+      { url: unsupported, title: 'Westfield Dental', page_age: null, text: `Westfield Dental news. Published ${pageDate}.` },
+    ],
+    usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 2, requests: 1, usd: 0.04 },
+    stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+  }
+  let first = true
+  const fetchImpl: typeof fetch = async url => {
+    if (String(url) === source) return new Response(`<p>On ${pageDate}, Northwind Dental will open its second clinic downtown.</p>`)
+    if (String(url) === unsupported) return new Response(`<p>Published ${pageDate}. Westfield Dental has updated its privacy notice.</p>`)
+    return new Response(null, { status: 403 })
+  }
+  assert.equal(await runJob(db, job, { master, fetchImpl, discover: true, enrichImpl: null, discoverImpl: async () => {
+    if (!first) return { ...canned, leads: [], seen: [] }
+    first = false
+    return canned
+  } }), 'done')
+
+  const rows = listLeads(db, 'T', id, 50, false) as (Record<string, unknown> & { id: string; company: string })[]
+  const stored = enrichmentsForLeads(db, 'T', rows.map(row => row.id))
+  const proved = rows.find(row => row.company === 'Northwind Dental')!
+  const held = rows.find(row => row.company === 'Westfield Dental')!
+  assert.equal(proved.review_reason, null, 'a source that names the company, proves the signal and prints the date clears review')
+  assert.equal(proved.event_date, '2026-10-14')
+  assert.equal(proved.event_date_proof, 'page_bound')
+  assert.equal(leadHoldReason(db, 'T', proved, stored[proved.id] ?? [], { windowDays: null, timingRequired: false }, new Date()), null)
+  assert.equal(held.review_reason, 'quote_unconfirmed')
+  assert.equal(held.event_date_proof, null, 'a page date does not prove an unsupported signal')
+  assert.equal(leadHoldReason(db, 'T', held, stored[held.id] ?? [], { windowDays: null, timingRequired: false }, new Date()), 'the proof page does not confirm the claimed signal')
+})
