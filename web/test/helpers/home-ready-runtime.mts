@@ -270,3 +270,48 @@ test('#1831 Home and header do not count the unconfirmed-timing row in Leads Res
   assert.equal(result.ready, leads.length - research.length)
   db.close()
 })
+
+test('#2012 a LinkedIn-only buyer is held on Home, Leads, the header and the scan count', async t => {
+  const { db, job, lead, done } = seed()
+  t.after(() => db.close())
+  const id = 'e'.repeat(24)
+  job(id, 'A', 'Dental practices', NOW - 2 * DAY)
+  for (const key of ['profile-only', 'refused-email', 'verified-email']) {
+    const domain = `${key}.example`
+    lead(key, id, { machine: true, date: recent, domain, source: 'discover', buyer: false })
+    db.prepare('UPDATE leads SET intent = 4 WHERE id = ?').run(key)
+    const rows = [
+      ['person', key === 'profile-only' ? 'Dana Ruiz, Owner' : 'Rosa Chen, Operations Director'],
+      key === 'profile-only' ? ['linkedin', 'https://www.linkedin.com/in/dana-ruiz/'] : ['email', `rosa.chen@${domain}`],
+    ]
+    for (const [kind, value] of rows) {
+      addEnrichment(db, 'A', key, { connector: 'discover', kind, value, label: 'published on a public page', source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW })
+    }
+    if (key !== 'profile-only') {
+      const verdict = key === 'verified-email' ? 'accepted' : 'rejected'
+      addEnrichment(db, 'A', key, { connector: 'deliverability', kind: 'deliverability', value: `rosa.chen@${domain}|${verdict}`, label: verdict, source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW })
+    }
+  }
+  done(id)
+  const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(res.status, 200)
+  const payload = await res.json() as { leads: (PreviewLead & { discover_state: string })[]; discover_counts: { ready: number } }
+  const { discoverJobCounts } = await import('../../lib/discover/state-db.ts')
+  const { sqliteDb } = await import('../../lib/db/client.ts')
+  const scan = await discoverJobCounts(sqliteDb(db), 'A', id)
+  const home = await readyGET()
+  assert.equal(home.status, 200)
+  assert.deepEqual({
+    home: (await home.json() as { ready: number }).ready,
+    header: payload.discover_counts.ready,
+    scan: scan?.ready,
+    leads: Object.fromEntries(payload.leads.map(row => [row.id, row.discover_state])),
+    reason: heldReason(payload.leads.find(row => row.id === 'profile-only')!),
+  }, {
+    home: 1,
+    header: 1,
+    scan: 1,
+    leads: { 'profile-only': 'no_contact', 'refused-email': 'no_contact', 'verified-email': 'ready_email' },
+    reason: 'no contact found yet',
+  })
+})
