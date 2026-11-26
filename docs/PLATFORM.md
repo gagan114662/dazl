@@ -406,9 +406,9 @@ Steps, one small PR each. Nothing changes where the rows live until step 5.
 
 The quote, identity and date gates in the scan pipeline do not change in any step. Each step moves storage only.
 
-## Postgres cutover (plan; Instinct decides and deploys)
+## Postgres cutover
 
-Nothing here has been run against production. The tool and the steps are ready for a rehearsal; the switch itself is Instinct's call.
+The production health report is SQLite with Postgres unconfigured. The lane D launch requirement is a single Postgres store for all tenants, followed by isolated load acceptance. Ziggy coordinates the staging and production operators. The rehearsal, production switch and load result each need evidence at the exact build SHA.
 
 **Gate.** `lib/db/pg-port-status.ts` must be empty. A module on the raw SQLite handle keeps reading and writing the SQLite file whatever `DATABASE_URL` says. With the list non-empty, a cutover would split the data between two stores. `scripts/pg-cutover.mts` refuses to copy into Postgres while the list is non-empty, unless `--rehearsal` is passed.
 
@@ -437,33 +437,52 @@ Nothing here has been run against production. The tool and the steps are ready f
 - `rollback --from $DATABASE_URL --to <new.db>` copies Postgres back into a new SQLite file and verifies it. It never writes over an existing file.
 - Exit codes: 0 done or matching, 1 stores differ, 2 usage, 3 refused.
 
-**Cutover steps** (one maintenance window, once the gate is open):
-1. Take a fresh backup of the SQLite file and restore-test it.
-2. Provision Postgres, then run `pg-cutover.mts plan --from <app.db> --to $DATABASE_URL --tenants` and keep the output.
-3. Stop every writer: all app instances, plus `worker/`, `session-worker/` and the Hermes tunnel (the write fence does not cover them).
-4. `pg-cutover.mts copy --from <app.db> --to $DATABASE_URL`: it migrates, copies and verifies.
-5. `pg-cutover.mts verify --from <app.db> --to $DATABASE_URL` must exit 0 ("stores match").
-6. Set `DATABASE_URL` on every instance and start them. `/api/ready` must answer 200 with `store.engine: "pg"`, `migrations.applied` equal to `migrations.shipped`, and `checks.split.ok: true`.
-7. Keep the SQLite file read-only and untouched. Never delete it.
+### Staging rehearsal
 
-**Rollback:**
-- **Before any write lands on Postgres** (the copy failed, verify differs, or readiness fails): stop the instances, unset `DATABASE_URL`, start again. The SQLite file is exactly as it was.
-- **After Postgres has taken writes:**
-  1. Stop every writer.
-  2. `pg-cutover.mts rollback --from $DATABASE_URL --to <new.db>` writes a new, verified SQLite file.
-  3. Point `DB_PATH` at the new file, unset `DATABASE_URL`, and start the instances. `/api/ready` must report `store.engine: "sqlite"`.
-  4. Keep the pre-cutover file as a second copy.
-- Both directions are covered by `test/copy-store.test.ts` and `test/pg-cutover-cli.test.ts`. The CLI test also writes to Postgres after the copy and checks that the rollback carries the write back.
+1. On the approved staging host, create a disposable Postgres 16 target with no production data or credentials. Prepare a synthetic SQLite fixture with at least two tenants, scans and leads, sessions, queue history and the shipped schema. Preserve the fixture and record the exact SHA, database version, and the commands' exit codes.
+2. Run `npm run db:migrate` against the empty rehearsal target and run it again. The migration ledger must be complete and the second run must have no pending migrations. Run the PG schema drift, SQL audit and cutover CLI suites, with Postgres required so a skipped PG test cannot count.
+3. Run the cutover CLI in order: `plan`, `copy --rehearsal`, `verify`, then repeat `copy --rehearsal`. Record per-table counts and checksums, tenant scope counts, duration, and peak disk and memory. Use private logs for any tenant identifiers. Commands below are run from `web/` with Node 22. Set the variables for the synthetic fixture, the disposable target and an unused rollback path. Disable shell tracing and keep any credential-bearing connection string out of logs and shared process listings.
 
-**Still blocking the switch:**
-- 122 modules on the raw SQLite handle (`lib/db/pg-port-status.ts`): the gate. The largest groups:
-  - the scan runner and pipeline (`lib/scan`, yield-owned);
-  - outreach and the send gates (`lib/outreach`);
-  - the leads routes, including `GET /api/leads` (they wait on `lib/scan` and `lib/outreach` storage).
-  - Settings moved in batch 2.
-- Not authorized: provisioning production Postgres, setting `DATABASE_URL`, and the cutover itself (see "Production go/no-go").
-- The write fence is not wired into the app. Writers are stopped by stopping the processes, and the Hermes tunnel and workers must be paused separately.
-- 35 runtime-built SQL statements are not statically checked; the ported ones run on Postgres in tests.
+   ```bash
+   node --experimental-strip-types scripts/pg-cutover.mts plan --from "$REHEARSAL_SQLITE" --to "$REHEARSAL_PG"
+   node --experimental-strip-types scripts/pg-cutover.mts copy --from "$REHEARSAL_SQLITE" --to "$REHEARSAL_PG" --rehearsal
+   node --experimental-strip-types scripts/pg-cutover.mts verify --from "$REHEARSAL_SQLITE" --to "$REHEARSAL_PG"
+   node --experimental-strip-types scripts/pg-cutover.mts copy --from "$REHEARSAL_SQLITE" --to "$REHEARSAL_PG" --rehearsal
+   ```
+
+4. Add one synthetic write in Postgres, run `rollback --from "$REHEARSAL_PG" --to "$REHEARSAL_ROLLBACK_SQLITE"` and verify Postgres against the new SQLite file. Confirm the new write is present and the original SQLite file is unchanged. Also rehearse refusing a different nonempty target. A failed copy or comparison blocks the switch.
+5. A data rehearsal may run with the manifest nonempty; the application rehearsal cannot. Once the manifest is empty, repeat using the exact candidate release with the normal `copy` command. Start staging with the Postgres runtime role. Require `/api/ready` 200, engine `pg`, shipped = applied, and split check green. Through ordinary authenticated routes, prove sign-in, search submission and completion, Leads and Home in both tenant sessions. Probe a known tenant B scan and leads as tenant A and check the owner still sees them. Exercise worker claim/fencing across two processes. Record the rollback drill on this candidate before requesting the production switch.
+
+### Production cutover
+
+1. Obtain the separate approvals below. Confirm the exact staging-proven artifact, migration ledger, runtime and migration roles, connection pool budget across all instances and workers, storage headroom and a maintenance window. Test a fresh SQLite backup restore. Take the definitive, consistent SQLite backup after writes are quiesced, including any committed WAL data.
+2. Drain traffic and stop or fence every writer: all app instances, scheduler/timers, scan workers, `worker/`, `session-worker/` and the Hermes tunnel or external callbacks that can write. Record the active leases, in-flight sends and provider work. Resolve uncertain external side effects before resuming automatic work so a restart cannot replay them.
+3. Run `plan`, then `copy` without `--rehearsal`, then `verify` against the frozen SQLite source and the approved Postgres target. Stop on any unexpected nonempty target, mismatch, nonzero exit or incomplete migration. Retain the immutable, pre-cutover SQLite file and verified backup.
+4. Configure all app and worker processes for the same Postgres store. Start the app behind maintenance routing with background writers paused. Confirm the health build and readiness from every instance: engine `pg`, migrations applied = shipped, zero raw SQLite modules and split check green. Treat any committed smoke write as a post-write rollback boundary.
+5. Run the controlled smoke and isolation checks from the staging checklist. Reopen traffic and enable workers in order only after passing. Monitor pool waits, query errors, queue lag and lease ownership. Record the switch time and report exact SHAs, without customer identifiers or credentials.
+
+### Rollback
+
+- **Before Postgres has accepted application writes:** re-enter maintenance, stop every writer and restore the previous artifact/configuration against the frozen SQLite file. Confirm SQLite readiness and smoke before resuming traffic. A verified migration copy itself is not an application write.
+- **After Postgres has accepted application writes:** close traffic and stop every writer; back up Postgres. Run `rollback --from "$CUTOVER_PG" --to "$NEW_ROLLBACK_SQLITE"` and `verify` the new file against the frozen Postgres store. Reconcile any external sends, billing and uncertain provider work before enabling schedulers. Point `DB_PATH` at the verified new file, remove `DATABASE_URL`, and confirm SQLite readiness and smoke. Keep the original file and both verified backups. A failed reverse copy keeps maintenance in place with Postgres as the authoritative store.
+- Both directions are covered by `test/copy-store.test.ts` and `test/pg-cutover-cli.test.ts`. The CLI test also writes to Postgres after the copy and checks that rollback carries the write back.
+
+### Remaining code and operational gaps
+
+| Gate | Evidence at `3bdde0b8` | Work before switching |
+| --- | --- | --- |
+| Runtime port | `web/lib/db/pg-port-status.ts`: 142 raw SQLite modules; 36 have a nonzero reject count, totaling 74 rejected statements | Port callers off the raw handle even when the reject count is zero. Sequence the work by route and worker dependency (auth and tenant context, scan admission and queue/runner, Leads/Home, outreach and scheduler). Regenerate the manifest through the SQL audit as each module moves. Empty manifest, PG readiness and real PG route tests are all required. |
+| Schema and data | Versioned migrations through 0073; the cutover CLI migrates an empty target and verifies both directions | Run schema drift and copy/rollback against the staging candidate. Confirm the runtime role can use the migrated schema and the copy role can perform its required transactional operations. Keep privileged copy access separate from ordinary app connections. |
+| Write freeze | The write fence is not wired through all writers | Explicitly stop or fence all app and external writers. Prove quiescence before the definitive snapshot and before any rollback. |
+| Load acceptance | `load/app-load.ts` seeds SQLite and injects sessions; its scenario reads Home APIs and scans already marked done | Extend the harness for Postgres, real sign-in, fresh search and an explicit cross-tenant probe before using it as launch evidence. |
+
+### Isolated load acceptance
+
+1. Use the isolated load host and the exact production Postgres artifact, with synthetic data and an independent local Postgres database. The harness must fail closed on SQLite or split readiness in acceptance mode. Keep outbound providers fenced and use deterministic test-only provider responses for the search completion path. Real-provider latency and cost need a separately authorized measurement.
+2. Seed at least 20 independent tenants with distinct canary markers and at least 100 synthetic user identities mapped to those tenants. Give each VU its own authenticated session through `POST /api/auth/signin`, submit a fresh search through `POST /api/scan`, verify its own job reaches the expected terminal state, then visit `/app/leads` and `/app` and check their tenant-scoped APIs. Count auth or setup failures and measure sign-in and search submission separately from queue completion time. Track actual concurrency, distinct tenants/users, terminal jobs and samples per required step. A run missing any phase is incomplete.
+3. Include a positive owner read and a deliberate foreign-ID probe for each tenant against Leads and scan-status. A foreign read must return the expected denial or empty response with zero canary rows; an owner read must return the expected marker. Check all response bodies for foreign markers, including unexpected responses. Keep expected-denial metrics separate from unexpected errors, and fail if any probe is missing or any foreign data appears.
+4. Run the extended `load/app-load.ts` with `LOAD_VUS=100` or higher and `LOAD_TENANTS=20` or higher. Keep the existing thresholds: unexpected errors <1%, correctness >99.9%, zero cross-tenant reads, API p95 <1 s and p99 <3 s, page p95 <2 s. Publish the redacted JSON report with per-route p95/p99, test duration, host size, app process and pool counts, build SHA, backend proof and isolation attempts. The current SQLite/read-only command cannot fulfill this gate.
+5. Record dated acceptance reports for both days required by the launch definition. Keep load results separate from the lead-quality and parity gates.
 
 **Limits:**
 - Each table is read into memory whole, which is fine at today's store size.
@@ -478,7 +497,7 @@ Each item below needs **its own explicit owner authorization**. Merging a step's
 
 Every one of these must hold before cutover:
 - **Full rehearsal:** PG DDL covers all tables (the 12 SQLite-only tables included), and the full rehearsal passes on synthetic data.
-- **All writers paused or fenced:** the app write fence, plus `worker/`, `session-worker/` and the Hermes tunnel, which the fence does not cover.
+- **All writers paused or fenced:** prove the freeze for every app instance, scheduler, worker and external writer.
 - **Backup verified:** a fresh backup, taken and restored by the restore drill.
 - **Data checked after copy:** per-tenant row counts and content checksums, SQLite against PG.
 - **Rollback ready:** a written rollback plan, including how to handle data that diverges if writes landed on PG before rollback. The SQLite file stays read-only and untouched, and is never deleted.
