@@ -39,7 +39,11 @@ const companySite = (domain, person, profile) => [
   { connector: 'sitecrawl', kind: 'domain', value: `${domain}|evidence_own_domain`, label: 'domain-basis-v1:evidence_own_domain', source_url: `https://${domain}/news` },
   { connector: 'sitecrawl', kind: 'person', value: person, label: `sitecrawl-profile-v1: https://www.linkedin.com/in/${profile}`, source_url: `https://${domain}/team/${profile}`, retrieved_at: Math.floor(Date.now() / 1000) },
 ]
-const lead = (id, company, over = {}) => ({ id, name: '', company, contact: null, signal: `${company} opened a second office`, source_url: `https://www.daytondailynews.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'verified', confidence: 90, review_reason: null, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office and is hiring front-desk staff. More detail follows here.`, signals: null, icp_match: null, enrichments: [], events: [], ...over })
+const lead = (id, company, over = {}) => {
+  const source = `https://www.daytondailynews.example/${id.slice(0, 4)}`
+  const contact_context = over.contact ? { excerpt: `For business inquiries, email ${over.contact}`, source_url: source } : null
+  return { id, name: '', company, contact: null, signal: `${company} opened a second office`, source_url: source, contact_context, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'verified', confidence: 90, review_reason: null, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office and is hiring front-desk staff. More detail follows here.`, signals: null, icp_match: null, enrichments: [], events: [], ...over }
+}
 const A = 'a'.repeat(24), C = 'c'.repeat(24), M = 'd'.repeat(24)
 const LEADS = [
   lead(A, 'Bright Dental', { contact: 'hello@brightdental.example', enrichments: companySite('brightdental.example', 'Dana Smith, Practice owner', 'dana-smith-example') }),
@@ -78,7 +82,9 @@ try {
   assert.equal(await cards().count(), 3)
   const bright = card('Bright Dental')
   const t = await bright.textContent()
-  assert.match(t, /Dana Smith, Practice owner/, 'contact name and role')
+  assert.match(await bright.getByTestId('lead-person').innerText(), /Dana Smith\s*·\s*Practice owner/, 'contact name and role')
+  assert.match(t, /hello@brightdental\.example/, 'published address')
+  assert.equal(await bright.getByRole('link', { name: 'Email source', exact: true }).getAttribute('href'), LEADS[0].source_url)
   assert.match(t, /Bright Dental just opened a second Ohio office and is hiring front-desk staff\./); assert.doesNotMatch(t, /More detail follows/, 'one line of why')
   assert.match(t, /daytondailynews\.example · claimed event date 12 Oct 2026/, 'source and date')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isEnabled(), true); assert.equal(await bright.getByRole('button', { name: 'Reject' }).isEnabled(), true)
