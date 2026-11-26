@@ -37,6 +37,10 @@ const nextConfig: NextConfig = {
   },
   turbopack: {
     rules: {
+      '**/next/dist/client/react-client-callbacks/on-recoverable-error.js': {
+        loaders: ['./scripts/next-recoverable-error-loader.cjs'],
+        as: '*.js',
+      },
       "*.css": {
         loaders: ["@tailwindcss/turbopack"],
         as: "*.css",
