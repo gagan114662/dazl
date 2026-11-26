@@ -35,11 +35,8 @@ const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'sta
 for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } catch { await new Promise(r => setTimeout(r, 200)) } }
 
 const now = Math.floor(Date.now() / 1000)
-// #1772 2g's /api/home/results answer: the by-signal footnote (tiles.leads 'N leads from M companies; K without a
-// company name') renders from this response - HomeResultsPanel is a client component and every /api/* call here is
-// stubbed, so the panel never reads the harness database. The numbers behind it (companyKey dedup, unnamed count)
-// come from lib/outreach/home-results.ts and are unit-tested in home-results-1040.test.ts: two names sharing one
-// companyKey, one distinct company, one lead with no company name.
+// The two endpoint fixtures deliberately disagree on distinct companies. The footer's checked
+// count comes from the same readiness response as Leads, while its lead count comes from results.
 const RESULTS2G = { window_days: 30, since: now - 30 * 86400, reply_reading: true, tiles: { leads: 4, contacted: 0, replied: 0, interested: 0 }, by_signal: [{ signal: 'hiring', leads: 4, contacted: 0, replied: 0 }], companies: 2, unnamed_leads: 1,
   latest_leads: [{ id: 'r1', company: 'Dup Inc', signal: 'hiring', job_id: 'a'.repeat(24), created_at: now - 3600 }, { id: 'r2', company: 'Dup Ltd', signal: 'hiring', job_id: 'a'.repeat(24), created_at: now - 3500 }, { id: 'r3', company: 'Solo Co', signal: 'hiring', job_id: 'b'.repeat(24), created_at: now - 3400 }, { id: 'r4', company: 'Unnamed company', signal: 'hiring', job_id: 'b'.repeat(24), created_at: now - 3300 }],
   latest_replies: [] }
@@ -95,6 +92,7 @@ async function open(sc, width, height) {
     if (p === '/api/scan/jobs') return json({ jobs: sc.jobs, totals: { searches: sc.jobs.length, finished: sc.jobs.length } })
     if (p === '/api/scan/latest') return json({ query: sc.jobs[0]?.query ?? null, icp: null, icp_source: null })
     if (p === '/api/leads') return json({ leads: [], hidden_count: 0 })
+    if (p === '/api/home/ready' && sc.results) return json({ ready: 0, judged: 1, window_days: 30, capped: false, scans: [], held: [] })
     if (p === '/api/home/results') return sc.results ? json(sc.results) : json({}, 404)
     if (p.startsWith('/api/campaigns/')) return json({ job: sc.jobs[0], leads: [], messages: [] })
     if (p === '/api/watch') return json({ watches: [] })
@@ -238,14 +236,12 @@ try {
     // untouched website (run 45718519911, ledger on #1722 comment-7177520633). #1836 restores the WHOLE harness -
     // the scenario AND its profile-gate helpers - fixture-corrected from 2ef4e9908: the siteform scene stores an
     // empty business_name, so the required Business name is filled before Save and the POST body asserts all three.
-    // 2g. #1772: the by-signal table's footnote reads '<leads> leads from <companies> companies' and names the
-    // leads with no company name - rendered on the real Home page from the stubbed /api/home/results answer
-    // (RESULTS2G), at both widths.
+    // 2g. The footer keeps lead rows and checked companies separate at both widths.
     ;({ ctx, page, writes } = await open(SCENES.withresults, w, h))
     await card(page).waitFor()
     const foot = page.getByTestId('by-signal-companies')
     await foot.waitFor()
-    assert.equal((await foot.innerText()).trim(), '4 leads from 2 companies; 1 without a company name', `${tag}: the by-signal footnote`)
+    assert.equal((await foot.innerText()).trim(), '4 leads; 1 without a company name. 1 company checked.', `${tag}: the by-signal footnote`)
     if (process.env.SHOTS) { await foot.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, `home-results-1772-${tag}.png`) }) }
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
