@@ -55,7 +55,7 @@ const LEADS = [
   lead('1'.repeat(24), 'Quiet Dental', { contact: 'privacy@quietdental.example' }),
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
   // #1837: the full three-action row (Approve held - no email; Message on LinkedIn; Reject) under a long one-line summary.
-  lead('3'.repeat(24), 'Northgate Dental', { signal: 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter', why: null, enrichments: [{ connector: 'sitecrawl', kind: 'linkedin', value: 'https://www.linkedin.com/in/northgate-owner', label: null, source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }] }),
+  lead('3'.repeat(24), 'Northgate Dental', { signal: 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter', why: null, source_kind: 'discover', enrichments: [{ connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: null, source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }, { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz', label: 'linked from a public page', source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }] }),
 ]
 let outreachMode = 'ok'
 let heldMode = false; const retryCalls = []
