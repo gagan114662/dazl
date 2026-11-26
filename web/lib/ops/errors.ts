@@ -209,8 +209,8 @@ export function outboundRecord(r: ErrorRecord, d: Deployment) {
   }
 }
 
-// Alert hooks. Both are throttled the same way: one alert per fingerprint per window and a global cap per window, so an
-// error loop cannot flood them. Fire and forget, with a timeout. A send the destination refuses (not 2xx) or that cannot
+// Alert hooks have a per-fingerprint limit and a global cap per window. Sentry can also send one report with a
+// validated component stack for that fingerprint in the same window. Fire and forget, with a timeout. A send the destination refuses (not 2xx) or that cannot
 // reach it is said in one plain stderr line (alertNote: never through captureError, which would loop; never the URL, token
 // or DSN, only the HTTP status or "timeout" / "network"), at most once per throttled send (#1088). Each sends the scrubbed
 // record allowlist. Sentry also receives validated React diagnostics when available.
@@ -228,10 +228,11 @@ function throttled(o: AlertOptions, sink: AlertSinkName, send: (r: ErrorRecord, 
   return r => {
     const now = clock()
     if (now - windowStart >= windowMs) { windowStart = now; sentInWindow = 0 }
-    const last = lastSent.get(r.fingerprint)
+    const key = sink === 'sentry' && sentryReact.has(r) ? r.fingerprint + ':with-react' : r.fingerprint
+    const last = lastSent.get(key)
     if (last !== undefined && now - last < windowMs) return
     if (sentInWindow >= max) return
-    lastSent.set(r.fingerprint, now)
+    lastSent.set(key, now)
     sentInWindow++
     if (lastSent.size > 1000) lastSent.delete(lastSent.keys().next().value!)
     const f = o.fetchImpl ?? fetch

@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import ts from 'typescript'
 import { clientReport } from '../lib/client-error-report.ts'
 import { recordClientError } from '../lib/ops/client-errors.ts'
-import { outboundRecord, parseSentryDsn, setErrorSinks, toSentryEnvelope } from '../lib/ops/errors.ts'
+import { makeAlertHook, makeSentryHook, outboundRecord, parseSentryDsn, setErrorSinks, toSentryEnvelope } from '../lib/ops/errors.ts'
 
 const require = createRequire(import.meta.url)
 const fixtureStack = [
@@ -68,4 +68,42 @@ test('#1776 error boundaries render only their public copy', () => {
     assert.match(html, /Reload/)
     assert.doesNotMatch(html, /componentStack|digest|LeadCard|LeadsPage|1971300154|private message|someone@example/)
   }
+})
+
+
+test('#1776 Sentry admits the first component stack after a bare error without regrouping it', async () => {
+  const events: { contexts?: { react: { componentStack: string[] } }; fingerprint: string[] }[] = []
+  const alerts: unknown[] = []
+  const sentry = makeSentryHook({
+    dsn: 'https://test@example.test/12',
+    maxPerWindow: 2,
+    fetchImpl: async (_url, init) => {
+      events.push(JSON.parse(String(init?.body).split('\n')[2]))
+      return new Response(null, { status: 204 })
+    },
+  })
+  const webhook = makeAlertHook({
+    url: 'https://alerts.example.test/hook',
+    fetchImpl: async (_url, init) => {
+      alerts.push(JSON.parse(String(init?.body)))
+      return new Response(null, { status: 204 })
+    },
+  })
+  const restore = setErrorSinks([])
+  try {
+    const report = { kind: 'error', type: 'Error', path: '/app/leads' }
+    const bare = recordClientError(report, {})
+    const enriched = recordClientError({ ...report, componentStack: ['LeadCard'] }, {})
+    const another = recordClientError({ ...report, path: '/app/settings' }, {})
+    assert.ok(bare && bare !== 'invalid' && enriched && enriched !== 'invalid' && another && another !== 'invalid')
+    for (const record of [bare, enriched, enriched, another]) sentry(record)
+    for (const record of [bare, enriched]) webhook(record)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(events.length, 2, 'send both variants once and retain the global limit')
+    assert.deepEqual(events.map(event => event.fingerprint), [[bare.fingerprint], [bare.fingerprint]])
+    assert.equal(events[0].contexts, undefined)
+    assert.deepEqual(events[1].contexts?.react, { componentStack: ['LeadCard'] })
+    assert.equal(alerts.length, 1, 'webhook still deduplicates by the original fingerprint')
+    assert.doesNotMatch(JSON.stringify(alerts), /LeadCard|componentStack/)
+  } finally { restore() }
 })
