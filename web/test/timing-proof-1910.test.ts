@@ -68,7 +68,7 @@ test('#1910 recruiting wording and a job-board source require a posting date', a
 
 test('#1910 the hiring date ceiling includes UTC day 365 and excludes day 366', async () => {
   const today = new Date('2026-11-26T18:00:00Z')
-  for (const [date, expected] of [['2025-11-26', '2025-11-26'], ['2025-11-25', null], ['2026-11-27', null]]) {
+  for (const [date, expected] of [['2025-11-26', '2025-11-26'], ['2025-11-25', null], ['2026-11-27', null]] as const) {
     const checked = await checkLead({ ...lead, signal_date: date }, [],
       htmlResponse(`<p>${opening}</p><p>Posted ${date}</p>`), undefined, today)
     assert.equal(checked.date, expected, date)
