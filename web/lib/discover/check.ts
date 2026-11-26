@@ -257,28 +257,44 @@ const schemaRoot = (type: string): string => {
   for (let i = 0; i < 8 && SCHEMA_PARENT[t]; i++) t = SCHEMA_PARENT[t]
   return t
 }
-export function structuredDay(html: string, now: Date, hiringOnly: boolean): { day: string; field: string } | null {
-  let found: { day: string; field: string } | null = null
+export interface StructuredDay { day: string; field: string; title: string | null; url: string | null; postings: number }
+export function structuredDay(html: string, now: Date, hiringOnly: boolean): StructuredDay | null {
+  let found: StructuredDay | null = null, postings = 0
   const visit = (value: unknown): void => {
-    if (found) return
     if (Array.isArray(value)) { for (const item of value) visit(item); return }
     if (!value || typeof value !== 'object') return
     const o = value as Record<string, unknown>
     const types = (Array.isArray(o['@type']) ? o['@type'] : [o['@type']]).filter((t): t is string => typeof t === 'string')
-    const type = types.find(t => schemaRoot(t) === (hiringOnly ? 'JobPosting' : 'Article'))
+    const posting = types.some(t => schemaRoot(t) === 'JobPosting')
+    if (posting) postings++
+    const type = found ? undefined : types.find(t => schemaRoot(t) === (hiringOnly ? 'JobPosting' : 'Article'))
     const field = hiringOnly ? 'datePosted' : 'datePublished'
     const raw = type ? o[field] : undefined
     if (type && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
       const day = validDay(Date.parse(`${raw.slice(0, 10)}T00:00:00Z`), now)
-      if (day) found = { day, field: `${type}.${field}` }
-      return
+      const page = o.mainEntityOfPage
+      const names = typeof o.url === 'string' ? o.url : page && typeof page === 'object' && typeof (page as Record<string, unknown>)['@id'] === 'string' ? (page as Record<string, unknown>)['@id'] as string : typeof page === 'string' ? page : null
+      if (day) found = { day, field: `${type}.${field}`, title: typeof o.title === 'string' ? o.title : null, url: names, postings: 0 }
     }
     if (o['@graph']) visit(o['@graph'])
   }
   for (const block of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     try { visit(JSON.parse(block[1])) } catch { /* malformed structured data is not date evidence */ }
   }
-  return found
+  return found === null ? null : { ...(found as StructuredDay), postings }
+}
+// A page can carry another posting's markup (a careers index, a related-jobs rail): a JobPosting node dates this lead only when it is the
+// page's only posting and either names this page or states a title the page's own text prints. Anything else is not this posting's day.
+export function datesThisPosting(n: StructuredDay, pageText: string, u: URL | null): boolean {
+  if (n.postings !== 1) return false
+  if (n.url && u) {
+    try {
+      const a = new URL(n.url)
+      if (a.hostname === u.hostname && a.pathname.replace(/\/+$/, '') === u.pathname.replace(/\/+$/, '')) return true
+    } catch { /* an unparseable url is not attribution */ }
+  }
+  const title = (n.title ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
+  return !!title && pageText.toLowerCase().replace(/\s+/g, ' ').includes(title)
 }
 export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
   const posted = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
@@ -376,7 +392,8 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   // have to call itself printed, and a typed day is never printed.
   if (!out.date_on_page && !fromBoard) {
     const markup = await page(), hiring = isDiscoveryHiringLead(c), typed = markup ? structuredDay(markup, now, hiring) : null
-    if (typed) out = { ...out, date: typed.day, date_source: 'page', date_on_page: true, date_on_page_field: typed.field }
+    const own = typed !== null && (!hiring || datesThisPosting(typed, text(markup!), u)) ? typed : null
+    if (own) out = { ...out, date: own.day, date_source: 'page', date_on_page: true, date_on_page_field: own.field }
   }
   if (!needDate && !needProfile) return out
   if (needDate && out.date_source !== 'page' && u) {

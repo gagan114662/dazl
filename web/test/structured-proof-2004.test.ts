@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { checkLead, structuredDay, type CheckedLead } from '../lib/discover/check.ts'
+import { checkLead, datesThisPosting, structuredDay, type CheckedLead } from '../lib/discover/check.ts'
 import type { DiscoveredLead } from '../lib/discover/agent.ts'
 import { discoveredLead } from '../lib/scan/runner.ts'
 import { eventDayVerified } from '../lib/scan/scoreboard.ts'
@@ -30,7 +30,8 @@ for (const [name, hiring, day, field] of DATED) {
   test(`#2004 ${name}: the page's own typed ${field} is the day`, () => {
     const r = rec(name)
     assert.ok(r.url.startsWith('https://') && r.fetched === '2026-11-26', `${name} is a recorded page with its URL and fetch date`)
-    assert.deepEqual(structuredDay(html(r), NOW, hiring), { day, field })
+    const s = structuredDay(html(r), NOW, hiring)
+    assert.deepEqual([s?.day, s?.field], [day, field])
   })
 }
 
@@ -128,7 +129,8 @@ const SUBTYPES: [string, string, string, string][] = [
 ]
 for (const [name, day, field, where] of SUBTYPES) {
   test(`#2004 subtype (${where}): the page's own typed ${field} is the day`, () => {
-    assert.deepEqual(structuredDay(html(rec(name)), NOW, false), { day, field })
+    const s = structuredDay(html(rec(name)), NOW, false)
+    assert.deepEqual([s?.day, s?.field], [day, field])
   })
 }
 
@@ -159,4 +161,28 @@ test('#2004 control: a WebPage with datePublished is not an article', () => {
 test('#2004 control: a Product with datePublished is not an article', () => {
   const node = { '@context': 'https://schema.org', '@type': 'Product', name: 'Widget', datePublished: '2026-11-25T14:14:01+00:00' }
   assert.equal(structuredDay(`<script type="application/ld+json">${JSON.stringify(node)}</script>`, NOW, false), null)
+})
+
+// #2004/#2068: the page's own markup dates this lead only when it describes this posting. A careers index lists many postings; a page
+// can carry another posting's markup in a rail. Either way that markup is not this lead's day.
+test('#2004 a typed posting dates the lead only when it is the page\'s only posting and the page names it', () => {
+  const one = structuredDay(html(rec('yonovo-us-software.json')), NOW, true)!
+  assert.equal(datesThisPosting(one, '', new URL('https://www.yonovo.com/careers/founding-sdr')), true, 'the node names this page')
+  assert.equal(datesThisPosting(one, '', new URL('https://www.yonovo.com/careers')), false, 'another page is not this posting')
+  const untitled = { ...one, url: null, title: null }
+  assert.equal(datesThisPosting(untitled, 'Careers at Yonovo', new URL('https://www.yonovo.com/careers/founding-sdr')), false, 'nothing names the posting')
+  const titled = { ...one, url: null }
+  assert.equal(datesThisPosting(titled, 'Careers: Founding Sales Development Representative (SDR)', new URL('https://www.yonovo.com/careers')), true, 'the page prints its title')
+  assert.equal(datesThisPosting(titled, 'Careers: Bookkeeper', new URL('https://www.yonovo.com/careers')), false, 'a different title is a different posting')
+  assert.equal(datesThisPosting({ ...one, postings: 2 }, '', new URL('https://www.yonovo.com/careers/founding-sdr')), false, 'a list of postings dates none of them')
+})
+
+test('#2004 the page text, not the markup, decides whether its title is printed', async () => {
+  const r = rec('yonovo-us-software.json')
+  const node = JSON.stringify({ '@type': 'JobPosting', title: 'Bookkeeper', datePosted: '2026-10-20' })
+  const page = `<html><body><p>Fern Dental is hiring a dental receptionist in Toronto.</p><script type="application/ld+json">${node}</script></body></html>`
+  const lead = { ...leadOf(r, 'Fern Dental is hiring a dental receptionist in Toronto', 'Fern Dental is hiring a dental receptionist in Toronto'), evidence_url: 'https://ferndental.example/careers/receptionist' }
+  const checked = await checkLead(lead, [], fetchOf(page), 5_000, NOW)
+  assert.equal(checked.date, null, 'markup about another posting dates nothing')
+  assert.equal(checked.date_on_page, false)
 })
