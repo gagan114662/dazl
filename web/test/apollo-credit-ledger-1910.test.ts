@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { matchReadyApolloBuyer, planApolloBuyerMatches, type ApolloBuyerEvidence } from '../lib/enrich/apollo-ready-match.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { reserveApolloLead } from '../lib/enrich/apollo-credit-ledger.ts'
 
 test('#1910 Apollo refuses when off and admits only one lookup per lead across restarts and tenants', async () => {
@@ -28,6 +29,7 @@ test('#1910 Apollo refuses when off and admits only one lookup per lead across r
 
 test('#1910 only an otherwise Ready buyer after a completed empty crawl reaches one Apollo people endpoint', async () => {
   const db = new Database(':memory:')
+  migrateAllSqlite(db)
   const calls: string[] = []
   const buyer: ApolloBuyerEvidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test', dayVerified: true,
     otherwiseReady: true, ownSiteRead: 'none_published' as const }
@@ -62,6 +64,7 @@ test('#1910 only an otherwise Ready buyer after a completed empty crawl reaches 
 
 test('#1910 dry plan counts eligible new requests within both caps without reserving', async () => {
   const db = new Database(':memory:')
+  migrateAllSqlite(db)
   const env = { APOLLO_CREDIT_CAP: '3' }
   const scan = { id: 'planned-scan', limit: 2 }
   const buyer: ApolloBuyerEvidence = {
@@ -92,6 +95,7 @@ test('#1910 a committed reservation blocks a second tenant while the first reque
   const directory = mkdtempSync(join(tmpdir(), 'apollo-in-flight-'))
   const path = join(directory, 'ledger.db')
   const first = new Database(path)
+  migrateAllSqlite(first)
   const second = new Database(path)
   const evidence: ApolloBuyerEvidence = {
     first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
@@ -129,6 +133,7 @@ test('#1910 a committed reservation blocks a second tenant while the first reque
 
 test('#1910 an ambiguous transport error is logged and remains charged against the cap', async () => {
   const db = new Database(':memory:')
+  migrateAllSqlite(db)
   const evidence: ApolloBuyerEvidence = {
     first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
     dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
@@ -154,6 +159,7 @@ test('#1910 an ambiguous transport error is logged and remains charged against t
 
 test('#1910 a production or unset deployment cannot reserve or dispatch an Apollo pilot request', async () => {
   const db = new Database(':memory:')
+  migrateAllSqlite(db)
   const evidence: ApolloBuyerEvidence = {
     first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
     dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
@@ -172,9 +178,29 @@ test('#1910 a production or unset deployment cannot reserve or dispatch an Apoll
 
 test('#1910 the operator cannot configure a cap above the approved pilot ceiling', async () => {
   const db = new Database(':memory:')
+  migrateAllSqlite(db)
   const scan = { id: 'scan', limit: 1 }
   try {
     assert.equal(await reserveApolloLead(db, 'tenant', 'lead', { APOLLO_CREDIT_CAP: '51' }, scan), false)
     assert.equal(await reserveApolloLead(db, 'tenant', 'lead', { APOLLO_CREDIT_CAP: '50' }, scan), true)
+  } finally { db.close() }
+})
+
+test('#1910 workspace credit refusal blocks the pilot before it dispatches or consumes a pilot slot', async () => {
+  const db = new Database(':memory:')
+  migrateAllSqlite(db)
+  const env = { DAZL_ENV: 'staging', APOLLO_CREDIT_CAP: '4', DAZL_APOLLO_CREDITS_DAY: '1' }
+  const buyer: ApolloBuyerEvidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+    dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' }
+  const dispatched: string[] = []
+  const match = (leadId: string) => matchReadyApolloBuyer(db, 'tenant', leadId, buyer, {
+    key: 'fixture-only', scanId: 'scan', scanLimit: 4, env,
+    fetchImpl: async () => { dispatched.push(leadId); return Response.json({ person: null }) },
+  })
+  try {
+    await match('first')
+    assert.equal(await match('refused'), null)
+    assert.deepEqual(dispatched, ['first'])
+    assert.deepEqual(db.prepare('SELECT lead_id FROM apollo_credit_ledger').pluck().all(), ['first'])
   } finally { db.close() }
 })

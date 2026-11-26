@@ -1,11 +1,10 @@
-import type Database from 'better-sqlite3'
-import { enrichmentsForLeads } from '../connectors/store.ts'
+import type { Db } from '../db/client.ts'
 import { discoverContact, discoverProofHold, discoverSite, type DiscoverStateLead } from '../discover/card.ts'
 import { timingOptsFor } from '../outreach/lead-hold.ts'
-import { publishedCandidateFor, splitName } from '../people/email-pattern.ts'
-import { requiredGateHeld } from '../scan/held-state.ts'
+import { selectPublishedCandidate, splitName, type PublishedCandidateRow } from '../people/email-pattern.ts'
+import { requiredGateHeldForJob } from '../scan/held-state.ts'
 import { eventDayVerified, timingUnconfirmedReason } from '../scan/scoreboard.ts'
-import { domainConfirmed } from '../signals/domain-basis.ts'
+import { domainConfirmedDb } from '../signals/domain-basis.ts'
 import type { ApolloBuyerEvidence } from './apollo-ready-match.ts'
 
 type CrawlLead = DiscoverStateLead & {
@@ -17,34 +16,40 @@ type CrawlLead = DiscoverStateLead & {
   confidence: number | null
 }
 
-export function collectApolloScanEvidence(
-  db: Database.Database,
+export async function collectApolloScanEvidence(
+  db: Db,
   tenantId: string,
   scanId: string,
   completedCrawlIds: readonly string[],
   now = new Date(),
-): { leadId: string; evidence: ApolloBuyerEvidence }[] {
-  const job = db.prepare("SELECT query, icp FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'done'")
-    .get(scanId, tenantId) as { query: string | null; icp: string | null } | undefined
+): Promise<{ leadId: string; evidence: ApolloBuyerEvidence }[]> {
+  const job = await db.get<{ query: string | null; icp: string | null }>(
+    "SELECT query, icp FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'done'", [scanId, tenantId])
   if (!job) return []
   const timing = timingOptsFor(job)
-  const readLead = db.prepare("SELECT * FROM leads WHERE id = ? AND scan_job_id = ? AND source_kind = 'discover'")
+  const held = await requiredGateHeldForJob(db, tenantId, scanId)
   const candidates: { leadId: string; evidence: ApolloBuyerEvidence }[] = []
   // Only IDs delivered by the current worker's completed own-site crawl belong here.
   for (const leadId of new Set(completedCrawlIds)) {
-    const lead = readLead.get(leadId, scanId) as CrawlLead | undefined
+    const lead = await db.get<CrawlLead>(
+      "SELECT * FROM leads WHERE id = ? AND scan_job_id = ? AND source_kind = 'discover'", [leadId, scanId])
     if (!lead?.source_url || !lead.signal || lead.confidence == null ||
       !eventDayVerified(lead, { now }) ||
       timingUnconfirmedReason({ ...lead, intent: lead.intent ?? null }, { ...timing, now }) ||
-      discoverProofHold({ ...lead, gate_held: !!requiredGateHeld(db, tenantId, leadId) }, now)) continue
+      discoverProofHold({ ...lead, gate_held: held.has(leadId) }, now)) continue
     const domain = discoverSite(lead.company_domain)
-    if (!domain || !domainConfirmed(db, tenantId, leadId, domain)) continue
-    const enrichments = enrichmentsForLeads(db, tenantId, [leadId])[leadId] ?? []
+    if (!domain || !await domainConfirmedDb(db, tenantId, leadId, domain)) continue
+    const enrichments = await db.all<NonNullable<DiscoverStateLead['enrichments']>[number]>(
+      "SELECT connector, kind, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND kind IN ('person', 'email', 'linkedin')",
+      [tenantId, leadId])
     const buyer = discoverContact({ ...lead, enrichments })?.person
     if (!buyer?.source) continue
     const name = splitName(buyer.name)
-    if (!name || enrichments.some(row => row.kind === 'email') ||
-      publishedCandidateFor(db, tenantId, leadId, buyer.name)) continue
+    if (!name || enrichments.some(row => row.kind === 'email')) continue
+    const published = await db.all<PublishedCandidateRow>(
+      "SELECT person, address, source_url FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'published' AND source_url IS NOT NULL ORDER BY address",
+      [tenantId, leadId])
+    if (selectPublishedCandidate(published, buyer.name)) continue
     candidates.push({ leadId, evidence: { first: name.first, last: name.last, confirmedDomain: domain,
       dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' } })
   }

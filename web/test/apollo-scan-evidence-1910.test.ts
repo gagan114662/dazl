@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { addEnrichment } from '../lib/connectors/store.ts'
+import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { collectApolloScanEvidence } from '../lib/enrich/apollo-scan-evidence.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
 
-test('#1910 Apollo evidence comes only from owned, dated Discovery rows with completed crawl and no published buyer address', () => {
+test('#1910 Apollo evidence comes only from owned, dated Discovery rows with completed crawl and no published buyer address', async () => {
   const db = new Database(':memory:')
   try {
     migrateAllSqlite(db)
@@ -31,9 +32,9 @@ test('#1910 Apollo evidence comes only from owned, dated Discovery rows with com
     db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id IN (?, ?)").run(job, otherJob)
     const ids = ['eligible', 'undated', 'held', 'unconfirmed', 'published', 'foreign', 'eligible']
     const now = new Date('2026-11-26T00:00:00Z')
-    const planned = collectApolloScanEvidence(db, 'tenant', job, ids, now)
+    const planned = await collectApolloScanEvidence(sqliteDb(db), 'tenant', job, ids, now)
     assert.deepEqual(planned.map(row => row.leadId), ['eligible'])
     assert.equal(planned[0]?.evidence.confirmedDomain, host)
-    assert.deepEqual(collectApolloScanEvidence(db, 'other', job, ids, now), [])
+    assert.deepEqual(await collectApolloScanEvidence(sqliteDb(db), 'other', job, ids, now), [])
   } finally { db.close() }
 })

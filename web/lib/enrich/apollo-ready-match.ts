@@ -1,4 +1,5 @@
 import type { DbLike } from '../db/client.ts'
+import { CreditRefused, refundCredits, reserveCredits, settleCredits, type CreditHold } from './credit-pool.ts'
 import { apolloPersonMatch, type ApolloMatch } from './apollo.ts'
 import { planApolloReservations, recordApolloResult, reserveApolloLead } from './apollo-credit-ledger.ts'
 
@@ -43,7 +44,17 @@ export async function matchReadyApolloBuyer(
   const query = buyerQuery(evidence)
   const key = options.key.trim()
   if (!key || !query) return null
-  if (!await reserveApolloLead(db, tenantId, leadId, env, { id: options.scanId, limit: options.scanLimit })) return null
+  let workspaceHold: CreditHold
+  try {
+    workspaceHold = await reserveCredits(db, tenantId, 'apollo', 1, { env })
+  } catch (error) {
+    if (error instanceof CreditRefused) return null
+    throw error
+  }
+  if (!await reserveApolloLead(db, tenantId, leadId, env, { id: options.scanId, limit: options.scanLimit })) {
+    await refundCredits(db, workspaceHold)
+    return null
+  }
   let match: ApolloMatch | null
   try {
     const dispatch = options.fetchImpl ?? fetch
@@ -54,6 +65,7 @@ export async function matchReadyApolloBuyer(
     })
     throw error
   }
+  if (match) await settleCredits(db, workspaceHold, 1)
   await recordApolloResult(db, tenantId, leadId, match ? 'matched' : 'empty')
   return match
 }

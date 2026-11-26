@@ -294,8 +294,11 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
     if (!fn) { out.push(`${rel}:${lineOf(sf, call)} ${name0}`); continue }
     if (rel === PILOT_CALLER && name0 === 'apolloPersonMatch') {
       const hold = pilotGuard(fn, call, pilotImports)
-      if (hold) spend(hold, call)
-      else out.push(`${rel}:${lineOf(sf, call)} ${name0} (missing pilot reservation)`)
+      const workspace = guards(fn, call, vendor, rs)
+      if (hold && workspace.length) {
+        spend(hold, call)
+        spend(nearest(workspace), call)
+      } else out.push(`${rel}:${lineOf(sf, call)} ${name0} (missing pilot or workspace reservation)`)
       continue
     }
     const own = guards(fn, call, vendor, rs)
@@ -388,6 +391,9 @@ test('#849 inventory: the operator pilot requires its own reservation before dis
   const withoutRefusal = source.replace('if (!await reserveApolloLead', 'if (await reserveApolloLead')
   assert.notEqual(withoutRefusal, source)
   assert.equal(unreservedPaidCalls(rel, withoutRefusal).length, 1)
+  const withoutWorkspace = source.replace("workspaceHold = await reserveCredits", "workspaceHold = await untrackedReserve")
+  assert.notEqual(withoutWorkspace, source)
+  assert.equal(unreservedPaidCalls(rel, withoutWorkspace).length, 1)
   const other = "import { reserveApolloLead as reserve } from './apollo-credit-ledger.ts'; await reserve(db, tenant, lead, env, scan)"
   assert.deepEqual(unexpectedCallers([{ rel: 'lib/enrich/other.ts', text: other }]), ['lib/enrich/other.ts'])
 })

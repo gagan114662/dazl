@@ -1346,7 +1346,7 @@ export interface RunDeps {
   // The Claude discovery lane (runDiscoverLane). Default: on, unless DAZL_DISCOVER_LANE=0 (the fenced test harness sets that, so no test
   // reaches the live API by accident). true forces it on whatever the environment says; false forces it off.
   discover?: boolean
-  onApolloEvidence?: (rows: ReturnType<typeof collectApolloScanEvidence>) => void
+  onApolloEvidence?: (rows: Awaited<ReturnType<typeof collectApolloScanEvidence>>) => void
   discoverImpl?: typeof discoverLeads   // the loop itself, replaceable in tests
   enrichImpl?: typeof enrichLeads | null   // its second pass for people and websites; null switches it off
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
@@ -1647,7 +1647,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
           }
         }
         if (onApolloEvidence) {
-          try { onApolloEvidence(collectApolloScanEvidence(db, job.user_id, job.id, completedCrawlIds, new Date(now * 1000))) }
+          try { onApolloEvidence(await collectApolloScanEvidence(sqliteDb(db), job.user_id, job.id, completedCrawlIds, new Date(now * 1000))) }
           catch { /* evidence observation never changes the scan result */ }
         }
       }
