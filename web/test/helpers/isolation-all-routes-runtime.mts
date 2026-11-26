@@ -295,6 +295,7 @@ test("every id-taking route: tenant B with tenant A's id is refused (404/403), A
     for (const k of MARK) if (text.includes(k)) failures.push(`${label(c)}: response leaks A's ${k}`)
     if (LEAD_EVIDENCE_READS.has(c.route)) {
       const missing = await c.call({ ...f, review: hex() })
+      assert.ok(missing, `${label(c)}: missing lead returned a response`)
       assert.equal(res.status, 404, `${label(c)}: foreign lead`)
       assert.equal(missing.status, 404, `${label(c)}: missing lead`)
       assert.equal(res.headers.get('content-type'), missing.headers.get('content-type'), label(c))
