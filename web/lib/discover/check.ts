@@ -75,9 +75,13 @@ export function signalWordsIn(signal: string, company: string, textToSearch: str
 // ("Opening a second clinic at 14 Main Street, open Monday to Friday" on address-and-hours text); judging only a first statement let a
 // place stand in for it ("... clinic Toronto Ontario, opening a second clinic." on the same text). A line that says more than its proof
 // does goes to the user's review, with the words its proof lacks (claim_lacks).
+// Polarity and cessation cues make word overlap inconclusive. Only the entailment judge can
+// decide whether a quoted statement with one of these cues actually supports the signal.
+const POLARITY_CUE = /(?:^| )(?:not|no|never|without|stopped|ceased|ended|paused|halted|pas|jamais|nunca|sin|nao|nicht)(?= |$)/
 export function statesSignal(signal: string, company: string, textToSearch: string): boolean {
   const { want, missing } = signalWordsIn(signal, company, textToSearch)
-  return want > 0 && missing.length === 0
+  return want > 0 && missing.length === 0 &&
+    !POLARITY_CUE.test(fold(textToSearch)) && !/n['’]t\b/i.test(textToSearch)
 }
 // When the quoted evidence IS on a read page and its statements do not carry every word of the signal line, the words cannot settle
 // it either way. Measured on staging, 2026-11-23 (commit 96111ddd, two real searches, 15 leads): the every-word rule alone showed 1
