@@ -9,7 +9,8 @@ import { migrateConnectors } from '../lib/connectors/store.ts'
 import { migratePlans } from '../lib/plans.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { saveSettings, createDraft } from '../lib/outreach/service.ts'
-import { migrateSpendPools, periodOf } from '../lib/llm/spend-pool.ts'
+import { migrateSpendPools, OWNER_POOL_LIMIT_REASON, periodOf } from '../lib/llm/spend-pool.ts'
+import { SpendRefused } from '../lib/llm/spend-guard.ts'
 import { polishDraft, polishDraftWithWords } from '../lib/outreach/draft-llm.ts'
 import { migrateMemory, saveMemory } from '../lib/memory.ts'
 import { anthropicProvider, openaiProvider, type Provider } from '../lib/llm/provider.ts'
@@ -304,8 +305,21 @@ test('#1934 platform rewrite at the workspace cap refuses before calling or char
   const draft = db.prepare('SELECT subject, body, words_rev FROM outreach_messages WHERE id = ?')
   const initial = draft.get(id)
   let calls = 0
+  const refusals: string[] = []
+  const provider: Provider = {
+    ...anthropicProvider,
+    completeDetailed: async (...args) => {
+      try {
+        return await anthropicProvider.completeDetailed!(...args)
+      } catch (error) {
+        if (error instanceof SpendRefused) refusals.push(error.reason)
+        throw error
+      }
+    },
+  }
   const fetchImpl: typeof fetch = async () => { calls++; throw new Error('unexpected provider call') }
-  assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, fetchImpl }), { rewritten: false, reason: 'spend_limit' })
+  assert.deepEqual(await polishDraft(db, 'A', id, 'Dazl', { master, fetchImpl, providers: { anthropic: provider } }), { rewritten: false, reason: 'spend_limit' })
+  assert.deepEqual(refusals, [OWNER_POOL_LIMIT_REASON])
   assert.equal(calls, 0)
   assert.deepEqual(pool.all(), before)
   assert.deepEqual(draft.get(id), initial)
