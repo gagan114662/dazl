@@ -1,6 +1,7 @@
 'use client'
 import { discoverContact, discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
+import type { HomeReady } from '@/lib/outreach/home-ready'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
@@ -8,6 +9,7 @@ import { FieldSource, PublishedEmailProvenance, WebsiteProvenance } from './fiel
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
+import { zeroResultReason } from '@/lib/zero-result-reason'
 import TrialRefusalNotice, { savePendingSearch, takeGoogleLinkResult, takePendingSearch } from '../trial-refusal-notice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { providerIssueText, type ProviderIssue } from '@/lib/scan/provider-issue-text'
@@ -200,6 +202,46 @@ function SourceAvailability({ core, social, keyState }: { core: SourceRow[] | nu
   )
 }
 
+type ZeroResultScan = {
+  status: string
+  lead_count?: number | null
+  query?: string | null
+  error?: string | null
+  quality?: { candidates: number; dropped: number | null } | null
+  run_report?: {
+    discover?: { stop: string; searches: number; returned?: number } | null
+    native_web_search?: { searches: number | null; max_searches: number } | null
+    stop?: { code: string } | null
+  }[] | null
+}
+
+function renderZeroResultReason(scan: ZeroResultScan | null) {
+  if (scan?.status !== 'done' || scan.lead_count !== 0) return null
+  // The scan's trial-stop notice already explains a monetary limit.
+  if (scan.error === 'trial_budget_reached') return null
+  const report = scan.run_report?.at(-1)
+  const discover = report?.discover
+  const nativeSearch = report?.native_web_search
+  const discoveryStop = discover?.stop === 'end_turn' ? null : discover?.stop
+  const { reason, nextStep, action } = zeroResultReason({
+    stop: discoveryStop ?? report?.stop?.code ?? scan.error ?? null,
+    query: scan.query ?? '',
+    offer: statedOffer(scan.query),
+    searchesUsed: discover?.searches ?? nativeSearch?.searches ?? 0,
+    // Only native search reports record a numeric allowance. An unknown limit cannot establish exhaustion.
+    searchAllowance: discover ? Infinity : nativeSearch?.max_searches ?? Infinity,
+    candidates: scan.quality?.candidates ?? discover?.returned ?? 0,
+    rejected: scan.quality?.dropped ?? 0,
+  })
+  return (
+    <div className="p-10 text-center text-sm text-gray-500" data-testid="zero-result-reason">
+      <p>{reason}</p>
+      <p className="mt-1">{nextStep}</p>
+      {action && <a href={action.href} className="btn-ghost btn-sm mt-3">{action.label}</a>}
+    </div>
+  )
+}
+
 export default function LeadsClient() {
   const [query, setQuery] = useState('')
   // #1095: a free-trial refusal shown as words with the way forward, and the result of a Google link started here.
@@ -253,6 +295,7 @@ export default function LeadsClient() {
   const [jobId, setJobId] = useState<string | null>(null)
   viewedJob.current = jobId ?? ''
   const [status, setStatus] = useState<string>('')
+  const [zeroResultStatus, setZeroResultStatus] = useState<{ jobId: string; scan: ZeroResultScan } | null>(null)
   const [leadsSoFar, setLeadsSoFar] = useState(0)
   // Live per-source progress from the status poll; null when the response had none (older server or a failed read).
   const [progress, setProgress] = useState<SourceProgress[] | null>(null)
@@ -696,6 +739,7 @@ export default function LeadsClient() {
       }
       statusFails.current = 0
       const s = await r.json()
+      if (!stop) setZeroResultStatus(s.status === 'done' && s.lead_count === 0 ? { jobId, scan: s } : null)
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(typeof s.running_since === 'number' ? s.running_since : null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, websiteReview:s.website_profile_review === 'confirmed', query: typeof s.query === 'string' ? s.query : null })
@@ -787,6 +831,21 @@ export default function LeadsClient() {
     if (j?.error) setWatchNote(j.error)
     await loadWatches()
   }
+  const [ready, setReady] = useState<HomeReady | 'failed' | null>(null)
+  const completedSearch = status === 'done' ? jobId : null
+  useEffect(() => {
+    const request = new AbortController()
+    void fetch('/api/home/ready', { signal: AbortSignal.any([request.signal, AbortSignal.timeout(20000)]) })
+      .then(async response => {
+        if (!response.ok) throw new Error(String(response.status))
+        const result: HomeReady = await response.json()
+        if (!Number.isFinite(result?.ready) || !Number.isFinite(result.judged) ||
+          !Number.isFinite(result.window_days) || !Array.isArray(result.scans)) throw new Error('shape')
+        if (!request.signal.aborted) setReady(result)
+      })
+      .catch(() => { if (!request.signal.aborted) setReady('failed') })
+    return () => request.abort()
+  }, [completedSearch])
   const [pastJobs, setPastJobs] = useState<JobSummary[] | null>(null)
   // #1136: each past scan's current status (the Campaigns card's: leads as they stand now), by scan id; 'failed' = the read
   // failed, so the cards say their counts are as recorded when the scan finished
@@ -941,6 +1000,7 @@ export default function LeadsClient() {
   const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
   const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
   const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
+  const zeroResultScan = status === 'done' && zeroResultStatus?.jobId === jobId ? zeroResultStatus.scan : null
   const reviewSplit = reviewListSplit(leads)
   const researchLeads = [...reviewSplit.research, ...unconfirmedTiming]
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
@@ -962,6 +1022,13 @@ export default function LeadsClient() {
           <a className="btn-ghost btn-sm" href={jobId ? `/api/leads/export?job_id=${jobId}` : '/api/leads/export'}>Download CSV</a>
         </div>}
       </div>
+      {ready && (
+        <p className="mb-3 text-sm text-[var(--ink-2)]" data-testid="leads-overall-total">
+          {ready === 'failed' ? 'Could not check workspace lead totals. Refresh to retry.' : <>
+            Last {ready.window_days} days: {ready.ready}{ready.capped ? ' or more' : ''} ready of {ready.judged} {ready.judged === 1 ? 'company' : 'companies'} checked{ready.scans.length > 0 && `, across ${ready.scans.length} ${ready.scans.length === 1 ? 'search' : 'searches'}`}{ready.capped ? ' so far.' : '.'}
+          </>}
+        </p>
+      )}
       {otherActiveJobId && <p role="status" className="text-sm mb-4 rounded-md border border-black/20 px-3 py-2">
         A search is running. <a className="underline" href={`/app/leads?job_id=${otherActiveJobId}`}>View progress</a>
         {otherActiveReadFailed && ' Progress is temporarily unavailable. Retrying.'}
@@ -1316,6 +1383,18 @@ export default function LeadsClient() {
       {!jobId && pastJobs && pastJobs.length > 0 && (
         <section className="mb-6" aria-labelledby="your-plays">
           <h2 id="your-plays" className="text-xl font-bold tracking-tight mb-3">Past scans<InfoTip>Pick one to review its leads. Nothing runs until you start a new scan above.</InfoTip></h2>
+          {pastJobs.length >= 20 && ready && ready !== 'failed' && (() => {
+            const listed = new Set(pastJobs.map(job => job.id))
+            const older = ready.scans.filter(scan => !listed.has(scan.job_id))
+            return <details className="mb-3 text-sm">
+              <summary className="cursor-pointer">Show older searches with ready leads</summary>
+              {older.length > 0 ? <ul className="mt-2 space-y-1">
+                {older.map((scan, index) => <li key={scan.job_id}>
+                  <a className="underline" href={`/app/leads?job_id=${encodeURIComponent(scan.job_id)}`}>Older search {index + 1} · {scan.ready} ready</a>
+                </li>)}
+              </ul> : <p className="mt-2">No additional searches with ready leads in the Home results.</p>}
+            </details>
+          })()}
           {/* always mounted, so the failure is announced when it is filled in */}
           <div role="status" className="text-sm">{currentRuns === 'failed' && <p className="mb-3" data-testid="history-recorded">Showing each scan as it was when it finished: its current counts could not be loaded. Refresh to retry.</p>}</div>
           <div className="grid gap-3 md:grid-cols-2">
@@ -1418,7 +1497,7 @@ export default function LeadsClient() {
           // #1579: with no scan open, nothing is said until the past scans have been read ("No leads yet" beside a list of them was false).
           status === 'loading' || status === 'failed' || statusError ? null
             : !jobId && !pastJobs ? null
-            : <p className="p-10 text-center text-gray-500 text-sm">{unconfirmedTiming.length > 0
+            : renderZeroResultReason(zeroResultScan) ?? <p className="p-10 text-center text-gray-500 text-sm">{unconfirmedTiming.length > 0
               ? 'Leads with unconfirmed timing are listed under Research only.'
               : status === 'done' && currentView?.marked && currentView.counts?.reviewable === 0
               ? 'No leads passed the checks for review.'
