@@ -84,7 +84,7 @@ test('lifecycle: a refused sync says not checked; unauthenticated and cross-site
   as('t5'); assert.equal(await state(), 'disconnected', 'another tenant sees none of t4')
 })
 
-test('reply settings GET uses Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async () => {
+test('reply settings and consent use Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async () => {
   const { schema, drop } = await freshSchema()
   const pg = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 3 })
   try {
@@ -106,5 +106,17 @@ test('reply settings GET uses Postgres without a raw SQLite handle and keeps ten
     const neighbor = await info() as Info & { inbound: unknown[] }
     assert.deepEqual([neighbor.gmail_connected, neighbor.read_granted, neighbor.consent.accepted, neighbor.bounce_scan.accepted], [false, false, false, true])
     assert.deepEqual(neighbor.inbound, [])
+    as('owner')
+    assert.equal((await post({ action: 'bounce_scan_on', accept: true, version: BOUNCE_SCAN_CONSENT_VERSION })).status, 200)
+    await pg.run('INSERT INTO autopilot_settings (tenant_id, followups_enabled) VALUES (?, ?)', ['owner', 1])
+    assert.equal((await post({ action: 'revoke' })).status, 200)
+    const revoked = await info()
+    assert.deepEqual([revoked.consent.accepted, revoked.bounce_scan.accepted, revoked.followups_enabled], [false, true, false])
+    assert.equal((await post({ action: 'consent', accept: true, version: READ_CONSENT_VERSION })).status, 200)
+    assert.equal((await post({ action: 'bounce_scan_off' })).status, 200)
+    const accepted = await info()
+    assert.deepEqual([accepted.consent.accepted, accepted.bounce_scan.accepted], [true, false])
+    as('neighbor')
+    assert.equal((await info()).bounce_scan.accepted, true)
   } finally { setDb(null); await pg.close(); await drop() }
 })
