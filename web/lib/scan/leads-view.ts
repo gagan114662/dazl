@@ -75,6 +75,11 @@ export function timingHeadline(t?: { timing: 'proof_backed' | 'unconfirmed'; rea
   }
 }
 
+export function reviewTimingCopy(reason: string, note?: string | null): string {
+  return [reason.trim(), note?.trim()].filter((part): part is string => Boolean(part))
+    .map(part => /[.!?]$/.test(part) ? part : `${part}.`).join(' ')
+}
+
 // Read-time copy for the saved rationale (leads API). "No saved grade" must not be shown next to a saved fit/intent/action
 // grade: a grade can exist without a written rationale (#198 live acceptance finding).
 export function savedGradeWhy(l: { why?: string | null; fit?: number | null; intent?: number | null; action?: number | null }, t?: { timing: 'proof_backed' | 'unconfirmed'; reason?: import('./scoreboard.ts').TimingUnconfirmedReason | null }): string {
