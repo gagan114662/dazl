@@ -26,7 +26,7 @@ const POLL_MS = 4000
 export default function Journey() {
   const [profile, setProfile] = useState<Profile | null | 'failed'>(null)
   const [jobs, setJobs] = useState<JourneyJob[] | null | 'failed'>(null)
-  const [playIcp, setPlayIcp] = useState<{ query: string | null; icp: PlayIcp | null } | null>(null)
+  const [playIcp, setPlayIcp] = useState<{ jobId: string; icp: PlayIcp | null } | null>(null)
   const [leads, setLeads] = useState<PreviewLead[] | null>(null)
   const [drafts, setDrafts] = useState<{ drafts: number; approved: number } | null>(null)
   const [editing, setEditing] = useState(false)
@@ -47,7 +47,6 @@ export default function Journey() {
     void get('/api/scan/jobs').then(j => setJobs(Array.isArray(j?.jobs) ? j.jobs : 'failed'))
     // Why sending stopped stays on screen (not under the collapsed setup details).
     void get('/api/outreach/settings').then(o => setCapped(capNotice(o)))
-    void get('/api/scan/latest').then(j => setPlayIcp(j ? { query: j.query ?? null, icp: j.icp ?? null } : null))
     void get('/api/watch').then(w => setWatches(Array.isArray(w?.watches) ? w.watches : null))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -55,6 +54,15 @@ export default function Journey() {
   // or read for a run until that list has answered; a list that could not be read (null) leaves the newest search, as before.
   const base: JourneyInput = { profile: profile && profile !== 'failed' ? profile : null, jobs: Array.isArray(jobs) ? jobs : null, leads: null, drafts: null, watches: watches === 'loading' ? null : watches }
   const playId = base.profile && base.jobs && watches !== 'loading' ? journey(base).play?.id ?? null : null
+  // #1772: the card's title comes from the featured play's OWN scan, keyed by play id - never the globally newest
+  // scan, which can belong to a different play sharing the request text (the Toronto/Austin mix-up). A late answer
+  // for a play that is no longer featured is dropped by the guard where the title is built.
+  useEffect(() => {
+    if (!playId) { setPlayIcp(null); return }
+    let live = true
+    void get(`/api/scan/latest?job_id=${encodeURIComponent(playId)}`).then(r => { if (live) setPlayIcp(r && r.query ? { jobId: playId, icp: r.icp ?? null } : null) })
+    return () => { live = false }
+  }, [playId]) // eslint-disable-line react-hooks/exhaustive-deps
   const playStatus = base.jobs?.find(j => j.id === playId)?.status
   const playDone = playStatus === 'done'
   const playActive = playStatus === 'pending' || playStatus === 'running' || playStatus === 'enriching'
@@ -102,7 +110,7 @@ export default function Journey() {
   const p = profile !== 'failed' ? profile : null
   const buyer = p?.buyer ?? null
 
-  const icp = playIcp?.icp && j.play && playIcp.query === j.play.query ? playIcp.icp : null
+  const icp = playIcp && j.play && playIcp.jobId === j.play.id ? playIcp.icp : null
   const pace = j.play ? playPace(j.play, watches) : null   // the plays list has answered by here (the loading return above)
   const skipLine = skipNoticeLine(watches)
   const pills = icp ? constraintPills(icp) : []

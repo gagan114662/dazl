@@ -48,6 +48,13 @@ export function latestQueryJob(db: Db, userId: string): Promise<{ query: string 
   return db.get(`SELECT query, icp, icp_inferred FROM scan_jobs WHERE user_id = ? AND query IS NOT NULL ORDER BY created_at DESC, insert_seq DESC LIMIT 1`, [userId])
 }
 
+// #1772: the featured play's card reads its OWN scan's ICP. The globally newest scan can belong to a
+// different play that shares the request text - the place lives in the ICP, so the newest scan's ICP titled
+// another play's card ('Toronto ...' over the Austin play's leads on Home).
+export function jobQueryIcp(db: Db, userId: string, jobId: string): Promise<{ query: string | null; icp: string | null; icp_inferred: number | null } | undefined> {
+  return db.get(`SELECT query, icp, icp_inferred FROM scan_jobs WHERE user_id = ? AND id = ?`, [userId, jobId])
+}
+
 const RESERVED_CALL = "EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')"
 // Exported so tests build the parked shape through the PRODUCTION step (a hand-seeded row proves nothing about this code).
 export async function parkPendingReservedJobs(db: Db): Promise<void> {
