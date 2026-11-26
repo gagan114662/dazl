@@ -55,3 +55,25 @@ test("#1875: the card's title, tooltip and link all read the one featured play",
   const lib = readFileSync(new URL('../lib/journey.ts', import.meta.url), 'utf8')
   assert.match(lib, /leadsHref = `\/app\/leads\?job_id=\$\{play\.id\}`/, 'the card link carries the featured play\'s job id')
 })
+
+const jobWithSource = (id: string, user: string, query: string, icp: object, inferred: number, at: number): [string, [string, string, string, string, number, number]] =>
+  ["INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, icp, icp_inferred, created_at) VALUES (?, ?, 'x', 'test', 'test', 'done', ?, ?, ?, ?)", [id, user, query, JSON.stringify(icp), inferred, at]]
+
+bothEngines("#1875: a profile carried onto the featured job is never read as its own (the prod Toronto/Austin pair)", async ({ db }) => {
+  // The exact prod pair: the featured job 'marketing agencies in Austin hiring' holds the PAUSED Toronto play's
+  // profile (summary Marketing agencies, where Toronto, signal hiring SDRs) marked carried (icp_inferred=3) - the
+  // carry paths (a saved play's run, a new search started from a restored profile) all store it that way. Read
+  // play-keyed, that profile titled the Home card 'Toronto marketing agencies hiring' over the Austin request.
+  const torontoIcp = { summary: 'Marketing agencies', who: ['small marketing agencies'], where: ['Toronto, ON'], signals: ['hiring SDRs'] }
+  await db.run(...jobWithSource('c'.repeat(24), 'A', 'Toronto agencies hiring an SDR', torontoIcp, 3, IN - 50))
+  await db.run(...jobWithSource('d'.repeat(24), 'A', 'marketing agencies in Austin hiring', torontoIcp, 3, IN))
+  const own = await jobQueryIcp(db, 'A', 'd'.repeat(24))
+  assert.equal(own?.query, 'marketing agencies in Austin hiring', "the featured job's own request still comes back")
+  assert.equal(own?.icp, null, "a carried profile can be another play's - the card derives the title from the job's own request instead")
+  assert.equal(own?.icp_inferred, null, 'no profile origin is reported for a profile that is not shown')
+  // A profile authored for the job itself still titles its card: inferred (1), request-derived (2), user-reviewed (0).
+  await db.run(...jobWithSource('e'.repeat(24), 'A', 'marketing agencies in Austin hiring', { summary: 'Marketing agencies', where: ['Austin, TX'], signals: ['hiring SDRs'] }, 1, IN + 1))
+  const authored = await jobQueryIcp(db, 'A', 'e'.repeat(24))
+  assert.equal(JSON.parse(authored!.icp!).where[0], 'Austin, TX', "the job's own inferred profile is shown")
+  assert.equal(authored?.icp_inferred, 1)
+})
