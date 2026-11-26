@@ -102,19 +102,22 @@ export function confirmsFit(a: FitAnswer | undefined, homepage: string): boolean
   return q.length >= 15 && norm(homepage).includes(q)
 }
 
-type LeadRow = { id: string; company: string; signal: string; source_url: string; fit: number | null; why: string | null; company_domain: string | null }
+type LeadRow = { id: string; company: string; signal: string; source_url: string; fit: number | null; why: string | null; company_domain: string | null; evidence_excerpt?: string | null }
 export interface BuyerFitDeps { fetchPage?: (url: string) => Promise<Page | FetchFail | null>; fetchImpl?: typeof fetch }
 
 // Returns how many leads were capped. Never throws: a failure caps (fail closed) and is reported in why.
 export async function applyBuyerFitGate(db: Database.Database, jobId: string, provider: Provider, apiKey: string, icpText: BuyerFitTarget, deps: BuyerFitDeps = {}): Promise<{ checked: number; confirmed: number; capped: number; noAnswer: number; noAnswerCause?: string }> {
-  const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as LeadRow[]
-  const hold = db.prepare("UPDATE leads SET fit = CASE WHEN COALESCE(fit, 0) > ? THEN ? ELSE COALESCE(fit, 0) END, review_reason = 'public_sector_non_buyer', why = ? WHERE id = ? AND review_reason IS NULL")
+  const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain, evidence_excerpt FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as LeadRow[]
+  const hold = db.prepare("UPDATE leads SET fit = CASE WHEN COALESCE(fit, 0) > ? THEN ? ELSE COALESCE(fit, 0) END, confidence = CASE WHEN ? = 1 AND confidence > 45 THEN 45 ELSE confidence END, review_reason = ?, why = ? WHERE id = ? AND review_reason IS NULL")
   const offer = typeof icpText === 'string' ? icpText : icpText.offer
   let publicSectorCapped = 0
   const hiring = rows.filter(l => {
-    const verdict = isPublicSectorBody({ company: l.company, domain: l.company_domain, offer })
-    if (!verdict.nonBuyer) return (l.fit ?? 0) >= 4 && isHiringLead(l)
-    publicSectorCapped += hold.run(FIT_CAP, FIT_CAP, `Not a fit: ${verdict.reason} ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes
+    const verdict = isPublicSectorBody({ company: l.company, domain: l.company_domain, offer, sourceText: l.evidence_excerpt })
+    if (!verdict.nonBuyer && !verdict.ownershipUnconfirmed) return (l.fit ?? 0) >= 4 && isHiringLead(l)
+    const uncertain = verdict.ownershipUnconfirmed === true
+    const reason = uncertain ? 'hospital_ownership_unconfirmed' : 'public_sector_non_buyer'
+    const explanation = uncertain ? verdict.reason : `Not a fit: ${verdict.reason}`
+    publicSectorCapped += hold.run(FIT_CAP, FIT_CAP, uncertain ? 1 : 0, reason, `${explanation} ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes
     return false
   }).sort((a, b) => (b.fit ?? 0) - (a.fit ?? 0))
   const checked = hiring.length + publicSectorCapped
