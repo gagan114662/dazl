@@ -1,3 +1,4 @@
+import { marketLanguage, profileMarket } from '../discover/profile-market.ts'
 import { placeIn, WORLD_CITIES } from '../sources/jobboards.ts'
 import { countriesIn, countryOfRegion, regionsIn } from './countries.ts'
 import { isoCountry } from './icp.ts'
@@ -9,9 +10,7 @@ export interface SearchMarket {
 
 export const MARKET_NOTICE = 'Searched without a market, so results lean US/English. Set your country in Settings.'
 
-export function marketLanguage(value: unknown): string | null {
-  return typeof value === 'string' && /^[a-z]{2,3}$/i.test(value.trim()) ? value.trim().toLowerCase() : null
-}
+export { marketLanguage }
 
 export function browserMarket(locale: unknown): SearchMarket {
   if (typeof locale === 'string' && locale.length <= 80) {
@@ -29,10 +28,11 @@ export function resolveSearchMarket(query: string, profile?: Partial<SearchMarke
   const cityCountry = place && WORLD_CITIES[place] ? countriesIn(WORLD_CITIES[place]) : []
   const regions = place ? regionsIn(place).map(countryOfRegion) : []
   const queryCountries = [...new Set(countries.length ? countries : regions.length ? regions : cityCountry)]
-  const profileCountry = isoCountry(profile?.country)
+  const savedProfile = profileMarket(profile)
+  const profileCountry = savedProfile.country
   const accountCountry = isoCountry(account?.country)
   const country = queryCountries.length === 1 ? queryCountries[0] : profileCountry ?? accountCountry
-  const profileLanguage = !profileCountry || profileCountry === country ? marketLanguage(profile?.language) : null
+  const profileLanguage = !profileCountry || profileCountry === country ? savedProfile.language : null
   const accountLanguage = !accountCountry || accountCountry === country ? marketLanguage(account?.language) : null
   return { country, language: profileLanguage ?? accountLanguage }
 }
