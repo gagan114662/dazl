@@ -298,6 +298,7 @@ try {
       while (!(saveCall = writes.find(x => x.startsWith('POST /api/settings/profile '))) && Date.now() - w0 < 5000) await page.waitForTimeout(50)
       assert.ok(saveCall, `${tag}: the save posted`)
       const posted = JSON.parse(saveCall.slice('POST /api/settings/profile '.length))
+      assert.deepEqual(Object.keys(posted).sort(), ['business_name', 'sells', 'website'], `${tag}: the POST leaves the buyer profile untouched`)
       assert.equal(posted.website, 'https://brightsmile.example', `${tag}: the POST keeps the stored website`)
       assert.equal(posted.sells, 'Typed sells line', `${tag}: the POST keeps the typed sells`)
       assert.equal(posted.business_name, PROFILE.business_name, `${tag}: the POST includes the filled business name`)
