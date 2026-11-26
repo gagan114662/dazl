@@ -3,6 +3,15 @@ import { asDb, type DbLike } from '../db/client.ts'
 type Env = Record<string, string | undefined>
 type ScanLimit = { id: string; limit: number }
 
+export const APOLLO_CREDIT_LEDGER_SCHEMA = `CREATE TABLE IF NOT EXISTS apollo_credit_ledger (
+  tenant_id TEXT NOT NULL,
+  lead_id TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  credit INTEGER NOT NULL DEFAULT 1,
+  result TEXT NOT NULL DEFAULT 'reserved',
+  PRIMARY KEY (tenant_id, lead_id)
+)`
+
 export const APOLLO_PILOT_MAX_CREDITS = 50
 
 export function apolloCreditCap(env: Env): number {
@@ -30,14 +39,7 @@ export async function reserveApolloLead(
     return await asDb(store).tx(function* (tx) {
       // SQLite's write transaction serializes reservations. Lock across tenants in Postgres too.
       if (tx.kind === 'pg') yield* tx.get("SELECT pg_advisory_xact_lock(hashtext('apollo-credit-ledger')) AS locked")
-      yield* tx.run(`CREATE TABLE IF NOT EXISTS apollo_credit_ledger (
-        tenant_id TEXT NOT NULL,
-        lead_id TEXT NOT NULL,
-        scan_id TEXT NOT NULL,
-        credit INTEGER NOT NULL DEFAULT 1,
-        result TEXT NOT NULL DEFAULT 'reserved',
-        PRIMARY KEY (tenant_id, lead_id)
-      )`)
+      if (tx.kind === 'sqlite') yield* tx.run(APOLLO_CREDIT_LEDGER_SCHEMA)
       const result = yield* tx.run(`INSERT INTO apollo_credit_ledger (tenant_id, lead_id, scan_id)
         SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM apollo_credit_ledger) < ?
         AND (SELECT COUNT(*) FROM apollo_credit_ledger WHERE tenant_id = ? AND scan_id = ?) < ?

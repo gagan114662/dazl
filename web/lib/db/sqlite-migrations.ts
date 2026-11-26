@@ -57,6 +57,8 @@ import { migrateWorkers } from '../workers/store.ts'
 import { migrateFirstParty } from '../signals/first-party.ts'
 import { migrateNeedEvidence } from '../scan/need-evidence.ts'
 
+import { APOLLO_CREDIT_LEDGER_SCHEMA } from '../enrich/apollo-credit-ledger.ts'
+
 export function migrateAllSqlite(db: Database.Database): void {
   migrateAuth(db)
   migratePlatform(db)
@@ -76,6 +78,7 @@ export function migrateAllSqlite(db: Database.Database): void {
   new SqliteQueue(db)
   // Last: it adds a column to tables the migrations above create.
   migrateInsertionOrder(db)
+  db.exec(APOLLO_CREDIT_LEDGER_SCHEMA)
   // After every table exists: the deleted-tenant guard is a trigger on each tenant-scoped table.
   migrateTenantLifecycle(db)
 }

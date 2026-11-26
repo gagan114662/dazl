@@ -172,7 +172,8 @@ test('#1910 a production or unset deployment cannot reserve or dispatch an Apoll
         fetchImpl: async () => { assert.fail('non-staging request reached transport') },
       }), null)
     }
-    assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'apollo_credit_ledger'").get(), undefined)
+    assert.equal(db.prepare('SELECT COUNT(*) FROM apollo_credit_ledger').pluck().get(), 0)
+    assert.equal(db.prepare('SELECT COUNT(*) FROM tenant_spend_pools').pluck().get(), 0)
   } finally { db.close() }
 })
 
