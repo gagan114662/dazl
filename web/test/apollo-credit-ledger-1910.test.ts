@@ -7,7 +7,7 @@ import Database from 'better-sqlite3'
 import { matchReadyApolloBuyer, planApolloBuyerMatches, type ApolloBuyerEvidence } from '../lib/enrich/apollo-ready-match.ts'
 import { reserveApolloLead } from '../lib/enrich/apollo-credit-ledger.ts'
 
-test('Apollo refuses when off and admits only one lookup per lead across restarts and tenants', async () => {
+test('#1910 Apollo refuses when off and admits only one lookup per lead across restarts and tenants', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'apollo-ledger-'))
   const path = join(directory, 'test.db')
   let db = new Database(path)
@@ -26,7 +26,7 @@ test('Apollo refuses when off and admits only one lookup per lead across restart
   }
 })
 
-test('only an otherwise Ready buyer after a completed empty crawl reaches one Apollo people endpoint', async () => {
+test('#1910 only an otherwise Ready buyer after a completed empty crawl reaches one Apollo people endpoint', async () => {
   const db = new Database(':memory:')
   const calls: string[] = []
   const buyer: ApolloBuyerEvidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test', dayVerified: true,
@@ -60,7 +60,7 @@ test('only an otherwise Ready buyer after a completed empty crawl reaches one Ap
   }
 })
 
-test('dry plan counts eligible new requests within both caps without reserving', async () => {
+test('#1910 dry plan counts eligible new requests within both caps without reserving', async () => {
   const db = new Database(':memory:')
   const env = { APOLLO_CREDIT_CAP: '3' }
   const scan = { id: 'planned-scan', limit: 2 }
@@ -88,7 +88,7 @@ test('dry plan counts eligible new requests within both caps without reserving',
   }
 })
 
-test('a committed reservation blocks a second tenant while the first request is in flight', async () => {
+test('#1910 a committed reservation blocks a second tenant while the first request is in flight', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'apollo-in-flight-'))
   const path = join(directory, 'ledger.db')
   const first = new Database(path)
@@ -127,7 +127,7 @@ test('a committed reservation blocks a second tenant while the first request is 
   }
 })
 
-test('an ambiguous transport error is logged and remains charged against the cap', async () => {
+test('#1910 an ambiguous transport error is logged and remains charged against the cap', async () => {
   const db = new Database(':memory:')
   const evidence: ApolloBuyerEvidence = {
     first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
@@ -152,7 +152,7 @@ test('an ambiguous transport error is logged and remains charged against the cap
   } finally { db.close() }
 })
 
-test('a production or unset deployment cannot reserve or dispatch an Apollo pilot request', async () => {
+test('#1910 a production or unset deployment cannot reserve or dispatch an Apollo pilot request', async () => {
   const db = new Database(':memory:')
   const evidence: ApolloBuyerEvidence = {
     first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
@@ -170,7 +170,7 @@ test('a production or unset deployment cannot reserve or dispatch an Apollo pilo
   } finally { db.close() }
 })
 
-test('the operator cannot configure a cap above the approved pilot ceiling', async () => {
+test('#1910 the operator cannot configure a cap above the approved pilot ceiling', async () => {
   const db = new Database(':memory:')
   const scan = { id: 'scan', limit: 1 }
   try {

@@ -25,7 +25,7 @@ function dryWithCap(cap: string, ...args: string[]) {
 
 const dry = (...args: string[]) => dryWithCap('50', ...args)
 
-test('matrix refuses Apollo without both explicit opt-ins', () => {
+test('#1910 matrix refuses Apollo without both explicit opt-ins', () => {
   const contactsOnly = dry('--contacts')
   assert.equal(contactsOnly.status, 0, contactsOnly.stderr)
   assert.match(contactsOnly.stdout, /Apollo off/)
@@ -39,7 +39,7 @@ test('matrix refuses Apollo without both explicit opt-ins', () => {
   assert.match(both.stdout, /Apollo budget 2/)
 })
 
-test('matrix dry mode reports the bounded call count from an evidence snapshot', () => {
+test('#1910 matrix dry mode reports the bounded call count from an evidence snapshot', () => {
   const dir = mkdtempSync(join(tmpdir(), 'apollo-dry-'))
   try {
     const dbPath = join(dir, 'ledger.sqlite')
@@ -62,7 +62,7 @@ test('matrix dry mode reports the bounded call count from an evidence snapshot',
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('a dry matrix command cannot produce a live scan evidence export', () => {
+test('#1910 a dry matrix command cannot produce a live scan evidence export', () => {
   const result = dry('--contacts', '--apollo-budget', '2', '--apollo-evidence-out', 'never-created.json')
   assert.equal(result.status, 2)
   assert.match(result.stderr, /evidence export requires one non-dry case/)

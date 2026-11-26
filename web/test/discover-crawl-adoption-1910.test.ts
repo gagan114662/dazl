@@ -97,7 +97,7 @@ test('Discovery refuses to choose between two crawled buyers', async t => {
   assert.deepEqual(await adopted(t, [buyer, other, email]), [])
 })
 
-test('Discovery reports eligible Apollo evidence only after a completed crawl without a published address', async t => {
+test('#1910 Discovery reports eligible Apollo evidence only after a completed crawl without a published address', async t => {
   const batches: { leadId: string; evidence: ApolloBuyerEvidence }[][] = []
   await adopted(t, [buyer], rows => batches.push([...rows]))
   assert.equal(batches.length, 1)

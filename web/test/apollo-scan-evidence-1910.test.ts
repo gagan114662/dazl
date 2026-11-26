@@ -6,7 +6,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { collectApolloScanEvidence } from '../lib/enrich/apollo-scan-evidence.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
 
-test('Apollo evidence comes only from owned, dated Discovery rows with completed crawl and no published buyer address', () => {
+test('#1910 Apollo evidence comes only from owned, dated Discovery rows with completed crawl and no published buyer address', () => {
   const db = new Database(':memory:')
   try {
     migrateAllSqlite(db)
