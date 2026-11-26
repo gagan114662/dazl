@@ -108,13 +108,13 @@ export interface BuyerFitDeps { fetchPage?: (url: string) => Promise<Page | Fetc
 // Returns how many leads were capped. Never throws: a failure caps (fail closed) and is reported in why.
 export async function applyBuyerFitGate(db: Database.Database, jobId: string, provider: Provider, apiKey: string, icpText: BuyerFitTarget, deps: BuyerFitDeps = {}): Promise<{ checked: number; confirmed: number; capped: number; noAnswer: number; noAnswerCause?: string }> {
   const rows = db.prepare('SELECT id, company, signal, source_url, fit, why, company_domain FROM leads WHERE scan_job_id = ? AND review_reason IS NULL').all(jobId) as LeadRow[]
-  const hold = db.prepare("UPDATE leads SET fit = MIN(COALESCE(fit, 0), ?), review_reason = 'public_sector_non_buyer', why = ? WHERE id = ? AND review_reason IS NULL")
+  const hold = db.prepare("UPDATE leads SET fit = CASE WHEN COALESCE(fit, 0) > ? THEN ? ELSE COALESCE(fit, 0) END, review_reason = 'public_sector_non_buyer', why = ? WHERE id = ? AND review_reason IS NULL")
   const offer = typeof icpText === 'string' ? icpText : icpText.offer
   let publicSectorCapped = 0
   const hiring = rows.filter(l => {
     const verdict = isPublicSectorBody({ company: l.company, domain: l.company_domain, offer })
     if (!verdict.nonBuyer) return (l.fit ?? 0) >= 4 && isHiringLead(l)
-    publicSectorCapped += hold.run(FIT_CAP, `Not a fit: ${verdict.reason} ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes
+    publicSectorCapped += hold.run(FIT_CAP, FIT_CAP, `Not a fit: ${verdict.reason} ${l.why ?? ''}`.trim().slice(0, WHY_MAX), l.id).changes
     return false
   }).sort((a, b) => (b.fit ?? 0) - (a.fit ?? 0))
   const checked = hiring.length + publicSectorCapped
