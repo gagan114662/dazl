@@ -72,7 +72,7 @@ export default function EnrichmentPanel() {
           {data.credits.map(u => (
             <div key={u.provider + u.window} className="flex flex-wrap gap-x-2 gap-y-1 items-center mb-2">
               <span className="w-40 shrink-0">{u.provider === 'apollo' ? 'Apollo' : 'People Data Labs'} per {u.window}</span>
-              <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by the operator)' : ''}`}</span>
+              <span>{u.reserved} credits used{u.limit === null ? ', no limit set' : ` of ${u.limit}${u.source === 'operator' ? ' (set by dazl)' : ''}`}</span>
               {u.source !== 'operator' && (
                 <>
                   <input aria-label={`${u.provider} ${u.window} credit limit`} className="border rounded px-2 w-20 min-h-11 shrink-0" inputMode="numeric" placeholder="limit" value={limits[u.provider + u.window] ?? (u.source === 'tenant' && u.limit !== null ? String(u.limit) : '')} onChange={e => setLimits({ ...limits, [u.provider + u.window]: e.target.value })} />

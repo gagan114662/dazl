@@ -6,7 +6,7 @@ import Caveat from '@/app/app/caveat'
 import LinkedinConnect, { type ConnectState } from './linkedin-connect'
 
 interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
-const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
+const BADGE = { live: 'Working', worker: 'Not available yet', soon: 'Coming soon' } as const
 
 export default function AdvancedPanel() {
   const [st, setSt] = useState<{ available: boolean; version: string; platforms: P[]; linkedin_connect?: ConnectState | null } | null>(null)
