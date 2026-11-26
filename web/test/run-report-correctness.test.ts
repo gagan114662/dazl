@@ -3,6 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
+import { readRunReportRows } from '../lib/scan/run-report.ts'
 import { verifyLeads } from '../lib/scan/runner.ts'
 import { dedupKey } from '../lib/scan/evidence.ts'
 import { buildRunReport, writeRunReport, runReportFor, RUN_REPORT_RETENTION_DAYS, type CandidateAudit } from '../lib/scan/run-report.ts'
@@ -76,4 +80,26 @@ test('retention: a report older than the retention is deleted the next time any 
   db.prepare('UPDATE scan_run_report SET created_at = ? WHERE job_id = ?').run(Math.floor(Date.now() / 1000) - (RUN_REPORT_RETENTION_DAYS + 1) * 86_400, j1)
   assert.equal(writeRunReport(db, j2, 1, { v: 1 }), true)
   assert.equal(runReportFor(db, 'A', j1), null, 'expired'); assert.ok(runReportFor(db, 'A', j2))
+})
+
+test('Postgres run-report writes replace only the matching attempt and keep tenant reads scoped', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    for (const [job, tenant] of [['owned', 'owner'], ['other', 'neighbor']]) {
+      await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, 'Seller', 'Services', 'Region')", [job, tenant])
+    }
+    assert.equal(await writeRunReport(db, 'owned', 1, { outcome: 'earlier' }), true)
+    assert.equal(await writeRunReport(db, 'owned', 2, { outcome: 'initial' }), true)
+    assert.equal(await writeRunReport(db, 'other', 2, { outcome: 'control' }), true)
+    assert.equal(await writeRunReport(db, 'owned', 2, { outcome: 'replacement' }), true)
+    assert.equal(await writeRunReport(db, 'owned', 2, { oversized: 'x'.repeat(121_000) }), false)
+    assert.deepEqual(await readRunReportRows(db, 'owner', 'owned'), [
+      { attempt: 1, report: { outcome: 'earlier' } },
+      { attempt: 2, report: { outcome: 'replacement' } },
+    ])
+    assert.equal(await readRunReportRows(db, 'owner', 'other'), null)
+    assert.deepEqual(await readRunReportRows(db, 'neighbor', 'other'), [{ attempt: 2, report: { outcome: 'control' } }])
+  } finally { await db.close(); await drop() }
 })
