@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { DiscoveredLead } from '../lib/discover/agent.ts'
 import { enrichLeads } from '../lib/discover/enrich.ts'
+import { discoverApprove, discoverContact, discoverState } from '../lib/discover/card.ts'
 import { sseEvents, sseResponse } from './helpers/claude-sse.ts'
 
 const lead: DiscoveredLead = {
@@ -37,6 +38,42 @@ async function lookup(overrides = {}, sources = [page(team, `${personText} ${ema
   const result = await enrichLeads([original], {}, { apiKey: 'fixture-only', fetch })
   assert.equal(result.accountingUncertain, false)
   return result.leads[0]
+}
+
+for (const [buyerTitle, mailbox, expected] of [
+  ['Dentist', 'dr.ruiz', 'ready_email'],
+  ['Dentist', 'dr.ruiz2', 'ready_email'],
+  ['Practice Manager', 'dana.ruiz2', 'ready_email'],
+  ['Practice Manager', 'drruiz', 'no_contact'],
+] as const) {
+  test(`S3 to Ready: ${buyerTitle} with ${mailbox} becomes ${expected}`, async () => {
+    const address = `${mailbox}@cedar.example`
+    const text = mailbox === 'drruiz'
+      ? `Dana Ruiz, Practice Manager. Dr. Luis Ruiz, Dentist: ${address}`
+      : `Dana Ruiz, ${buyerTitle} at Cedar Dental. ${address}`
+    const enriched = await lookup({ title: buyerTitle, email: address }, [page(team, text)])
+    assert.equal(enriched.person, name)
+    const row = {
+      source_kind: 'discover',
+      event_date: new Date().toISOString().slice(0, 10),
+      company_domain: enriched.domain,
+      enrichments: [
+        { kind: 'person', connector: 'discover', value: `${enriched.person}, ${enriched.title}`, source_url: enriched.person_source_url },
+        ...(enriched.email ? [{ kind: 'email', connector: 'discover', value: enriched.email, source_url: enriched.email_source_url }] : []),
+      ],
+    }
+    assert.equal(discoverState(row), expected)
+    assert.equal(discoverApprove(row).ok, expected === 'ready_email')
+    assert.deepEqual(discoverContact(row)?.email, expected === 'ready_email' ? { address, source: team } : null)
+    if (expected === 'ready_email') {
+      for (const recipient_refused of ['unreadable', 'do_not_contact']) {
+        const refused = { ...row, recipient_refused }
+        assert.equal(discoverState(refused), 'no_contact')
+        assert.equal(discoverApprove(refused).ok, false)
+        assert.deepEqual(discoverContact(refused)?.email, { address, source: team })
+      }
+    }
+  })
 }
 
 test('S3 keeps a named local manager and their own-site address with separate public sources', async () => {
