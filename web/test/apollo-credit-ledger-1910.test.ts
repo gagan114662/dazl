@@ -125,3 +125,28 @@ test('a committed reservation blocks a second tenant while the first request is 
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test('an ambiguous transport error is logged and remains charged against the cap', async () => {
+  const db = new Database(':memory:')
+  const evidence: ApolloBuyerEvidence = {
+    first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+    dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
+  }
+  let attempted = 0
+  const options = {
+    key: 'fixture-only', scanLimit: 2, env: { APOLLO_CREDIT_CAP: '1' },
+    fetchImpl: async () => {
+      attempted++
+      throw new Error('fixture transport disconnected after sending')
+    },
+  }
+  try {
+    await assert.rejects(matchReadyApolloBuyer(db, 'a', 'first', evidence, { ...options, scanId: 'scan-a' }),
+      /fixture transport disconnected/)
+    assert.equal(await matchReadyApolloBuyer(db, 'a', 'first', evidence, { ...options, scanId: 'scan-a' }), null)
+    assert.equal(await matchReadyApolloBuyer(db, 'b', 'second', evidence, { ...options, scanId: 'scan-b' }), null)
+    assert.equal(attempted, 1)
+    assert.deepEqual(db.prepare('SELECT lead_id, credit, result FROM apollo_credit_ledger').all(),
+      [{ lead_id: 'first', credit: 1, result: 'uncertain' }])
+  } finally { db.close() }
+})
