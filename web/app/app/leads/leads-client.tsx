@@ -1434,7 +1434,11 @@ export default function LeadsClient() {
               const contactLine = lp ? c.contact : c.contactNoPerson
               const email = emailsInText(contactLine ?? '')[0]
               const discovered = discoverContact(l)?.email
-              const emailSource = email && (discovered?.address === email ? discovered.source : displayedEmailSource(l, email.toLowerCase()))
+              const citedContact = !isDiscoverLead(l) && l.contact_context && publishedEmail(l) === email?.toLowerCase()
+                ? { ...l, evidence_excerpt: l.contact_context.excerpt, source_url: l.contact_context.source_url }
+                : null
+              const emailSource = email && (discovered?.address === email ? discovered.source
+                : displayedEmailSource(l, email.toLowerCase()) || (citedContact && displayedEmailSource(citedContact, email.toLowerCase())))
               const visibleLine = email && !emailSource ? contactLine?.slice(0, contactLine.indexOf(email)).replace(/ - $/, '').trim() : contactLine
               const recipient = isDiscoverLead(l) ? discovered?.address : publishedEmail(l)
               const approval = c.approve.ok && (!emailSource || email.toLowerCase() !== recipient?.toLowerCase())
@@ -1449,10 +1453,9 @@ export default function LeadsClient() {
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonWithProvenance p={lp} signalSource={l.source_url} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonWithProvenance>
-                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{emailSource && <> · <EmailSourceLink url={emailSource} /></>}</div>
+                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{emailSource ? <> · <EmailSourceLink url={emailSource} /></> : !l.quarantined_at && (l.company_first_published_email?.display_only ? <PublishedEmailProvenance lead={l} /> : <div>Published work email unavailable</div>)}</div>
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
-                    {!l.quarantined_at && (emailSource || l.company_first_published_email?.display_only ? <PublishedEmailProvenance lead={l} /> : <div className="text-xs text-[var(--ink-2)]">Published work email unavailable</div>)}
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>

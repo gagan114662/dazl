@@ -4,8 +4,10 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
-import { register } from 'node:module'
-import { createElement } from 'react'
+import { createRequire, register } from 'node:module'
+import ts from 'typescript'
+import { discoverContact, isDiscoverLead } from '../lib/discover/card.ts'
+import { displayedEmailSource, emailsInText, publishedEmail } from '../lib/outreach/published-email.ts'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 register('./helpers/tsx-loader.mjs', import.meta.url)
@@ -120,28 +122,52 @@ test('the ready response attaches details from the winning lead without crossing
   assert.equal(child.status, 0, child.stdout + child.stderr)
 })
 
-test('lead cards show cited display-only email and label unavailable email', async () => {
+test('lead cards show sourced email or label it unavailable, never both', async () => {
   const { PublishedEmailProvenance } = await import('../app/app/leads/field-provenance.tsx')
-  type Lead = Parameters<typeof PublishedEmailProvenance>[0] & { quarantined_at?: number }
+  const { EmailSourceLink } = await import('../app/app/leads/contact-status.tsx')
   const card = leads.slice(leads.indexOf('data-testid="lead-card"'), leads.indexOf('data-testid="card-actions"'))
-  const row = card.split('\n').find(line => line.includes('<PublishedEmailProvenance lead={l} />'))?.trim()
-  assert.ok(row)
-  const expression = row.slice(1, -1)
-    .replace('<PublishedEmailProvenance lead={l} />', 'publishedEmailProvenance(l)')
-    .replace(/<div[^>]*>Published work email unavailable<\/div>/, '"Published work email unavailable"')
-  const render = (lead: Omit<Lead, 'company_domain' | 'contact'> & Partial<Pick<Lead, 'contact'>>, emailSource: string | undefined) => runInNewContext(expression, {
-    l: { company_domain: 'example.com', contact: null, ...lead }, emailSource,
-    publishedEmailProvenance: (l: Lead) => renderToStaticMarkup(createElement(PublishedEmailProvenance, { lead: l })),
-  })
+  const rows = card.split('\n').filter(line => line.includes('visibleLine') || line.includes('<PublishedEmailProvenance lead={l} />'))
+  assert.ok(rows.length)
+  const declarations = leads.slice(leads.indexOf('              const contactLine ='), leads.indexOf('              const recipient ='))
+  const compiled = ts.transpileModule(`${declarations}\nexports.row = <>
+${rows.join('\n')}
+</>`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText
   const proof = { display_only: true as const, address: 'buyer@example.com', source_url: 'https://example.com/contact' }
-  const displayOnly = render({ company_first_published_email: proof }, undefined)
+  const render = (lead: { contact?: string; [key: string]: unknown }) => {
+    const exports = { row: null }
+    runInNewContext(compiled, {
+      exports, require: createRequire(import.meta.url), PublishedEmailProvenance, EmailSourceLink,
+      l: { company_domain: 'example.com', contact: null, ...lead },
+      c: { contactNoPerson: lead.contact }, lp: null,
+      discoverContact, isDiscoverLead, displayedEmailSource, emailsInText, publishedEmail,
+    })
+    return renderToStaticMarkup(exports.row)
+  }
+  const link = /href="https:\/\/example\.com\/contact"[^>]*>Email source<\/a>/
+  const displayOnly = render({ company_first_published_email: proof })
   assert.match(displayOnly, /Published work email \(display only\): buyer@example\.com/)
-  assert.match(displayOnly, /href="https:\/\/example\.com\/contact"[^>]*>Email source<\/a>/)
-  assert.equal(render({}, undefined), 'Published work email unavailable')
-  const sourced = render({
+  assert.match(displayOnly, link)
+  assert.doesNotMatch(displayOnly, /email unavailable/i)
+
+  const sourced = render({ contact: proof.address, source_url: proof.source_url, evidence_excerpt: `Contact ${proof.address}` })
+  assert.match(sourced, /buyer@example\.com/)
+  assert.match(sourced, link)
+  assert.doesNotMatch(sourced, /email (?:source )?unavailable/i)
+
+  const savedCitation = render({
     contact: proof.address,
+    source_url: 'https://example.com/signal',
+    evidence_excerpt: 'The company is opening a new site.',
     contact_context: { source_url: proof.source_url, excerpt: `Contact ${proof.address}` },
-  }, proof.source_url)
-  assert.match(sourced, /href="https:\/\/example\.com\/contact"[^>]*>Email source<\/a>/)
-  assert.equal(render({ quarantined_at: 1, company_first_published_email: proof }, undefined), false)
+  })
+  assert.match(savedCitation, /buyer@example\.com/)
+  assert.match(savedCitation, link)
+  assert.doesNotMatch(savedCitation, /email (?:source )?unavailable/i)
+
+  const missing = render({ contact: proof.address })
+  assert.match(missing, /Published work email unavailable/)
+  assert.doesNotMatch(missing, /Email source|buyer@example\.com/)
+  assert.doesNotMatch(render({ quarantined_at: 1, company_first_published_email: proof }), /Email source|buyer@example\.com/)
 })
