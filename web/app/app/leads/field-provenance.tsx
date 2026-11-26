@@ -1,4 +1,5 @@
 import { discoverContact, discoverSite, emailOnCompanySite } from '../../../lib/discover/card.ts'
+import { peopleSearchable } from '../../../lib/people/searchable-holds.ts'
 import { domainBasisFor, publishedContact, type PublishedEmailLead } from '../../../lib/outreach/published-email.ts'
 
 function webUrl(raw: string | null | undefined): URL | null {
@@ -66,12 +67,22 @@ function emailEvidence(lead: EmailLead): { address: string; source: string | nul
   return { address: contact.email, source: crawl ? crawl.source_url : citedAddress ? context?.source_url : null }
 }
 
+function EmailProvenance({ email, displayOnly }: { email: NonNullable<ReturnType<typeof emailEvidence>>; displayOnly: boolean }) {
+  return <div className="text-xs text-[var(--ink-2)] break-words" data-testid={displayOnly ? 'company-first-published-email' : 'published-work-email'}>
+    Published work email{displayOnly ? ' (display only)' : ''}: {email.address}{' '}
+    <FieldSource field="Email" source={email.source} />
+  </div>
+}
+
 export function PublishedEmailProvenance({ lead }: { lead: EmailLead }) {
   const email = emailEvidence(lead)
   if (!email) return <div className="text-xs text-[var(--ink-2)]">Published work email unavailable</div>
+  return <EmailProvenance email={email} displayOnly={lead.company_first_published_email?.display_only === true} />
+}
 
-  return <div className="text-xs text-[var(--ink-2)] break-words" data-testid={lead.company_first_published_email?.display_only ? 'company-first-published-email' : 'published-work-email'}>
-    Published work email{lead.company_first_published_email?.display_only ? ' (display only)' : ''}: {email.address}{' '}
-    <FieldSource field="Email" source={email.source} />
-  </div>
+export function ResearchPublishedEmail({ lead }: { lead: EmailLead & { review_reason?: string | null } }) {
+  if (lead.company_first_published_email?.display_only !== true && !peopleSearchable(lead.review_reason)) return null
+  const email = emailEvidence(lead)
+  if (!email || !webUrl(email.source)) return null
+  return <EmailProvenance email={email} displayOnly />
 }

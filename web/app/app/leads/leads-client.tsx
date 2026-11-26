@@ -6,7 +6,7 @@ import type { HomeReady } from '@/lib/outreach/home-ready'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
-import { FieldSource, PublishedEmailProvenance, WebsiteProvenance } from './field-provenance'
+import { FieldSource, PublishedEmailProvenance, ResearchPublishedEmail, WebsiteProvenance } from './field-provenance'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
@@ -1770,7 +1770,8 @@ export default function LeadsClient() {
             {rows.map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <ReviewCompanyWebsite lead={l} />
-                {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} /><PublishedEmailProvenance lead={l} /></div>}
+                {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} />{part === 'review' && <PublishedEmailProvenance lead={l} />}</div>}
+                {part === 'research' && !l.quarantined_at && <ResearchPublishedEmail lead={l} />}
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
@@ -1791,12 +1792,16 @@ export default function LeadsClient() {
                   <div className="text-xs text-gray-500 mt-1">{quoteNote(l.source_check?.quote_match).prefix}&quot;{l.evidence_excerpt}&quot;</div>
                 )}
                 {/* Labelled actions: check the source first, then confirm - worded for what confirming unlocks for this lead. */}
-                {(() => { const a = reviewAction(l); return <div className="mt-3" data-testid="review-actions">
+                {(() => {
+                  const a = reviewAction(l)
+                  const showAction = !unconfirmedIds.has(l.id) &&
+                    (part === 'review' || a.label === 'Keep as research' || a.label === 'Keep this signal')
+                  return <div className="mt-3" data-testid="review-actions">
                   <div className="flex flex-wrap gap-2">
                     <a className="btn-ghost text-xs px-3 py-1.5" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">Open source</a>
-                    {!unconfirmedIds.has(l.id) && <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>}
+                    {showAction && <button onClick={() => confirmReview(l.id)} className="btn-primary text-xs px-3 py-1.5">{a.label}</button>}
                   </div>
-                  {!unconfirmedIds.has(l.id) && <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>}
+                  {showAction && <p className="text-xs text-[#555] mt-1" data-testid="review-hint">{a.hint}</p>}
                 </div> })()}
               </div>
             ))}
