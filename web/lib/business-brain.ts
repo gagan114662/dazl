@@ -9,6 +9,7 @@
 // A section with nothing in it says so ("dazl did not find this"); nothing is invented to fill it.
 import type { Icp, ResearchedHyp } from './scan/icp.ts'
 import { compileTargeting, planConditions, conditionRoles, readsAsDenial } from './scan/targeting.ts'
+import { roleWordsFor, type SignalReading } from './scan/role-words.ts'
 
 export interface BrainProfile { business_name?: string | null; sells?: string | null; website?: string | null; buyer?: Icp | null }
 export interface BrainMemory { icp?: string; positioning?: string; tone?: string; exclusions?: string[]; objections?: { q: string; a: string }[] }
@@ -77,7 +78,7 @@ export interface BrainPlay { label: string; query: string }
 // a buyer role (or industry) in the first place named with a saved signal, companies hiring the role a saved hiring
 // signal names (a job-posting signal, lib/scan/targeting.ts), and people looking for an alternative to a saved competitor (a plain web-search sentence; the complaint/alternatives
 // connector, lib/signals/competitor-reddit.ts, adds posts only when it is enabled for the workspace). Nothing is suggested when the profile has nothing to build it from.
-export function businessPlays(p: BrainProfile | null, competitors: string[] | null): BrainPlay[] {
+export function businessPlays(p: BrainProfile | null, competitors: string[] | null, readings: Readonly<Record<string, SignalReading>> = {}): BrainPlay[] {
   const b = p?.buyer ?? null
   const who = list(b?.who), ind = list(b?.industries), where = list(b?.where)[0] ?? '', sig = list(b?.signals)
   const place = where ? ` in ${where}` : ''
@@ -103,15 +104,25 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // A word that cannot be part of a role: a function or particle word, or a quantifier or indefinite pronoun that turns the phrase
   // into a denial ("hiring nobody", "hiring nil SDRs", "hiring minimal staff"), plus the two predicative adjectives a hiring phrase
   // uses to deny itself ("hiring SDRs impossible"). A word ending in -ed or -ly is a verb or an adverb, not a role word.
-  const NOT_A_ROLE = /^(?:is|are|was|were|be|been|has|had|off|out|down|up|over|anymore|yet|not|never|no|none|nobody|nothing|any|anyone|anybody|neither|nor|zero|nil|zilch|minimal|impossible|unlikely|frozen|froze|fewer|less|few)$/i
+  // #2084: the words that cannot be part of a role come from ONE table for every language (lib/scan/role-words.ts). When the table
+  // cannot read the signal's language, no word rule runs at all: the reading comes from the judge (readings, filled by
+  // lib/scan/signal-reading.ts), and without one the signal makes no play - an unread language is never passed on English rules.
+  // English is the compiler's own language (and dazl's documented default when a request names none); every other language is read
+  // by the judge, and its table row is the guard on the role the judge names.
+  const lang = (b?.language ?? 'en').trim().toLowerCase().slice(0, 2)
+  const english = lang === 'en'
+  const words = roleWordsFor(lang)
+  const judged = (x: string): SignalReading | null => (english ? null : readings[x.trim()] ?? null)
   const roleShape = (tail: string): boolean => {
-    const words = tail.trim().split(/\s+/).filter(Boolean)
-    if (!words.length || words.length > 5 || /[^A-Za-z\s&/-]/.test(tail)) return false
-    if (words.some(w => NOT_A_ROLE.test(w) || /ed$/i.test(w) || /ly$/i.test(w))) return false
-    return !HIRING_NOUN.test(words[words.length - 1])
+    if (!words) return false
+    const tailWords = tail.trim().split(/\s+/).filter(Boolean)
+    if (!tailWords.length || tailWords.length > 5 || /[^A-Za-z\u00c0-\u024f\s&/-]/.test(tail)) return false
+    if (tailWords.some(w => words.has(w.toLowerCase()) || /ed$/i.test(w) || /ly$/i.test(w))) return false
+    return !HIRING_NOUN.test(tailWords[tailWords.length - 1])
   }
   // Every role the plan gives this signal's positive hiring conditions, in plain words ("SDR or salesperson"), never only the first.
   const hiringRoles = (x: string): string[] => {
+    if (!english) { const r = judged(x); return r?.kind === 'hiring' && r.role && (!words || roleShape(r.role)) ? [r.role] : [] }
     const plan = conds(x)
     if (!plan.length || plan.some(p => p.cond.kind !== 'hiring')) return []
     const out: string[] = []
@@ -131,6 +142,7 @@ export function businessPlays(p: BrainProfile | null, competitors: string[] | nu
   // a signal that denies anything makes no plain play either: the denial is the user saying what they do NOT want, and a search for
   // the whole wording searches for it. The plan says so, so no word list is needed.
   const plainOk = (x: string) => {
+    if (!english) { const r = judged(x); return r?.kind === 'hiring' && !r.role }
     const plan = conds(x)
     return !hiringRoles(x).length && !readsAsDenial(x) && !plan.some(c => c.negated) && plan.some(c => c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim())
   }

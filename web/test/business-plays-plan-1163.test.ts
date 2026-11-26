@@ -4,8 +4,9 @@
 // same table, so a guard that simply stopped reading negation cannot pass.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { businessPlays } from '../lib/business-brain.ts'
+import { businessPlays, type BrainProfile } from '../lib/business-brain.ts'
 import type { Icp } from '../lib/scan/icp.ts'
+import { NOT_A_ROLE, roleWordsFor } from '../lib/scan/role-words.ts'
 
 const icp = (signals: string[]): Icp => ({ summary: 'Recruiting software for dental practices', who: ['Practice owner'], industries: [], sizes: [], where: ['Ohio'], signals, exclude: [] })
 const plays = (signal: string): string[] => businessPlays({ buyer: icp([signal]) }, []).map(p => p.query)
@@ -43,8 +44,23 @@ const OTHER_LANGUAGES: [string, string][] = [
   ['Spanish, affirmative', 'contratando SDRs'],
   ['Spanish, denial', 'dejamos de contratar SDRs'],
 ]
+// The compiler reads English, so these make no play *from its own reading*. They are not dropped: a profile saved in that language goes
+// to the judge and its reading makes the play (test/signal-reading-2084.test.ts). Without a reading there is no play, and never an
+// English guess.
 for (const [what, s] of OTHER_LANGUAGES) {
   test(`#1163 ${what}: "${s}" makes no play from text the compiler cannot read`, () => {
     assert.deepEqual(plays(s), [])
   })
 }
+
+// #1163 / #2084: the words that cannot be part of a role are ONE table for every language, and a language it cannot read is never
+// judged on English rules - the reading has to come from the judge (test/signal-reading-2084.test.ts), and without one there is no play.
+test('#1163 the not-a-role words are one multilingual table, and an unread language is never passed', () => {
+  for (const [lang, word] of [['en', 'nobody'], ['de', 'niemand'], ['es', 'nadie'], ['fr', 'personne']] as const) assert.ok(roleWordsFor(lang)?.has(word), `${lang}: ${word}`)
+  assert.deepEqual(Object.keys(NOT_A_ROLE).sort(), ['de', 'en', 'es', 'fr', 'ja'])
+  assert.equal(roleWordsFor('pt'), null, 'a language with no row is not read by English words')
+  const de = { buyer: { summary: 's', who: ['Practice owner'], industries: [], sizes: [], where: ['Ohio'], signals: ['Wir stellen SDRs ein'], exclude: [], language: 'de' } } as BrainProfile
+  assert.deepEqual(businessPlays(de, []).map(p => p.query), [], 'no reading: no play')
+  assert.deepEqual(businessPlays(de, [], { 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs' } }).map(p => p.query), ['Practice owner at companies in Ohio hiring SDRs'])
+  assert.deepEqual(businessPlays(de, [], { 'Wir stellen SDRs ein': { kind: 'not_hiring' } }).map(p => p.query), [])
+})
