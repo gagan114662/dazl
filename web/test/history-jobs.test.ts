@@ -10,7 +10,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { recentPlays } from '../lib/readiness.ts'
 
-const NEUTRAL = 'Failed - the AI provider rejected the key this scan used'
+const NEUTRAL = 'Failed - the AI provider refused a request'
 const fail = (db: Database.Database, id: string, error: string) => {
   db.prepare("UPDATE scan_jobs SET status='running' WHERE id=?").run(id)
   db.prepare("UPDATE scan_jobs SET status='failed', error=? WHERE id=?").run(error, id)
@@ -42,11 +42,11 @@ test("a legacy rejected-key scan, migrated by the real migrateScan, is worded ne
   const byId = (id: string) => jobs.find(j => j.id === id)!
   assert.deepEqual([byId(legacy).funded_by, byId(fresh).funded_by, byId(trial).funded_by], [null, null, 'trial'], "'user' is never synthesized")
   assert.deepEqual([scanOutcome(byId(legacy)).label, scanOutcome(byId(fresh)).label], [NEUTRAL, NEUTRAL])
-  assert.equal(scanOutcome(byId(trial)).label, 'Failed - the free-search key had trouble (not your key)')
+  assert.equal(scanOutcome(byId(trial)).label, 'Failed - the free-search service had trouble')
   const campaign = async (id: string) => { const d = (await campaignDetail(sqliteDb(db), 'A', id))!; return scanOutcome({ ...d.job, lead_count: d.leads.length }).label }
-  assert.deepEqual([await campaign(legacy), await campaign(fresh), await campaign(trial)], [NEUTRAL, NEUTRAL, 'Failed - the free-search key had trouble (not your key)'])
+  assert.deepEqual([await campaign(legacy), await campaign(fresh), await campaign(trial)], [NEUTRAL, NEUTRAL, 'Failed - the free-search service had trouble'])
   const plays = Object.fromEntries(recentPlays(jobs).map(p => [p.query, p.outcome]))
-  assert.deepEqual(plays, { 'Legacy search': 'failed: AI key rejected', 'Trial search': 'failed: free-search key trouble', 'New search': 'failed: AI key rejected' })
+  assert.deepEqual(plays, { 'Legacy search': 'failed: AI provider refused a request', 'Trial search': 'failed: free-search service trouble', 'New search': 'failed: AI provider refused a request' })
   assert.equal(await campaignDetail(sqliteDb(db), 'A', other), null)
   assert.equal(snap(db), before, 'reading writes nothing')
 })

@@ -33,7 +33,7 @@ export default function ThreadMetrics() {
                 ))}
               </tbody>
             </table>
-            <p className="text-gray-500">Verdicts are a model heuristic for your review, never proof of buyer intent. Ungraded means keyword-matched only (no model verdict, e.g. no AI key). Not-buyer threads are hidden from the review list but counted here so you can see the filter working.</p>
+            <p className="text-gray-500">Verdicts are a model heuristic for your review, never proof of buyer intent. Ungraded means keyword-matched only (no model verdict). Not-buyer threads are hidden from the review list but counted here so you can see the filter working.</p>
           </>
         )}
       </div>

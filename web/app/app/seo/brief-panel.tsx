@@ -38,7 +38,7 @@ export default function BriefPanel() {
   return (
     <div className="card p-6 mb-8">
       <h2 className="font-semibold mb-1">Content brief</h2>
-      <p className="text-[#555] text-sm mb-3">A blog-post brief for a topic your buyers search. Uses your AI key - one call on your own account, never ours.</p>
+      <p className="text-[#555] text-sm mb-3">A blog-post brief for a topic your buyers search. Review the brief before writing or publishing.</p>
       <div className="flex gap-2 mb-3">
         <input className="field flex-1" placeholder="e.g. how to find b2b leads without cold email" value={topic} onChange={e => setTopic(e.target.value)} maxLength={300} />
         <button className="btn-primary text-sm" disabled={busy || topic.trim().length < 3} onClick={run}>{busy ? 'Drafting...' : 'Draft brief'}</button>

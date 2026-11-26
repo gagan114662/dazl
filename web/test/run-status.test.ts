@@ -14,7 +14,7 @@ test('the London case: a run that extracted nothing is "Nothing extracted" with 
 
 test('technical failures, stops, no-match and results each have their own state and next action', () => {
   const s = (o: Record<string, unknown>) => { const r = runStatusOf(job(o) as never); return `${r.group}|${r.tag}|${r.next?.text ?? ''}` }
-  assert.equal(s({ status: 'failed', error: 'key_rejected' }), 'technical|Technical failure|Check your AI key in Settings')
+  assert.equal(s({ status: 'failed', error: 'key_rejected' }), 'technical|Technical failure|Review your plan in Settings')
   assert.equal(s({ status: 'failed', error: 'no_candidates', failed_sources: ['search:news'] }), 'technical|Technical failure|Try again', 'a failed source is never an empty search')
   assert.equal(s({ status: 'failed', error: 'scan_timeout' }), 'technical|Stopped|Try a narrower search')
   assert.equal(s({ search_hits: 0 }), 'no_match|Completed, no matches|Widen the search')

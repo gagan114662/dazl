@@ -79,6 +79,7 @@ try {
       assert.equal(await page.getByLabel('What you sell').inputValue(), '', 'nothing inferred into the profile')
       // #1703: bring-your-own-key is finished - the free read never asks for a key (KeyInline renders nothing).
       assert.equal(await page.getByLabel('Your AI key').count(), 0, 'no key is asked of the customer (#1703)')
+      assert.doesNotMatch(await page.getByTestId('free-site-read').locator('..').innerText(), /\b(?:AI|Anthropic|Claude) key\b/i, 'no customer AI-key copy on the website read step')
       assert.deepEqual(writes.filter(w => !w.startsWith('POST /api/scan/icp-from-url')), [], 'the free read never auto-saves (its own read POST aside)')
     })
 

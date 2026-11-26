@@ -3,6 +3,7 @@
 import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
+import { atsDate } from './ats-dates.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -311,7 +312,14 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   const needDate = c.date_source !== 'page', needProfile = !!c.person && !c.linkedin_url
   if (!needDate && !needProfile) return c
   let out = c
-  if (needDate && u) { const posted = await postingDay(u, fetchImpl, timeoutMs, now); if (posted) out = { ...out, date: posted, date_source: 'page' } }
+  // A posting on Greenhouse, Lever, Workable, Ashby or BambooHR carries its day in the board's own API record, with the record's URL as
+  // the source. That covers first_published, createdAt, published_on and the board listings; the page/JSON-LD path stays for
+  // everything else.
+  if (needDate && u) {
+    const ats = await atsDate(u, fetchImpl, now)
+    const posted = ats?.date ?? await postingDay(u, fetchImpl, timeoutMs, now)
+    if (posted) out = { ...out, date: posted, date_source: 'page' }
+  }
   const stillDate = needDate && out.date_source !== 'page'
   if (!stillDate && !needProfile) return out
   let raw = html
