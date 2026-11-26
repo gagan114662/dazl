@@ -58,7 +58,9 @@ export default function Journey() {
   // scan, which can belong to a different play sharing the request text (the Toronto/Austin mix-up). A late answer
   // for a play that is no longer featured is dropped by the guard where the title is built.
   useEffect(() => {
-    if (!playId) { setPlayIcp(null); return }
+    // No setState here synchronously (react-hooks/set-state-in-effect): with no featured play the title
+    // guard below already yields no icp, and a stale jobId-keyed answer is never used for another play.
+    if (!playId) return
     let live = true
     void get(`/api/scan/latest?job_id=${encodeURIComponent(playId)}`).then(r => { if (live) setPlayIcp(r && r.query ? { jobId: playId, icp: r.icp ?? null } : null) })
     return () => { live = false }
