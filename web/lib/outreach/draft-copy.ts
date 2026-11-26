@@ -81,9 +81,13 @@ function offerSentence(name: string, offer: string): string {
 }
 
 export function composeDraftCopy(lead: DraftCopyLead, businessName: string, positioning = ''): { subject: string; body: string } {
-  const offer = clean(positioning, 600)
   const name = clean(businessName, 150)
   if (!name) throw new DraftCopyError('seller_context_required')
+  // A legacy profile may label the seller's own offer. Strip that heading only from
+  // the offer input, then apply the same diagnostic filter to the remaining text.
+  const heading = `about ${name.toLowerCase()}:`
+  const profile = positioning.trimStart()
+  const offer = clean(profile.toLowerCase().startsWith(heading) ? profile.slice(heading.length) : profile, 600)
   if (!offer) throw new DraftCopyError('seller_offer_required')
   const contactName = clean(lead.name ?? '', 150)
   const who = contactName.split(' ')[0] || 'there'
