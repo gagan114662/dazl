@@ -98,11 +98,27 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   }
   const is404 = (s: number) => s === 404
   const L = f.review
-  await asB('POST /api/leads/[lead]/confirm', () => confirm.POST(req(`/api/leads/${L}/confirm`, 'POST', {}), ctx({ lead: L })), is404)
-  await asB('POST /api/leads/[lead]/domain-review', () => domainReview.POST(req(`/api/leads/${L}/domain-review`, 'POST', { action: 'withdraw' }), ctx({ lead: L })), is404)
-  await asB('POST /api/leads/[lead]/quarantine', () => quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x' }), ctx({ lead: L })), is404)
-  await asB('DELETE /api/leads/[lead]/quarantine', () => quarantine.DELETE(req(`/api/leads/${f.quarantined}/quarantine`, 'DELETE'), ctx({ lead: f.quarantined })), is404)
-  await asB('POST /api/leads/[lead]/quarantine (feedback_reason)', () => quarantine.POST(req(`/api/leads/${L}/quarantine`, 'POST', { reason: 'x', feedback_reason: 'competitor' }), ctx({ lead: L })), is404)
+  const confirmLead = (lead: string) => confirm.POST(req(`/api/leads/${lead}/confirm`, 'POST', {}), ctx({ lead }))
+  const withdrawDomain = (lead: string) => domainReview.POST(req(`/api/leads/${lead}/domain-review`, 'POST', { action: 'withdraw' }), ctx({ lead }))
+  const quarantineLead = (body: { reason: string; feedback_reason?: string }) => (lead: string) =>
+    quarantine.POST(req(`/api/leads/${lead}/quarantine`, 'POST', body), ctx({ lead }))
+  const releaseLead = (lead: string) => quarantine.DELETE(req(`/api/leads/${lead}/quarantine`, 'DELETE'), ctx({ lead }))
+  for (const [name, call, id] of [
+    ['POST /api/leads/[lead]/confirm', confirmLead, L],
+    ['POST /api/leads/[lead]/domain-review', withdrawDomain, L],
+    ['POST /api/leads/[lead]/quarantine', quarantineLead({ reason: 'x' }), L],
+    ['DELETE /api/leads/[lead]/quarantine', releaseLead, f.quarantined],
+    ['POST /api/leads/[lead]/quarantine (feedback_reason)', quarantineLead({ reason: 'x', feedback_reason: 'competitor' }), L],
+  ] as const) {
+    await asB(name, async () => {
+      const foreign = await call(id)
+      const missing = await call(hex())
+      assert.equal(missing.status, 404, name)
+      assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), name)
+      assert.equal(await foreign.clone().text(), await missing.text(), name)
+      return foreign
+    }, is404)
+  }
   await asB('GET /api/leads/[lead]/feedback', () => leadFeedback.GET(req(`/api/leads/${L}/feedback`, 'GET'), ctx({ lead: L })), is404)
   await asB('POST /api/leads/[lead]/feedback', () => leadFeedback.POST(req(`/api/leads/${L}/feedback`, 'POST', { verdict: 'accept' }), ctx({ lead: L })), is404)
   await asB('DELETE /api/leads/[lead]/feedback', () => leadFeedback.DELETE(req(`/api/leads/${L}/feedback`, 'DELETE', { id: 'x', reason: 'y' }), ctx({ lead: L })), is404)
