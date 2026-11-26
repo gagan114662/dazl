@@ -86,8 +86,8 @@ if (flag('apollo-budget')) {
 process.env.APOLLO_CREDIT_CAP = String(apolloBudget)
 const pdlKey = (process.env.MATRIX_PDL_KEY || '').trim()
 if (flag('apollo-plan-db') || flag('apollo-plan-input')) {
-  const dbPath = opt('apollo-plan-db')
-  const inputPath = opt('apollo-plan-input')
+  const dbPath = opt('apollo-plan-db') ?? ''
+  const inputPath = opt('apollo-plan-input') ?? ''
   if (!flag('dry') || !apolloBudget || !dbPath || !inputPath) {
     refuse('Apollo planning requires --dry, --contacts, --apollo-budget, --apollo-plan-db and --apollo-plan-input.')
   }
