@@ -396,7 +396,15 @@ export async function runSequences(db: Database.Database, tenantId: string, busi
   db.prepare("UPDATE sequence_steps SET status = 'uncertain' WHERE tenant_id = ? AND status = 'sending' AND claimed_at < ?").run(tenantId,now - UNCERTAIN_STALE_S)
   db.prepare("UPDATE outreach_messages SET status = 'uncertain', error = 'send_interrupted' WHERE tenant_id = ? AND status = 'sending' AND claimed_at < ?").run(tenantId,now - UNCERTAIN_STALE_S)
   db.prepare("UPDATE followup_messages SET status = 'uncertain' WHERE tenant_id = ? AND status = 'sending' AND created_at < ?").run(tenantId,now - UNCERTAIN_STALE_S)
-  const st = getState(db, tenantId)
+  let st = getState(db, tenantId)
+  // #1804: a pause taken only because Gmail's grant died clears itself once Gmail reads active
+  // again - reconnecting is the resume for this reason, and follow-ups send on their own from the
+  // next pass. Every other pause (an uncertain send, the owner's own) still needs its explicit resume.
+  if (st.paused && st.pause_reason === 'gmail_reconnect_needed' && gmailStatus(db, tenantId)?.status === 'active') {
+    db.prepare('UPDATE autopilot_settings SET paused = 0, pause_reason = NULL WHERE tenant_id = ?').run(tenantId)
+    auditAt(db, tenantId, 'sequence_auto_resumed', 'gmail_reconnected')
+    st = getState(db, tenantId)
+  }
   if (st.paused) return stop('paused')
   if ((d.flags ?? process.env).SEQUENCES_ENABLED !== '1' || (d.flags ?? process.env).AUTOPILOT_KILL === '1') return stop('sequences_disabled')
   if (!hasReadConsent(db,tenantId)) return stop('reading_not_enabled')

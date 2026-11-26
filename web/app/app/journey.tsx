@@ -7,6 +7,7 @@ import { editedBuyer, journey, playLeads, playLeadsUrl, showList, type JourneyIn
 import { scanCounts } from '@/lib/outreach/scan-drafts'
 import { constraintPills, PILLS_SHOWN, playName, playPace, skipNoticeLine, widenActions, type PlayWatch } from '@/lib/play-card'
 import { capNotice } from '@/lib/readiness'
+import { gmailReconnectNotice } from '@/lib/gmail/notice'
 import { leadCardSummary } from '@/lib/scan/lead-card'
 import { CAUSE_TEXT, recoveryNote, researchHint, researchTip } from '@/lib/lead-state'
 import { Avatar, Pill, Stepper } from './ui/bits'
@@ -31,6 +32,7 @@ export default function Journey() {
   const [drafts, setDrafts] = useState<{ drafts: number; approved: number } | null>(null)
   const [editing, setEditing] = useState(false)
   const [capped, setCapped] = useState<string | null>(null)
+  const [gmailDown, setGmailDown] = useState(false)
   // 'loading' until read; null = the list could not be read (the schedule is then unknown, never "Ran once").
   const [watches, setWatches] = useState<PlayWatch[] | null | 'loading'>('loading')
   const [sent, setSent] = useState<number | null>(null)
@@ -45,9 +47,13 @@ export default function Journey() {
   useEffect(() => {
     void loadProfile()
     void get('/api/scan/jobs').then(j => setJobs(Array.isArray(j?.jobs) ? j.jobs : 'failed'))
-    // Why sending stopped stays on screen (not under the collapsed setup details).
-    void get('/api/outreach/settings').then(o => setCapped(capNotice(o)))
+    // Why sending stopped stays on screen (not under the collapsed setup details). Re-read when
+    // the tab regains focus, so a grant revoked (or reconnected) in another tab shows without a reload.
+    const readSettings = () => void get('/api/outreach/settings').then(o => { setCapped(capNotice(o)); setGmailDown(gmailReconnectNotice(o?.gmail?.status)) })
+    readSettings()
+    window.addEventListener('focus', readSettings)
     void get('/api/watch').then(w => setWatches(Array.isArray(w?.watches) ? w.watches : null))
+    return () => window.removeEventListener('focus', readSettings)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // #1579: the plays are part of choosing the run shown (a repeating play shows its own last run, as on Plays), so nothing is chosen
@@ -123,6 +129,7 @@ export default function Journey() {
   return (
     <div className="space-y-4" data-testid="journey" data-stage={j.stage}>
       {capped && <p role="status" data-testid="cap-notice" className="card p-4 text-sm">{capped} <Link className="underline" href="/app/outreach">Outreach</Link></p>}
+      {gmailDown && <p role="alert" data-testid="gmail-reconnect-notice" className="card p-4 text-sm">Gmail is disconnected. Your approved emails stay queued. Reconnect Gmail, then press Send again on each approved email. <Link className="underline" href="/app/connect-gmail">Reconnect Gmail</Link></p>}
       {skipLine && <p role="status" data-testid="play-skip-notice" className="card p-4 text-sm">{skipLine} <Link className="underline" href="/app/plays">Plays</Link></p>}
 
       {/* The play, as a card: short name, Who / Signal / Pace, status. The full request is behind its (i). */}
