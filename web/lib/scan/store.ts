@@ -1,4 +1,5 @@
 import { isCarryStub } from './carry-exclusions.ts'
+import { placeTerms } from '../connectors/sitecrawl.ts'
 import { auditEventArgs, type AuditEvent } from '../audit.ts'
 import { migrateScanSpendCap } from './spend-cap.ts'
 import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
@@ -299,12 +300,21 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 // icp_inferred: 0 = submitted from an explicit review flow (the request said reviewed: true), 3 = carried raw (an
 // autosaved, restored or repeated profile, NOT a review). 3 is durable: a reload or repeat reads it back as
 // 'carried' and never promotes. Legacy 0 rows predate this distinction and are NOT proof of review either.
+function requestedQueryPlace(icp: string | null | undefined, query: string): string {
+  let wherePresent = false
+  try {
+    const where = (JSON.parse(icp ?? 'null') as { where?: unknown } | null)?.where
+    wherePresent = Array.isArray(where) && where.some(x => typeof x === 'string' && x.trim().length > 0 && x.trim() !== '-')
+  } catch { /* absent ICP */ }
+  return wherePresent ? '-' : placeTerms([], query, '')[0]?.slice(0, 100) || '-'
+}
+
 export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
   const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
-  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
+  db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+    id, userId, input.query.slice(0, 150) || '-', requestedQueryPlace(input.icp, input.query), input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }
