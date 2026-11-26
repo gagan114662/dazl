@@ -146,6 +146,22 @@ test('#1674 a transient homepage failure stays retryable despite a failure audit
   } finally { db.close() }
 })
 
+test('#1674 a robots-denied contact crawl is stored as failed even when it reaches the completion check', async () => {
+  const db = mk()
+  try {
+    const deny: Get = async url => new URL(url).pathname === '/robots.txt'
+      ? { status: 200, body: 'User-agent: *\nDisallow: /', finalUrl: url }
+      : okGet(url)
+    const intake = await run(db, { get: deny })
+    await intake.crawl
+    assert.ok(intake.job_id)
+    assert.deepEqual(db.prepare("SELECT status FROM connector_audit WHERE connector = 'sitecrawl' AND scan_job_id = ?").all(intake.job_id),
+      [{ status: 'robots_disallow' }])
+    assert.deepEqual(db.prepare('SELECT status FROM hiring_feed_crawl WHERE job_id = ?').all(intake.job_id),
+      [{ status: 'failed' }])
+  } finally { db.close() }
+})
+
 test('a stale reading row shows as interrupted, and running the same intake again re-reads it instead of stranding it behind the duplicate skip', async () => {
   const db = mk()
   const r = await run(db, { get: async () => null }); await r.crawl
