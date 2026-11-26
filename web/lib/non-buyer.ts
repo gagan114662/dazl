@@ -3,30 +3,17 @@ const INSTITUTION_FORMS = new Set([
   'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
 ]);
 
+const PRIVATE_HEALTH_SUFFIXES = new Set(['clinic', 'dental', 'physio', 'inc', 'ltd', 'corp']);
+const PUBLIC_HEALTH_FORMS = new Set(['health centre', 'health center', 'health sciences', 'health network']);
 const NON_PUBLIC_HOSPITAL_WORDS = new Set([
   'animal', 'veterinary', 'vet', 'pet', 'laptop', 'phone', 'computer', 'doll', 'teddy', 'toy', 'private',
 ]);
-
-export const HOSPITAL_OWNERSHIP_UNKNOWN = 'Hospital ownership could not be confirmed. Research only.';
-
-function hospitalOwnership(company: string, sourceText: string | null | undefined): 'public' | 'private' | null {
-  const text = ' ' + (sourceText ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
-  const name = ' ' + company + ' ';
-  const index = text.indexOf(name);
-  if (index < 0) return null;
-  const statement = text.slice(index + name.length);
-  if (/^(?:is|operates as) (?:an? |the )?(?:private|privately owned|for profit) hospital\b/.test(statement)) return 'private';
-  if (/^(?:is|operates as) (?:an? |the )?(?:public(?: sector)?|government owned) hospital\b/.test(statement) ||
-      /^(?:is )?(?:owned|operated|run) by (?:the )?(?:government\b|(?:[a-z0-9]+ ){0,4}health authority\b)/.test(statement)) return 'public';
-  return null;
-}
 
 export function isPublicSectorBody(input: {
   company: string;
   domain?: string | null;
   offer?: string | null;
-  sourceText?: string | null;
-}): { nonBuyer: boolean; reason: string; ownershipUnconfirmed?: true } {
+}): { nonBuyer: boolean; reason: string } {
   const company = input.company.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   const domain = hostname(input.domain);
   const offerClauses = (input.offer ?? '').toLowerCase().split(/[.!?;\n]+/);
@@ -56,16 +43,17 @@ export function isPublicSectorBody(input: {
   const localGovernment = first !== 'the' && words.length > 1 && (
     last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
   );
-  const hospital = words.length > 1 && (last === 'hospital' || last === 'hospitals') &&
-    !words.slice(0, -1).some(word => NON_PUBLIC_HOSPITAL_WORDS.has(word));
-  const ownership = hospital ? hospitalOwnership(company, input.sourceText) : null;
-  const namedBody = civicPlace || council || localGovernment || ownership === 'public' || INSTITUTION_FORMS.has(lastTwo);
+  const privateHealthForm = PRIVATE_HEALTH_SUFFIXES.has(last ?? '') || lastTwo === 'medical centre' || lastTwo === 'medical center';
+  const hospital = words.some(word => word === 'hospital' || word === 'hospitals') &&
+    !words.some(word => NON_PUBLIC_HOSPITAL_WORDS.has(word)) && lastTwo !== 'hospital supplies';
+  const publicHealthForm = words.some((word, index) => PUBLIC_HEALTH_FORMS.has(word + ' ' + words[index + 1]));
+  const namedBody = civicPlace || council || localGovernment ||
+    (!privateHealthForm && (hospital || publicHealthForm)) || INSTITUTION_FORMS.has(lastTwo);
   const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 
   if (govDomain || (namedBody && !requiresGovernmentDomain)) {
     return { nonBuyer: true, reason: govDomain ? 'The domain identifies a government or public-sector organization.' : 'The organization name identifies a government or public-sector body.' };
   }
-  if (hospital && ownership === null) return { nonBuyer: false, ownershipUnconfirmed: true, reason: HOSPITAL_OWNERSHIP_UNKNOWN };
   return { nonBuyer: false, reason: 'No clear public-sector identity was found.' };
 }
 
