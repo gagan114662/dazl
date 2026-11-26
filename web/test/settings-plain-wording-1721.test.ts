@@ -46,10 +46,17 @@ test('#1715 screen 3: the team panel says what you can do, and the operator role
   assert.match(s, /send\('\/api\/workspace\/invitations', 'POST', \{ email, role \}\)/, 'the invite still sends the stored value')
 })
 
-test('#1715 screen 4: the "Needs worker" badge tells the reader what to expect', () => {
+test('#1715 screen 4: the badge is a shared honest decision, and no supported worker note claims unavailable', () => {
   const s = src('settings/advanced-panel.tsx')
   assert.doesNotMatch(s, /Needs worker/, 'the "Needs worker" badge is gone')
-  assert.match(s, /worker: 'Not available yet'/, 'the worker status reads as a plain, honest state')
+  assert.match(s, /connectorBadge\(c, p\)/, 'the row badges through the one tested decision (behavioral pins: connector-badge-1721.test.ts)')
+  // The badge alone carries availability (Quest on #1917): no supported worker note starts with the
+  // unavailable claim. Facebook (supported: false) keeps its prefix by design.
+  for (const c of CHANNELS) {
+    if (c.status !== 'worker' || !c.platform) continue
+    if (c.id === 'facebook') { assert.match(c.note, /^Not available yet\./, 'Facebook keeps the unavailable prefix (unbuilt adapter)'); continue }
+    assert.doesNotMatch(c.note, /^Not available yet\./, `${c.id} is supported: its note does not claim unavailable`)
+  }
 })
 
 test('#1721 the audit panel states the retention rule without guessing who set it', () => {
