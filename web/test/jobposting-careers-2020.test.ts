@@ -38,6 +38,23 @@ test('CAREERS a company-owned page that declares datePosted is dated by it', () 
   assert.deepEqual(resolveStructuredDate(blocks, 'Yonovo', 'is hiring a Founding Sales Development Representative'), { date: '2026-10-20', kind: 'JobPosting' })
 })
 
+// Ziggy named these three employers directly (no prod lead points at them), so the fixtures say so. All three run their own
+// career site and publish no JSON-LD at all: the reader must return null rather than infer a day from anything else.
+test('CAREERS EU employers named by Ziggy publish no datePosted, so they get no date', () => {
+  for (const [name, country, industry, company, claim] of [
+    ['zalando-named-by-ziggy.json', 'Germany', 'e-commerce', 'Zalando', 'is hiring a Senior SAP Consultant'],
+    ['bolt-named-by-ziggy.json', 'Estonia', 'transport', 'Bolt', 'is hiring an operations specialist'],
+    ['spotify-named-by-ziggy.json', 'Sweden', 'media', 'Spotify', 'is hiring a Social Marketing Manager'],
+  ] as const) {
+    const f = recorded(name) as { named_by: string; country: string; industry: string; url: string; blocks: string[] }
+    assert.equal(f.named_by, 'Ziggy', `${name} is labelled as named, not as a prod lead`)
+    assert.equal(f.country, country)
+    assert.equal(f.industry, industry)
+    assert.equal(f.blocks.length, 0, `${f.url} carries no JSON-LD`)
+    assert.equal(resolveStructuredDate(f.blocks, company, claim), null)
+  }
+})
+
 test('CAREERS recorded company-owned pages with no JobPosting give no date', () => {
   for (const [name, company, claim] of [
     ['mediaforce-marketing-ca.json', 'Mediaforce', 'is hiring a Business Development Representative'],
