@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import type { Db } from '../db/client.ts'
 
 type ConsentTable = 'mail_read_consent' | 'mail_bounce_scan_consent'
@@ -25,6 +26,21 @@ export function removeReplyConsent(db: Db, table: ConsentTable, tenantId: string
     if (table === 'mail_read_consent') {
       yield* tx.run('UPDATE autopilot_settings SET followups_enabled = 0 WHERE tenant_id = ?', [tenantId])
     }
+    return result.changes > 0
+  })
+}
+
+/** Records every request in the autopilot audit and reports whether the setting changed. */
+export function disableReplyFollowups(db: Db, tenantId: string): Promise<boolean> {
+  return db.tx(function* (tx) {
+    const result = yield* tx.run(
+      'UPDATE autopilot_settings SET followups_enabled = 0 WHERE tenant_id = ? AND followups_enabled <> 0',
+      [tenantId],
+    )
+    yield* tx.run(
+      'INSERT INTO autopilot_audit (id, tenant_id, action, created_at) VALUES (?, ?, ?, ?)',
+      [randomBytes(12).toString('hex'), tenantId, 'followups_off', Math.floor(Date.now() / 1000)],
+    )
     return result.changes > 0
   })
 }
