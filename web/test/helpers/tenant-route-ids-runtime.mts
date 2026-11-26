@@ -112,9 +112,13 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
   await asB('DELETE /api/leads/[lead]/warm-path', () => warm.DELETE(req(`/api/leads/${L}/warm-path`, 'DELETE', { id: f.warmPath }), ctx({ lead: L })), s => s === 404 || s === 200)
   const retry = (lead: string) => enrichRetry.POST(req(`/api/leads/${lead}/enrich-retry`, 'POST', { provider: 'apollo', step: 'org' }), ctx({ lead }))
   const contact = (lead: string) => findContact.POST(req(`/api/leads/${lead}/find-contact`, 'POST', {}), ctx({ lead }))
+  const readWorkEmail = (lead: string) => workEmail.GET(req(`/api/leads/${lead}/work-email`, 'GET'), ctx({ lead }))
+  const lookupWorkEmail = (lead: string) => workEmail.POST(req(`/api/leads/${lead}/work-email`, 'POST', { target: 'ASECRETMUTUAL4q7|VP' }), ctx({ lead }))
   for (const [name, call, id] of [
     ['POST /api/leads/[lead]/enrich-retry', retry, L],
     ['POST /api/leads/[lead]/find-contact', contact, f.confirmed],
+    ['GET /api/leads/[lead]/work-email', readWorkEmail, L],
+    ['POST /api/leads/[lead]/work-email', lookupWorkEmail, L],
   ] as const) {
     await asB(name, async () => {
       const foreign = await call(id)
@@ -125,8 +129,6 @@ test("tenant B cannot read or change tenant A's lead, batch or reply-thread rows
       return foreign
     }, is404)
   }
-  await asB('GET /api/leads/[lead]/work-email', () => workEmail.GET(req(`/api/leads/${L}/work-email`, 'GET'), ctx({ lead: L })), is404)
-  await asB('POST /api/leads/[lead]/work-email', () => workEmail.POST(req(`/api/leads/${L}/work-email`, 'POST', { target: 'ASECRETMUTUAL4q7|VP' }), ctx({ lead: L })), is404)
   await asB('GET /api/leads/evidence', () => evidence.GET(req(`/api/leads/evidence?lead_id=${L}`, 'GET')), is404)
   await asB('GET /api/leads/page-signals', () => pageSignals.GET(req(`/api/leads/page-signals?lead_id=${L}`, 'GET')), is404)
   await asB('GET /api/leads/evidence-recheck', () => evidenceRecheck.GET(req(`/api/leads/evidence-recheck?lead_id=${L}`, 'GET')), is404)
