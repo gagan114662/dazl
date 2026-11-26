@@ -2099,6 +2099,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
           Object.keys(d.result_errors).every(k=>k==='max_uses_exceeded')
         if(found.outcome!=='ok'&&!onlyUseLimit)break
       } catch (e) {
+        if (e instanceof ClaudeSearchError && e.code === 'search_quota_exhausted') { ledger.record(source, totalNativeCandidates > 0 ? 'partial' : 'search_cap'); break }
         if (e instanceof OptionalAngleNoRoom) { ledger.record(source, 'partial'); break }
         if (e instanceof SpendRefused && refusalCode(e) === 'budget_stopped' && companyFirst && angleIndex > 0 && totalNativeCandidates > 0) { ledger.record(source, 'partial'); break }
         // Closed diagnostic codes only: no response, provider message, URL or credentials in source stats.

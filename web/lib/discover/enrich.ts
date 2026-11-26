@@ -3,6 +3,7 @@
 // own people. It runs on the small model, in parallel, and only fills fields that are empty. It never changes the signal,
 // its date or its proof, and never replaces a person the first pass already found.
 import Anthropic from '@anthropic-ai/sdk'
+import { count, messageCacheTokens } from '../llm/claude-response-shape.ts'
 import { configuredSearchAllowance, createSearchBudget, type SearchBudget } from './search-budget.ts'
 import { publishedEmail, type DiscoveredLead, type DiscoverUsage, type SeenPage } from './agent.ts'
 
@@ -143,7 +144,10 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
   let text = ''
   for (let turn = 0; turn < 3; turn++) {
     const reservation = await searchBudget.reserve(MAX_SEARCHES)
-    if (!safe()) throw new Error('Enrichment accounting is uncertain; no further request was sent')
+    if (!safe()) {
+      await reservation.settle(0)
+      throw new Error('Enrichment accounting is uncertain; no further request was sent')
+    }
     const res = await client.messages.stream({
       model: ENRICH_MODEL, max_tokens: 4000, service_tier: 'standard_only', system: SYSTEM,
       tools: [
@@ -152,17 +156,16 @@ async function enrichOne(client: Anthropic, lead: DiscoveredLead, offer: string 
       ],
       messages,
     }, { signal }).finalMessage()
-    if (res.model !== ENRICH_MODEL ||
-      ![res.usage.input_tokens, res.usage.output_tokens, res.usage.cache_read_input_tokens, res.usage.cache_creation_input_tokens]
-        .every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) {
+    const cache = messageCacheTokens(res.usage)
+    if (res.model !== ENRICH_MODEL || !cache || !count(res.usage.input_tokens) || !count(res.usage.output_tokens)) {
       throw new Error('Enrichment usage is unavailable; reservation retained')
     }
     await reservation.settle(reservation.allowance === 0 ? 0 : res.usage.server_tool_use?.web_search_requests)
     usage.requests++
     usage.input_tokens += res.usage.input_tokens ?? 0
     usage.output_tokens += res.usage.output_tokens ?? 0
-    usage.cache_read_tokens += res.usage.cache_read_input_tokens ?? 0
-    usage.cache_write_tokens += res.usage.cache_creation_input_tokens ?? 0
+    usage.cache_read_tokens += cache.read
+    usage.cache_write_tokens += cache.written
     usage.searches += res.usage.server_tool_use?.web_search_requests ?? 0
     for (const b of res.content) {
       if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) for (const r of b.content) if (r.type === 'web_search_result' && !seen.has(r.url)) seen.set(r.url, { url: r.url, title: r.title ?? null, page_age: r.page_age ?? null, text: null })

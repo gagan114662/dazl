@@ -1,4 +1,5 @@
 // A shared allowance for every native search request in one discovery run.
+import { ClaudeSearchError } from '../llm/claude-web-search-estimate.ts'
 import { scanSpendContext } from '../scan/spend-cap.ts'
 import { persistedSearchBudget } from './search-ledger.ts'
 export const NATIVE_SEARCH_CEILING = 15
@@ -16,7 +17,7 @@ export function configuredSearchAllowance(raw: string | undefined): number {
 export async function reserveNativeScanSearches(requested: number): Promise<SearchReservation | null> {
   if (!scanSpendContext()) return null
   const hold = await createSearchBudget().reserve(requested)
-  if (hold.allowance === 0) throw new Error('Native search budget exhausted')
+  if (hold.allowance === 0) throw new ClaudeSearchError('search_quota_exhausted')
   return hold
 }
 export interface SearchReservation { allowance: number; settle(used: unknown): Promise<void> }

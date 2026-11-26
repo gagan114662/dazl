@@ -5,6 +5,7 @@
 // A record is a claim with its proof attached (evidence_url, signal_date). lib/discover/check.ts then reads the proof page
 // itself and labels the record; it never hides one.
 import Anthropic from '@anthropic-ai/sdk'
+import { count, messageCacheTokens } from '../llm/claude-response-shape.ts'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
 
@@ -161,8 +162,8 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
       ],
       messages,
     }, { signal: deps.signal }).finalMessage()
-    if (![res.usage.input_tokens, res.usage.output_tokens, res.usage.cache_read_input_tokens, res.usage.cache_creation_input_tokens]
-      .every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) {
+    const cache = messageCacheTokens(res.usage)
+    if (!cache || !count(res.usage.input_tokens) || !count(res.usage.output_tokens)) {
       throw new Error('Discovery usage is unavailable; reservation retained')
     }
     if (res.model !== DISCOVER_MODEL) throw new Error('Discovery served an unexpected model; reservation retained')
@@ -170,8 +171,8 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
     usage.requests++
     usage.input_tokens += res.usage.input_tokens ?? 0
     usage.output_tokens += res.usage.output_tokens ?? 0
-    usage.cache_read_tokens += res.usage.cache_read_input_tokens ?? 0
-    usage.cache_write_tokens += res.usage.cache_creation_input_tokens ?? 0
+    usage.cache_read_tokens += cache.read
+    usage.cache_write_tokens += cache.written
     usage.searches += res.usage.server_tool_use?.web_search_requests ?? 0
     stop = res.stop_reason ?? 'unknown'
     model = res.model

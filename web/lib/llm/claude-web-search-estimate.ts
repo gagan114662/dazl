@@ -21,7 +21,7 @@ export const MICROS = 1_000_000
 const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
 const roundedUp = (usd: number) => Math.ceil(usd * MICROS) / MICROS
 
-export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'request_uncertain' | 'rate_limited' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
+export type ClaudeSearchFailure = 'invalid_input' | 'count_failed' | 'reservation_missing' | 'search_quota_exhausted' | 'request_uncertain' | 'rate_limited' | 'key_rejected' | 'usage_uncertain' | 'provider_limit_violation'
 export type ClaudeSearchUsageDiagnostic =
   | 'usage_envelope' | 'usage_model' | 'usage_geo' | 'usage_speed' | 'usage_tier'
   | 'usage_input_count' | 'usage_output_count' | 'usage_search_count' | 'usage_other_tool'
