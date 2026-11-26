@@ -1,9 +1,10 @@
 'use client'
-import { discoverCountParts, discoverLine, discoverSources, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
+import { discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { CompanyFirstResultCounts } from '@/lib/scan/company-first-results'
 import { OptionalRegistryNote } from '../optional-registry-note'
 import { CrmPush } from './crm-push'
+import { FieldSource, PublishedEmailProvenance, WebsiteProvenance } from './field-provenance'
 import { windowNotice } from '@/lib/scan/window-notice'
 import { KEY_UNREADABLE_COPY, knownErrorCopy, lossyProfileCopy, profilePreviewNote, type PreviewNote } from '@/lib/error-copy'
 import { trialRefusedCopy } from '@/lib/trial-copy'
@@ -102,7 +103,9 @@ interface CommenterBatch { batch_id: string; context: string; total: number; not
 // #1037: the one person a lead names (lib/people/lead-person.ts), on a ready card and on a held row alike: name, title and a
 // LinkedIn or source link with its basis, or plainly "No buyer named yet" (children: what the row offers next to that text).
 const onlyNameOnlyRows = (rows: Parameters<typeof contactsFromEnrichments>[0] | undefined, roles: string): boolean => onlyNameOnly(contactsFromEnrichments(rows ?? [], roles))
-function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }) {
+type PersonLineProps = { p: LeadPerson | null; nameOnly?: boolean; children?: ReactNode }
+
+function PersonLine({ p, nameOnly, children, sourceLink }: PersonLineProps & { sourceLink?: ReactNode }) {
   if (!p) return <div className="text-sm mt-0.5 text-[var(--ink-2)]" data-testid="lead-person" data-empty="true">{nameOnly ? NAME_ONLY_REASON : NO_BUYER}{children}</div>
 
   const title = p.title.trim()
@@ -112,10 +115,17 @@ function PersonLine({ p, nameOnly, children }: { p: LeadPerson | null; nameOnly?
     <span className="font-medium">{p.name}</span>
     {title && <span className="text-[var(--ink-2)]"> · {title}</span>}
     {p.linkedin && <> · <a className="underline" href={p.linkedin} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-linkedin">LinkedIn</a></>}
-    {p.source && <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></>}
+    {sourceLink ?? (p.source && <> · <a className="underline" href={p.source} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-person-source">source</a></>)}
     <span className="text-[var(--ink-3)] text-xs" data-testid="lead-person-basis"> ({personBasis(p)})</span>
     {missing && <span className="block text-[var(--ink-2)]">{missing}</span>}
   </div>
+}
+
+function PersonWithProvenance({ signalSource, ...props }: PersonLineProps & { signalSource: string }) {
+  // Older discover rows used the signal URL when no contact citation was recorded.
+  const { p } = props
+  const source = p && !p.current && p.source === signalSource ? null : p?.source
+  return <PersonLine {...props} sourceLink={<> · <FieldSource field="Contact" source={source} testId="lead-person-source" /></>} />
 }
 
 function ReviewCompanyWebsite({ lead }: { lead: Lead }) {
@@ -1428,10 +1438,11 @@ export default function LeadsClient() {
                   <div className="min-w-0 break-words">
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
-                    <PersonLine p={lp} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonLine>
+                    <PersonWithProvenance p={lp} signalSource={l.source_url} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonWithProvenance>
                     {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
+                    {!l.quarantined_at && <PublishedEmailProvenance lead={l} />}
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>
@@ -1457,7 +1468,7 @@ export default function LeadsClient() {
                 </div>}
                 <p className="mt-3 font-semibold text-[15px] leading-snug">{c.why}</p>
                 {c.timing && <p className="text-xs text-[var(--ink-2)] mt-1" data-testid="card-timing">{c.timing}</p>}
-                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />Proof: {c.sourceHost}</a><span className="sr-only"> · </span>{l.company_domain && l.company_domain !== c.sourceHost && <><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" data-testid="lead-website" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">Website: {l.company_domain}</a><span className="sr-only"> · </span></>}<span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span></p>
+                <p className="text-xs mt-2 flex flex-wrap gap-2 items-center"><a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={c.sourceUrl} target="_blank" rel="noopener noreferrer nofollow"><Icon name="link" className="w-3 h-3" />Proof: {c.sourceHost}</a><span className="sr-only"> · </span><span className="pill pill-plain"><Icon name="calendar" className="w-3 h-3" />{c.date}</span><WebsiteProvenance lead={l} /></p>
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
@@ -1509,13 +1520,6 @@ export default function LeadsClient() {
                   <div className="text-gray-500 text-[10px]" data-people-section="search-only">Search result only</div>
                   {searchOnly.length > 0 ? searchOnly.map(row) : <div className="text-gray-500">None.</div>}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
-                  {l.company_first_published_email?.display_only === true && !l.quarantined_at && (
-                    <div data-testid="company-first-published-email">
-                      <span className="text-[#111]">{l.company_first_published_email.address}</span>{' '}
-                      <span className="text-gray-500">Published work email (display only)</span>{' '}
-                      <a className="underline text-[#111]" href={l.company_first_published_email.source_url} target="_blank" rel="noopener noreferrer nofollow">company source</a>
-                    </div>
-                  )}
                   {/* #1036: Find work email for the buyer-role people, only on a lead whose website is settled (lib/people/work-email-eligible.ts). */}
                   {!l.quarantined_at && workEmailOffered(l) && (() => {
                     const site = identityOf({ id: l.id, contact: l.contact }, l.enrichments)
@@ -1582,7 +1586,6 @@ export default function LeadsClient() {
             {l.stored_why && <details className="text-xs my-2"><summary>Saved historical grade (not a currentness verdict; a saved grade may have been made without your offer text and is not rescored)</summary><p>Saved intent: {l.stored_intent ?? 'unknown'}. {l.stored_why}</p></details>}
             {!l.currentness_held && !l.window_held && l.human_confirmed_at === null && l.confidence !== null && l.timing_proof_gap === null && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="timing-proof">Draftable without your review: the event day is proven on the cited source inside your window, and the company website, a named contact and a contact route the company published are confirmed. A current buying need is still not verified.</p>}
             {isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="discover-confidence">{discoverLine(l)}</p>}
-            {isDiscoverLead(l) && <p className="text-xs pl-3 my-2" data-testid="discover-sources">Sources: {discoverSources(l).map((x, i) => <span key={x.field}>{i > 0 ? ' · ' : ''}<a className="underline underline-offset-2" href={x.url} target="_blank" rel="noreferrer noopener">{x.label}</a></span>)}</p>}
             {l.window_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2">Outside the time window you asked for, or its date is unknown - research only. It cannot be drafted or sent, even after you review the source. Run a scan with a wider window to include it.</p>}
             {l.gate_held && !isDiscoverLead(l) && <p className="text-xs border-l-2 border-black pl-3 my-2" data-testid="gate-held">A required check (the sales-hiring proof) has not passed. Research only: checking the source cannot change that; only a new scan where the check passes can.</p>}
             {l.currentness_held && !l.window_held && !l.gate_held && !isDiscoverLead(l) && (l.timing === 'proof_backed'
@@ -1658,9 +1661,10 @@ export default function LeadsClient() {
             {rows.map(l => (
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <ReviewCompanyWebsite lead={l} />
+                {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} /><PublishedEmailProvenance lead={l} /></div>}
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
-                {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonLine nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
+                {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Saved signal claim: ${l.signal}`}</div>{hiringTimingLine(l.signal, l.signal_kind) && <div className="text-gray-400 text-xs" data-testid="hiring-not-buying">{hiringTimingLine(l.signal, l.signal_kind)}</div>}
                 <span className="text-[#333] text-xs mr-3">{unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : l.source_kind === 'hiring_feed' && l.review_reason === 'source_review_required' ? 'Saved from a public job posting - literal source checks do not verify its meaning, date, buying need or consent' : (reviewLabel(l.review_reason) ?? 'Not verified')}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}

@@ -1,3 +1,4 @@
+import { undeliverableAddress } from './undeliverable-address.ts'
 // Calibrated launch (#405): an alternative to approving the first WARMUP_SENDS emails by hand. The tenant writes one
 // explicit launch policy - who sends, to whom, what is excluded, how much, what the copy may claim, when to stop - and
 // the machine runs a preflight against it. Only a policy the tenant accepted at the current version, with every check
@@ -87,7 +88,7 @@ export interface PreflightInput {
 }
 
 export type PreflightFailure = PolicyProblem | 'policy_not_accepted' | 'mailbox_mismatch' | 'test_inbox_failed' | 'too_few_samples' | 'autopilot_off' | 'consent_required'
-  | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced' | 'policy_changed'
+  | 'undeliverable_address' | 'sample_evidence' | 'sample_date' | 'sample_contact' | 'sample_claims' | 'sample_excluded' | 'sample_invalid' | 'stop_not_enforced' | 'policy_changed'
 
 export const REQUIRED_STOPS = ['reply', 'optOut', 'bounce', 'uncertainPause', 'domainCap'] as const
 const validSample = (s: SampleDraft) => !!s && typeof s === 'object' && typeof s.leadId === 'string' && s.leadId.trim() !== ''
@@ -121,6 +122,7 @@ export function preflight(input: PreflightInput): PreflightResult {
     if (!s.dateOk) bad.push('sample_date')
     if (!s.contactOk) bad.push('sample_contact')
     if (s.claimIssues.length) bad.push('sample_claims')
+    if (undeliverableAddress(s.to).blocked) bad.push('undeliverable_address')
     if (excludedEmails.has(to) || domainExcluded(domainOf(to))) bad.push('sample_excluded')
     if (bad.length) { held.add(s.leadId); bad.forEach(b => failures.add(b)) }
   }

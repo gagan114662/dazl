@@ -1,0 +1,77 @@
+import { discoverContact, discoverSite, emailOnCompanySite } from '../../../lib/discover/card.ts'
+import { domainBasisFor, publishedContact, type PublishedEmailLead } from '../../../lib/outreach/published-email.ts'
+
+function webUrl(raw: string | null | undefined): URL | null {
+  if (!raw) return null
+  try {
+    const url = new URL(raw)
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password ? url : null
+  } catch {
+    return null
+  }
+}
+
+export function FieldSource({ field, source, testId }: { field: string; source?: string | null; testId?: string }) {
+  const url = webUrl(source)
+  return url
+    ? <a className="underline underline-offset-2" href={url.href} target="_blank" rel="noopener noreferrer nofollow" data-testid={testId}>{field} source</a>
+    : <span>{field} source unavailable</span>
+}
+
+type WebsiteLead = Pick<PublishedEmailLead, 'enrichments'> & { company_domain: string | null }
+
+export function WebsiteProvenance({ lead }: { lead: WebsiteLead }) {
+  const domain = discoverSite(lead.company_domain)
+  if (!domain) return <span className="text-[var(--ink-2)]">Company website unavailable</span>
+
+  const basis = domainBasisFor(`website@${domain}`, lead.enrichments)
+  const page = webUrl(basis.url)
+  const pageHost = discoverSite(page?.hostname)
+  const sameSite = pageHost === domain || pageHost?.endsWith(`.${domain}`)
+  const stored = lead.enrichments?.find(row =>
+    row.connector === 'discover' && row.kind === 'domain' && discoverSite(row.value) === domain)
+  const basisSource = basis.kind !== 'unrecorded' && basis.domain === domain
+    && (sameSite || basis.kind === 'linked' || basis.kind === 'link_text_only') ? page?.href : null
+
+  return <span className="inline-flex flex-wrap items-center gap-x-2 text-[var(--ink-2)]">
+    <a className="pill pill-plain hover:border-[var(--ink-3)] min-h-11" href={`https://${domain}`} target="_blank" rel="noopener noreferrer nofollow" data-testid="lead-website">Website: {domain}</a>
+    <FieldSource field="Website" source={stored?.source_url ?? basisSource} />
+  </span>
+}
+
+type EmailLead = PublishedEmailLead & {
+  company_domain: string | null
+  name?: string | null
+  source_kind?: string | null
+  company_first_published_email?: { address: string; source_url: string; display_only: true } | null
+}
+
+function emailEvidence(lead: EmailLead): { address: string; source: string | null | undefined } | null {
+  const published = lead.company_first_published_email
+  if (published?.display_only === true) return { address: published.address, source: published.source_url }
+
+  if (lead.source_kind === 'discover') {
+    const email = discoverContact(lead)?.email
+    return email && emailOnCompanySite(email.address, email.source, lead.company_domain) ? email : null
+  }
+
+  const contact = publishedContact(lead)
+  if (!contact || contact.purpose === 'non-sales') return null
+  const matchingRows = (lead.enrichments ?? []).filter(row =>
+    row.connector === 'sitecrawl' && row.kind === 'email' && row.value.trim().toLowerCase() === contact.email)
+  const crawl = matchingRows.reduce<(typeof matchingRows)[number] | undefined>((latest, row) =>
+    !latest || (row.retrieved_at ?? 0) > (latest.retrieved_at ?? 0) ? row : latest, undefined)
+  const context = lead.contact_context
+  const citedAddress = context?.excerpt.toLowerCase().split(/[\s"'<>(),;:]+/).includes(contact.email)
+  return { address: contact.email, source: crawl ? crawl.source_url : citedAddress ? context?.source_url : null }
+}
+
+export function PublishedEmailProvenance({ lead }: { lead: EmailLead }) {
+  const email = emailEvidence(lead)
+  if (!email) return <div className="text-xs text-[var(--ink-2)]">Published work email unavailable</div>
+
+  return <div className="text-xs text-[var(--ink-2)] break-words" data-testid={lead.company_first_published_email?.display_only ? 'company-first-published-email' : 'published-work-email'}>
+    Published work email{lead.company_first_published_email?.display_only ? ' (display only)' : ''}: {email.address}{' '}
+    <FieldSource field="Email" source={email.source} />
+  </div>
+}
