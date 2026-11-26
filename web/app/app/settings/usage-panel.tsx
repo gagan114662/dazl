@@ -8,7 +8,7 @@ const OUTCOME: Record<string, string> = {
   unusable: 'rewrite discarded (unusable output)',
   blocked_claim: 'rewrite discarded (asserted an unverified claim)',
   error: 'failed',
-  no_key: 'no AI key on file',
+  no_key: 'not run: the AI was not set up for this account',
   no_profile: 'refused - no positioning in Memory',
 }
 
@@ -29,7 +29,6 @@ export default function UsagePanel() {
             {attempts.map((a, i) => (
               <div key={i} className="text-xs text-[#333] flex flex-wrap gap-x-3">
                 <span>{new Date(a.created_at * 1000).toLocaleString()}</span>
-                <span>{a.vendor ?? 'no key'}{a.model ? ` · ${a.model}` : ''}</span>
                 <span>{OUTCOME[a.outcome] ?? a.outcome}</span>
                 {a.input_tokens != null && <span>{a.input_tokens} in / {a.output_tokens ?? '?'} out tokens</span>}
               </div>
