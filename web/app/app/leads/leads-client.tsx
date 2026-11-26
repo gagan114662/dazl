@@ -71,7 +71,7 @@ import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { lastActivityNote } from '@/lib/scan/progress'
 import { statedOffer } from '@/lib/scan/play-offer-text'
-import { canQuoteWebsiteDraft, reviewOffer, websiteReviewOffer } from './website-review-offer'
+import { canQuoteWebsiteDraft, requestConfirmationProfile, reviewOffer, websiteReviewOffer } from './website-review-offer'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
 import PlanViewCard from './plan-view'
@@ -992,12 +992,13 @@ export default function LeadsClient() {
   // Every carry runs as stored (reviewed: false): nothing is confirmed, rejected or answered by the run alone. ONLY
   // the review editor's "Run scan with this profile" submits reviewed: true - the one explicit review event.
   const startReviewed = startIcp ? false : undefined
+  const requestProfile = requestConfirmationProfile(query, priorIcp, savedBuyer)
   function chooseDirectOffer(offer: string, saved: string, freshTarget = false) {
     setOfferConflict(null)
     // A different offer starts a different targeting profile for this play.
     // Neither earlier reviewed plays nor Settings are changed.
     // Reviewed exclusions (do-not-contact, competitors, disqualifiers) still go with the run either way.
-    const { icp: carry, carryExclude } = directOfferRun(offer, saved, startIcp, freshTarget)
+    const { icp: carry, carryExclude } = directOfferRun(offer, saved, startIcp, freshTarget || !!requestProfile)
     void run(carry, offer, carry ? startReviewed : undefined, carryExclude)
   }
   const businessIcp = startIcp
@@ -1079,7 +1080,7 @@ export default function LeadsClient() {
       {/* Submitting the sentence runs the scan (the server works out the profile, as the run-without-review path always did)
           and lands on live progress; reviewing the profile first is optional. */}
       {pendingEst?.query === query && <EstimateConfirm est={pendingEst.est} query={query} busy={starting || scanActive} onConfirm={() => void confirmRun(pendingEst.est.ack, pendingEst.query, pendingEst.withIcp, pendingEst.offer, pendingEst.reviewed, pendingEst.websiteApproval, pendingEst.carryExclude)} onCancel={() => setPendingEst(null)} />}
-      <form onSubmit={e => { e.preventDefault(); if (openWebsiteDraft) reviewPanel.current?.focus(); else void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
+      <form onSubmit={e => { e.preventDefault(); if (openWebsiteDraft) reviewPanel.current?.focus(); else if (requestProfile) void run(null, undefined, undefined, requestProfile.carryExclude); else void run(startIcp, undefined, startReviewed) }} className={`${jobId ? 'card p-5 sm:p-6 mb-4 order-last mt-6' : 'card px-5 py-8 sm:px-12 sm:py-12 mb-5'}`}>
         <div className={jobId ? '' : 'max-w-2xl mx-auto'}>
         <label htmlFor="play" className={`block font-bold tracking-tight mb-4 ${jobId ? 'text-lg' : 'text-2xl sm:text-4xl text-center'}`}>Who do you want to reach?</label>
         <div className="ask">
