@@ -25,7 +25,6 @@ test('DATES the board is recognised from the posting URL, for every platform we 
     ['https://apply.workable.com/brightloop/j/1A2B3C4D5E/', 'workable'],
     ['https://brightloop.workable.com/j/1A2B3C4D5E', 'workable'],
     ['https://jobs.ashbyhq.com/brightloop/0a1b2c3d-4e5f-6789-abcd-ef0123456789', 'ashby'],
-    ['https://brightloop.bamboohr.com/careers/123', 'bamboohr'],
   ]
   for (const [url, platform] of cases) assert.equal(atsPosting(url)?.platform, platform, url)
   assert.equal(atsPosting('https://example.com/careers/123'), null, 'an ordinary page is not an ATS posting')
@@ -49,14 +48,10 @@ test('DATES Lever: createdAt is epoch milliseconds, and the EU board uses the EU
   assert.equal(d?.sourceUrl, api)
 })
 
-test('DATES Workable and BambooHR read their published fields', async () => {
+test('DATES Workable reads its published field', async () => {
   const wu = 'https://apply.workable.com/brightloop/j/1A2B3C4D5E/'
   const wapi = 'https://apply.workable.com/api/v1/accounts/brightloop/jobs/1A2B3C4D5E'
   assert.equal((await atsDate(wu, stub({ [wapi]: { body: { published_on: '2026-11-19', created_at: '2026-11-17' } } }).f, NOW))?.date, '2026-11-19')
-  const bu = 'https://brightloop.bamboohr.com/careers/123'
-  const bapi = 'https://brightloop.bamboohr.com/careers/list'
-  const d = await atsDate(bu, stub({ [bapi]: { body: { result: [{ id: '123', postedDate: '2026-11-21', jobOpeningName: 'Service Manager' }] } } }).f, NOW)
-  assert.deepEqual(d, { date: '2026-11-21', sourceUrl: bapi, platform: 'bamboohr' })
 })
 
 test('DATES Ashby: the board listing is searched for the posting id', async () => {

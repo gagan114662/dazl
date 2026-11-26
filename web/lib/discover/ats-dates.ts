@@ -1,9 +1,9 @@
 // #1910 DATES: the date a hiring lead was published, read from the job board's own API record. The posting page on
-// Greenhouse, Lever, Workable, Ashby and BambooHR prints no reliable date, but the board publishes the same posting as a
-// record that carries one. That record is the proof page's own data (no third party), so the day it names counts.
+// Greenhouse, Lever, Workable and Ashby print no reliable date, but the board publishes the same posting as a record that
+// carries one. That record is the proof page's own data (no third party), so the day it names counts.
 //
 // Never invent a date: a field that is missing, unparseable, in the future or older than the window gives nothing.
-export type AtsPlatform = 'greenhouse' | 'lever' | 'workable' | 'ashby' | 'bamboohr'
+export type AtsPlatform = 'greenhouse' | 'lever' | 'workable' | 'ashby'
 
 export interface AtsPosting {
   platform: AtsPlatform
@@ -66,19 +66,6 @@ export function atsPosting(url: string | URL): AtsPosting | null {
         const id = seg[1]
         const hit = Array.isArray(jobs) ? jobs.map(obj).find(x => x.id === id || String(x.jobUrl ?? '').includes(id)) : null
         return obj(hit).publishedAt
-      },
-    }
-
-  const bh = /^([a-z0-9-]+)\.bamboohr\.com$/.exec(host)
-  if (bh && seg.length >= 2 && seg[0] === 'careers' && /^\d+$/.test(seg[1]))
-    return {
-      platform: 'bamboohr',
-      apiUrl: `https://${bh[1]}.bamboohr.com/careers/list`,
-      read: j => {
-        const r = obj(j)
-        const list = Array.isArray(r.result) ? r.result : Array.isArray(obj(r.result).jobs) ? obj(r.result).jobs as unknown[] : []
-        const hit = list.map(obj).find(x => String(x.id ?? '') === seg[1])
-        return obj(hit).postedDate ?? obj(hit).publishedDate ?? obj(hit).posted
       },
     }
 
