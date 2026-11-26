@@ -59,7 +59,7 @@ import { evidenceOriginLabel, purgedNote } from '@/lib/scan/evidence-origin'
 import { playSuggestions, type PlaySuggestions } from '@/lib/play-suggestions'
 import { historyStatus, runTone, type CampaignRun } from '@/lib/run-status'
 import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
-import { outcomeOwnCopy, scanOutcome } from '@/lib/scan/scan-outcome'
+import { outcomeOwnCopy, scanOutcome, type ScanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { ContactStatusLine } from './contact-status'
 import { Icon } from '../ui/icons'
@@ -206,24 +206,29 @@ type ZeroResultScan = {
   lead_count?: number | null
   query?: string | null
   error?: string | null
+  outcome?: Pick<ScanOutcome, 'kind' | 'label' | 'detail' | 'next'> | null
   quality?: { candidates: number; dropped: number | null } | null
   run_report?: {
     discover?: { stop: string; searches: number; returned?: number } | null
-    native_web_search?: { searches: number | null; max_searches: number } | null
+    native_web_search?: {
+      searches: number | null
+      max_searches: number
+      evidence_diagnostic?: { result_errors?: { max_uses_exceeded?: number } } | null
+    } | null
     stop?: { code: string } | null
   }[] | null
 }
 
 function renderZeroResultReason(scan: ZeroResultScan | null) {
   if (scan?.status !== 'done' || scan.lead_count !== 0) return null
-  // The scan's trial-stop notice already explains a monetary limit.
-  if (scan.error === 'trial_budget_reached') return null
   const report = scan.run_report?.at(-1)
   const discover = report?.discover
   const nativeSearch = report?.native_web_search
   const discoveryStop = discover?.stop === 'end_turn' ? null : discover?.stop
-  const { reason, nextStep, action } = zeroResultReason({
-    stop: discoveryStop ?? report?.stop?.code ?? scan.error ?? null,
+  const nativeLimit = (nativeSearch?.evidence_diagnostic?.result_errors?.max_uses_exceeded ?? 0) > 0
+  const stop = scan.error ?? report?.stop?.code ?? discoveryStop ?? (nativeLimit ? 'max_uses_exceeded' : null)
+  const helper = zeroResultReason({
+    stop,
     query: scan.query ?? '',
     offer: statedOffer(scan.query),
     searchesUsed: discover?.searches ?? nativeSearch?.searches ?? 0,
@@ -232,11 +237,20 @@ function renderZeroResultReason(scan: ZeroResultScan | null) {
     candidates: scan.quality?.candidates ?? discover?.returned ?? 0,
     rejected: scan.quality?.dropped ?? 0,
   })
+  const outcome = scan.outcome
+  const trialStop = scan.error === 'trial_budget_reached' && outcome?.kind === 'stopped'
+  const zeroMatch = !stop && outcome?.kind === 'zero_match' && helper.code !== 'budget_spent'
+  const extractionShortfall = !stop && outcome?.kind === 'none_extracted' && helper.code === 'unknown'
+  const reason = trialStop || extractionShortfall ? outcome.label : zeroMatch ? 'Nothing matched this search.' : helper.reason
+  const detail = trialStop || extractionShortfall ? outcome.detail : null
+  const next = trialStop || zeroMatch ? outcome.next : null
   return (
     <div className="p-10 text-center text-sm text-gray-500" data-testid="zero-result-reason">
       <p>{reason}</p>
-      <p className="mt-1">{nextStep}</p>
-      {action && <a href={action.href} className="btn-ghost btn-sm mt-3">{action.label}</a>}
+      {detail && <p className="mt-1">{detail}</p>}
+      {next ? <a href={next.href} className="btn-ghost btn-sm mt-3">{next.text}</a>
+        : <p className="mt-1">{helper.nextStep}</p>}
+      {!next && helper.action && <a href={helper.action.href} className="btn-ghost btn-sm mt-3">{helper.action.label}</a>}
     </div>
   )
 }
@@ -1316,7 +1330,7 @@ export default function LeadsClient() {
       )}
       {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4" data-testid="scan-failed-copy">{failedOwnCopy ? failedOwnCopy : jobError === 'accounting_uncertain' ? 'This run was interrupted while a paid step was in flight. That step is counted as billed at the amount reserved for it and stays counted against your limits. dazl did not run it again automatically because that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'provider_rate_limited' ? 'The AI provider rate-limited a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'provider_rejected' ? 'The AI provider refused a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'accounting_failed' ? 'This run stopped because the cost of one paid step could not be recorded. dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'source_error' ? 'A source this run depends on failed, so the run stopped before it could conclude. This was not a budget stop: raising or removing the budget would not have searched further. Nothing was concluded about whether leads exist. Try again - if it keeps failing, the source may be down.' : jobError === 'no_discovery' ? 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for this run. That is not proof that no matching companies exist. Run again with a broader search or without that scope limit to look further.' : jobError === 'search_allowance_reached' ? 'The web search allowance for today (this account\'s share of the day, or its share of the platform\'s) was used up, so nothing was searched. That is not an empty search and not a budget limit. Try again after the day turns over (UTC).' : jobError === 'no_lead_source' ? 'No source this run may use could search: the free news search did not run (switched off on this server, or the request has no usable profile) and the capped web search was off, not set up or refused before any search, so nothing was searched. Nothing was concluded about whether leads exist.' : jobError === 'unbounded_fallback_hold' ? 'This run could not conclude from its free sources, and the broader paid research step has no price bound, so the run stopped instead of starting it. Raising or removing the budget would not change this. Nothing was concluded about whether leads exist.' : jobError === 'model_unpriced' ? 'This run stopped because the configured model has no known price, so no paid step was allowed. Raising the budget would not help - check the model setup.' : jobError === 'spend_count_failed' ? 'This run stopped because the cost of a paid step could not be estimated in advance, so the step was not sent. Raising the budget would not help.' : jobError === 'spend_accounting_unavailable' ? 'This run stopped because spend accounting could not be written, so no further paid step was allowed. This is a safety stop, not a budget limit: raising the budget would not help. Nothing was concluded about whether leads exist.' : jobError === 'ownership_lost' ? 'This run stopped because it lost ownership of its own job - another process took it over. This was not a budget stop.' : jobError === 'spend_config_invalid' ? 'This run stopped because its spend configuration was invalid, so no paid step ran. Raising the budget would not help.' : jobError === 'spend_refused' ? 'This run stopped because a paid step was refused before it was sent. Nothing was concluded about whether leads exist.' : jobError === 'budget_stopped' ? (stopRefusalReason === 'owner_pool_limit' ? 'This run stopped because the shared account spending limit (its day/month pool) refused the next paid step before it ran. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. The per-scan budget did not cause it - raising or removing that budget would not have searched further.' : stopRefusalReason === 'over_cap' ? 'This run stopped because its recorded spending cap refused the next paid step before it ran. That is a cap stop, not an empty search: nothing was concluded about whether leads exist. That cap may be the run budget or the service per-scan limit; which one was binding was not kept with this stop.' : stopRefusalReason === 'over_limit' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : stopRefusalReason === 'trial_budget_reached' ? 'This free scan stopped at its spending limit. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. A free scan searches the web only in ways whose cost is fixed in advance.' : 'This run stopped before it could conclude. It was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.') : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'The AI provider rejected the key this scan used. Check or replace your AI key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
       {jobId && capacityNote?.job === jobId && <p className="card p-3 mb-4 text-sm" role="status" data-testid="capacity-note">{capacityNote.text}</p>}
-      {jobId && status === 'done' && trialStop && (
+      {jobId && status === 'done' && trialStop && (!zeroResultScan || visibleLeads.length > 0) && (
         <div className="card p-4 mb-4 text-sm" role="status" data-testid="trial-stop">
           <span className="font-semibold">{trialStop.label}</span>
           {trialStop.detail && <p className="text-[var(--ink-2)] mt-1">{trialStop.detail}</p>}
