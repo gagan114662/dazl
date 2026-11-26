@@ -17,7 +17,7 @@ import { norm, replySafetyStale } from './store.ts'
 import { domainReviewFor } from './domain-review.ts'
 import { deliverabilityBlocked } from './contact-route.ts'
 import { classifyPurpose, pickCrawledEmail, addressCitationUrl, draftEvidenceUrls } from './published-email.ts'
-import { discoverContact, emailOnCompanySite, signalStale } from '../discover/card.ts'
+import { discoverContact, emailOnCompanySite } from '../discover/card.ts'
 import { isGenericInbox } from './generic-inbox.ts'
 import { undeliverableAddress } from './undeliverable-address.ts'
 import { isQuarantined } from '../scan/quarantine.ts'
@@ -341,9 +341,9 @@ export function discoverRecipientRefusal(db: Database.Database, tenantId: string
 }
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
-  const state = db.prepare('SELECT review_reason, event_date, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; event_date: string | null; company_domain: string | null } | undefined
+  const state = db.prepare('SELECT review_reason, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; company_domain: string | null } | undefined
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
-  if (!state?.event_date || signalStale(state.event_date)) throw new OutreachError('lead_currentness_unconfirmed')
+  if (currentnessHeld(db, tenantId, leadId)) throw new OutreachError('lead_currentness_unconfirmed')
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // #1250: a shared inbox (info@, sales@, reception@ ...) is not a contact and is never drafted to; the first address that is not one is used
   // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
@@ -545,6 +545,7 @@ export function approve(db: Database.Database, tenantId: string, id: string, seq
   const m = approveChecks(db, tenantId, id, sequenceSet)
   db.transaction(() => {
     if (leadCarryExcluded(db, tenantId, m.lead_id)) throw new OutreachError('lead_excluded')
+    if (!testFixtureSend(db,tenantId,m) && currentnessHeld(db,tenantId,m.lead_id)) throw new OutreachError('lead_currentness_unconfirmed')
     // Read under the write lock, the same lock the identity review action takes, so a withdraw cannot slip in between this check and the update.
     if (!testFixtureSend(db, tenantId, m) && domainReviewHeld(db, tenantId, m.lead_id, m.to_email)) throw new OutreachError(domainHoldCode(db, tenantId, m.lead_id, m.to_email))
     snapshotSignalContext(db, tenantId, id)
