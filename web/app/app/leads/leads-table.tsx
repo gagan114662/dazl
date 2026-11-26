@@ -6,7 +6,8 @@
 // side panel in the next PR.
 import { useState } from 'react'
 import { leadCardSummary } from '@/lib/scan/lead-card'
-import { leadPerson } from '@/lib/people/lead-person'
+import { leadPerson, personBasis } from '@/lib/people/lead-person'
+import { identityOf } from '@/lib/scan/opportunity'
 import { ContactStatusLine } from './contact-status'
 import { Pill } from '../ui/bits'
 import { readLeadsSort, writeLeadsSort, sortLeads, type LeadsSort, type LeadsSortKey } from './leads-table-sort.ts'
@@ -48,13 +49,13 @@ export default function LeadsTable({ leads, icpWho, drafted, approved }: {
         <tbody className="divide-y divide-[var(--line)]">
           {rows.map(l => {
             const c = leadCardSummary(l, icpWho)
-            const person = leadPerson(l.enrichments, icpWho)
+            const person = leadPerson(l.enrichments, icpWho, undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
             return (
               <tr key={l.id} data-testid="leads-row" data-lead-id={l.id} className="align-middle h-7 hover:bg-white transition-colors">
                 <td className="px-3 py-1 font-medium whitespace-nowrap">{c.company}</td>
                 <td className="px-3 py-1">
                   {person
-                    ? <span className="block max-w-56 truncate whitespace-nowrap">{person.name}{person.title ? <span className="text-xs text-[var(--ink-3)]">{' · '}{person.title}</span> : null}</span>
+                    ? <span className="block max-w-56 truncate whitespace-nowrap">{person.name}{person.title ? <span className="text-xs text-[var(--ink-3)]">{' · '}{person.title}</span> : null}<span className="text-xs text-[var(--ink-3)]" data-testid="lead-person-basis"> ({personBasis(person)})</span></span>
                     : <span className="text-[var(--ink-3)]">No buyer named yet</span>}
                 </td>
                 <td className="px-3 py-1 max-w-72 whitespace-nowrap truncate">
@@ -68,6 +69,8 @@ export default function LeadsTable({ leads, icpWho, drafted, approved }: {
                     ? <Pill tone="pink">Rejected</Pill>
                     : approved[l.id] || drafted?.has(l.id)
                     ? <Pill tone="mint">Approved</Pill>
+                    : drafted == null
+                    ? <span className="text-xs text-[var(--ink-3)]">couldn't load</span>
                     : <span className="text-xs text-[var(--ink-3)]">To decide</span>}
                 </td>
               </tr>

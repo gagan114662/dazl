@@ -49,3 +49,29 @@ test('#1038 the Leads page offers the table as default with a cards toggle', () 
   assert.match(client, /LeadsTable/, 'the table component is wired in')
   assert.match(client, /leads-view/, 'the view choice is persisted too')
 })
+
+test('#1038 review fixes: the person cell reuses the card identity step and carries its caveat', () => {
+  // (a) the card's identity step (leads-client.tsx): a buyer the card names never reads "No buyer named yet" in the table
+  assert.match(table, /import \{ identityOf \} from '@\/lib\/scan\/opportunity'/, 'the table imports the card identity step')
+  assert.match(table, /leadPerson\(l\.enrichments, icpWho, undefined, identityOf\(\{ id: l\.id, contact: l\.contact \}, l\.enrichments \?\? \[\]\)\)/, 'the table passes the same identity as the card')
+  // (b) the same basis caveat the cards show (data-testid lead-person-basis in leads-client.tsx)
+  assert.match(table, /personBasis\(person\)/, 'the person carries its basis caveat')
+  assert.match(table, /data-testid="lead-person-basis"/, 'the caveat is identifiable, as on the cards')
+})
+
+test("#1038 review fixes: unreadable drafts never read as a decision, and the approval states hold", () => {
+  // (c) an honest "couldn't load" when drafts could not be read (drafted == null), never "To decide"
+  assert.match(table, /drafted == null/, 'the table knows the unreadable-drafts case')
+  const cantLoad = table.indexOf("couldn't load"); const decide = table.indexOf('To decide')
+  assert.ok(cantLoad !== -1, "the honest 'couldn't load' state exists")
+  assert.ok(decide !== -1 && cantLoad < decide, "couldn't load is the branch before 'To decide'")
+  // the approval states: Rejected wins, Approved next
+  assert.match(table, /quarantined_at[\s\S]{0,120}?Rejected/, 'quarantined reads Rejected')
+  assert.match(table, /approved\[l\.id\] \|\| drafted\?\.has\(l\.id\)[\s\S]{0,120}?Approved/, 'approved or drafted reads Approved')
+})
+
+test('#1038 review fixes: the table and the cards share the one tab filter', () => {
+  const uses = client.match(/visibleLeads\.filter\(l => leadTab === 'rejected'/g) ?? []
+  assert.ok(uses.length >= 2, 'the identical tab-filter expression serves both views')
+  assert.match(client, /<LeadsTable leads=\{visibleLeads\.filter/, 'the table renders the filtered set')
+})
