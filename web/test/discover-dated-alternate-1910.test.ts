@@ -14,12 +14,12 @@ const careers = 'https://ferndental.example/careers/receptionist'
 const ats = 'https://job-boards.greenhouse.io/ferndental/jobs/123'
 const record = 'https://boards-api.greenhouse.io/v1/boards/ferndental/jobs/123'
 
-async function scan({ source, status, alternate = careers, page, apiDay, seen = true, onSecondPass = false }: {
-  source: string; status: number; alternate?: string; page: string; apiDay?: string; seen?: boolean; onSecondPass?: boolean
+async function scan({ source, status, alternate = careers, page, apiDay, seen = true, onSecondPass = false, returnedAlternate = true }: {
+  source: string; status: number; alternate?: string; page: string; apiDay?: string; seen?: boolean; onSecondPass?: boolean; returnedAlternate?: boolean
 }) {
   const lead: DiscoveredLead = {
     company: 'Fern Dental', domain: 'ferndental.example', signal: quote, signal_date: indexDay,
-    evidence_url: source, evidence_quote: quote, alternate_evidence: { url: alternate, quote, date: indexDay },
+    evidence_url: source, evidence_quote: quote, alternate_evidence: returnedAlternate ? { url: alternate, quote, date: indexDay } : undefined,
     person: null, title: null, person_source_url: null, linkedin_url: null, email: null, email_source_url: null,
     confidence: 'high', why: '',
   }
@@ -79,4 +79,9 @@ test('an unrelated ATS owner or a URL absent from the search trace is never used
     const result = await scan({ source: zip, status: 403, page, ...options })
     assert.deepEqual([result.lead.evidence_url, result.lead.date, result.reads], [zip, null, [zip]])
   }
+})
+
+test('the run can follow a single employer posting already found by the search without an explicit alternate', async () => {
+  const { lead } = await scan({ source: indeed, status: 401, page: `<p>${quote}.</p><p>Posted ${posted}.</p>`, returnedAlternate: false })
+  assert.deepEqual([lead.evidence_url, lead.date, lead.date_on_page], [careers, posted, true])
 })
