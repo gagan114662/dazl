@@ -1,11 +1,10 @@
-// KeyInline inside the first-run brain form (#409): on 40e7bf30 the nested <form> was parser-dropped, so 'Save key'
-// submitted the BRAIN form natively (POST /app) - no llm-key PUT, state lost (reviewer-confirmed: real Chromium,
-// server logs, pixels; E2/E3 blocked). This drives the real UI through the fixed path on the exact build under
-// test: keyless free read -> brain step (KeyInline inside the brain <form>) -> Save key BY CLICK and BY ENTER ->
-// the llm-key PUT runs, no native document POST ever happens, and onSaved's keyed re-read fires.
+// The first-run brain form after a keyless free read, post-#1703: bring-your-own-key is finished, so the form has NO
+// key field and never calls the key route - and continuing it, BY CLICK and BY ENTER inside a text field, runs exactly
+// one controlled profile POST with no native document POST. This keeps the original #409 nested-form regression class
+// (a parser-dropped nested <form> natively POSTing the page) pinned on the form that remains, after KeyInline became a
+// no-op pending deletion (#1879/#1880).
 // House style: production build, throwaway database, server under test/helpers/net-fence.ts, every /api/* call
-// stubbed in the browser (the persist chain against the real encrypted store is the reviewer's fenced harness).
-// NOT part of `npm test`. Run: cd web && npm run build && node test/ui/key-inline-save.ui.mjs
+// stubbed in the browser. NOT part of `npm test`. Run: cd web && npm run build && node test/ui/key-inline-save.ui.mjs
 // Exit 1 on a failed expectation. Missing playwright or build: NOT RUN, exit 2 (SMOKE_ALLOW_SKIP=1 makes it exit 0).
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -34,27 +33,25 @@ const FREE = { free: true, site: 'acme.example', source: 'https://acme.example/'
   { kind: 'title', text: 'Acme Inc', source: 'https://acme.example/' },
   { kind: 'description', text: 'CRM cleanup for sales teams.', source: 'https://acme.example/' },
 ] }
-const KEYED = { sells: 'CRM cleanup for sales teams', source: 'https://acme.example/', icp: { summary: 'Sales ops teams at B2B SaaS companies.', who: ['Sales ops managers'], industries: ['B2B SaaS'], sizes: [], where: [], signals: [], exclude: [] } }
-const usage = hasKey => ({ plan: 'free', scans_used: 0, scan_limit: 50, has_key: hasKey, billing_status: null, trial: null })
+// A fresh founder with its free searches intact: the read and the first play run on dazl's keys, no customer key anywhere.
+const USAGE = { plan: 'free', scans_used: 0, scan_limit: 50, has_key: false, billing_status: null, trial: { funded: true, remaining: 3, cap: 3 } }
 
 const b = await chromium.launch()
 try {
   for (const [tag, pressEnter] of [['click', false], ['enter-key', true]]) {
-    const puts = []; const icpCalls = []; const nativePosts = []; const saves = []
+    const keyCalls = []; const nativePosts = []; const saves = []
     const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
     await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
     await ctx.route('**/*', async route => {
       const req = route.request(); const u = new URL(req.url())
       if (u.origin !== base) return route.abort()
       if (!u.pathname.startsWith('/api/')) return route.continue()
-      if (u.pathname === '/api/usage') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(usage(puts.length > 0)) })
+      if (u.pathname === '/api/usage') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(USAGE) })
       if (u.pathname === '/api/scan/jobs') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"jobs":[]}' })
       if (u.pathname === '/api/settings/profile' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
-      // The keyed read auto-saves the inferred profile exactly as read (first-run.tsx readSite) before it can open
-      // the ready screen; an unstubbed POST would 404 and the flow would fall back to the brain step.
       if (u.pathname === '/api/settings/profile' && req.method() === 'POST') { saves.push(req.postData() ?? ''); return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) }
-      if (u.pathname === '/api/settings/llm-key' && req.method() === 'PUT') { puts.push(req.postData() ?? ''); return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) }
-      if (u.pathname === '/api/scan/icp-from-url') { icpCalls.push(req.postData() ?? ''); return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(puts.length > 0 ? KEYED : FREE) }) }
+      if (u.pathname === '/api/settings/llm-key') { keyCalls.push(`${req.method()} ${u.pathname}`); return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }) }
+      if (u.pathname === '/api/scan/icp-from-url') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FREE) })
       return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
     })
     const page = await ctx.newPage()
@@ -64,28 +61,25 @@ try {
     await page.getByLabel('Your website').fill('acme.example')
     await page.getByRole('button', { name: 'Read my site' }).click()
     await page.getByTestId('free-site-read').waitFor({ timeout: 15000 })
-    // KeyInline is inside the brain <form> here: the placement that ate the save on the released build.
-    assert.ok(await page.locator('form #ai-key').isVisible(), `${tag}: KeyInline rendered inside the brain form`)
-    await page.locator('#ai-key').fill('sk-ant-fixture-key-0123456789')
-    if (pressEnter) await page.locator('#ai-key').press('Enter')
-    else await page.getByRole('button', { name: 'Save key' }).click()
-    await page.waitForTimeout(2500)
-    assert.equal(nativePosts.length, 0, `${tag}: no native document POST (the nested-form capture)`)
-    assert.equal(puts.length, 1, `${tag}: exactly one llm-key PUT`)
-    const body = JSON.parse(puts[0])
-    assert.equal(body.vendor, 'anthropic', `${tag}: vendor from the key prefix`)
-    assert.equal(body.api_key, 'sk-ant-fixture-key-0123456789', `${tag}: the trimmed key is what goes out`)
-    assert.equal(icpCalls.length, 2, `${tag}: onSaved re-read the site (keyed)`)
-    await page.getByTestId('ready-step').waitFor({ timeout: 30000 })
-    assert.equal(saves.length, 1, `${tag}: exactly one profile save - the keyed read saves exactly as read; the free read never does`)
+    // #1703: the brain form offers no key field and no Save key button - searches run on dazl's own keys.
+    assert.equal(await page.locator('#ai-key').count(), 0, `${tag}: no key field in the brain form (#1703)`)
+    assert.equal(await page.getByRole('button', { name: 'Save key' }).count(), 0, `${tag}: no Save key button (#1703)`)
+    assert.equal(await page.getByLabel('Your AI key').count(), 0, `${tag}: no labelled key input anywhere (#1703)`)
+    await page.getByLabel('What you sell').fill('CRM cleanup for sales teams.')
+    await page.getByLabel('Who buys it').fill('Sales ops teams at B2B SaaS companies.')
+    if (pressEnter) await page.getByLabel('What you sell').press('Enter')
+    else await page.getByRole('button', { name: 'Looks right, continue' }).click()
+    await page.getByText('Who do you want to find?').waitFor({ timeout: 15000 })
+    assert.equal(nativePosts.length, 0, `${tag}: no native document POST (the nested-form capture class)`)
+    assert.equal(keyCalls.length, 0, `${tag}: the key route is never called (#1703)`)
+    assert.equal(saves.length, 1, `${tag}: exactly one controlled profile save`)
     const savedBody = JSON.parse(saves[0])
-    assert.equal(savedBody.sells, 'CRM cleanup for sales teams', `${tag}: the save carries the keyed read's sells`)
+    assert.equal(savedBody.sells, 'CRM cleanup for sales teams.', `${tag}: the save carries the typed sells`)
     assert.equal(savedBody.website, 'https://acme.example', `${tag}: the save carries the normalized website`)
-    assert.deepEqual(savedBody.buyer?.who, ['Sales ops managers'], `${tag}: the save carries the keyed read's inferred buyer`)
-    assert.equal(await page.getByTestId('free-site-read').count(), 0, `${tag}: keyed re-read replaced the free card`)
-    if (process.env.SHOTS) await page.locator('[data-testid=onboarding-screen]').first().screenshot({ path: path.join(process.env.SHOTS, `key-inline-save-${tag}.png`) })
+    assert.equal(savedBody.buyer?.summary, 'Sales ops teams at B2B SaaS companies.', `${tag}: the save carries the typed buyer`)
+    if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `brain-no-key-${tag}.png`) })
     await ctx.close()
-    console.log(`PASS ${tag}: KeyInline save runs the real PUT inside the brain form; no native POST`)
+    console.log(`PASS ${tag}: brain form has no key field; continue runs one profile POST, no native POST, no key call`)
   }
 } finally { srv.kill(); await b.close(); rmSync(tmp, { recursive: true, force: true }) }
 console.log('key-inline-save: all journeys pass')

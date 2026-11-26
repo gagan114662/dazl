@@ -76,6 +76,8 @@ const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path
 const card = company => page.getByTestId('lead-card').filter({ hasText: company })
 try {
   await page.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
+  // Card-content checks: select the Cards view explicitly - the default view is the table (#1038).
+  await page.getByTestId('view-cards').click()
   await page.getByTestId('lead-card').first().waitFor({ timeout: 15000 })
   if (process.env.BEFORE_ONLY) { await card('Bright Dental').getByRole('button', { name: 'Approve' }).click(); await page.waitForTimeout(800); await shot('leads'); console.log('before shot'); process.exit(0) }
   assert.equal(await page.getByTestId('approved-bar').count(), 0, "another scan's draft does not count")

@@ -241,7 +241,7 @@ try {
     await card(page).waitFor()
     const foot = page.getByTestId('by-signal-companies')
     await foot.waitFor()
-    assert.equal((await foot.innerText()).trim(), '4 leads; 1 without a company name. 1 company checked.', `${tag}: the by-signal footnote`)
+    assert.equal((await foot.innerText()).trim(), '4 leads from 2 companies; 1 without a company name. 1 company checked.', `${tag}: the by-signal footnote`)
     if (process.env.SHOTS) { await foot.scrollIntoViewIfNeeded(); await page.screenshot({ path: path.join(process.env.SHOTS, `home-results-1772-${tag}.png`) }) }
     assert.deepEqual(writes, []); await ctx.close()
     // 2b. #1678 (before the desktop-only scenes below, so it runs at phone width too): the step with two buttons stays readable. At phone width its text keeps the row and the buttons sit underneath it;
