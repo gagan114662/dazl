@@ -39,7 +39,12 @@ export class DraftCopyError extends Error {
 // URLs are stripped, not just the source_url field (Qodo): an excerpt or profile line can carry one
 // inline ("Hiring details: https://..."), and no URL of any kind belongs in the draft. The composer
 // paraphrases in plain words rather than quoting, so removing a URL token does not falsify a quote.
-const clean = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/https?:\/\/\S+/gi, ' ').replace(/\bwww\.\S+/gi, ' ').replace(/\s+/g, ' ').replace(/^[\s:;,.-]+/, '').trim().slice(0, max)
+// A record can carry diagnostic lines alongside real evidence or offer text.
+// Omit the entire contaminated line so a fragment cannot become a new claim.
+const SYSTEM_LINE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|(?:status|error)\s*[:=]\s*)[1-5]\d\d\b|[{}]|^\s*\[\s*["\d\]]|saved excerpt|contact address published|^\s*about [^:]+:/i
+const clean = (s: string, max: number) => s.replace(/https?:\/\/\S+/gi, ' ').replace(/\bwww\.\S+/gi, ' ')
+  .split(/\r\n?|\n/).filter(line => !SYSTEM_LINE.test(line)).join(' ')
+  .replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s:;,.-]+/, '').trim().slice(0, max)
 const takeWords = (s: string, n: number) => { const w = s.split(/\s+/).filter(Boolean); return w.length <= n ? s : `${w.slice(0, n).join(' ')}...` }
 // Trim at a word boundary and mark the cut, so a quoted prefix is never presented as the whole text.
 const trimWords = (s: string, max: number) => {
@@ -80,7 +85,8 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
   const name = clean(businessName, 150)
   if (!name) throw new DraftCopyError('seller_context_required')
   if (!offer) throw new DraftCopyError('seller_offer_required')
-  const who = lead.name ? clean(lead.name, 150).split(' ')[0] : 'there'
+  const contactName = clean(lead.name ?? '', 150)
+  const who = contactName.split(' ')[0] || 'there'
   const company = lead.company ? clean(lead.company, 150) : ''
   // Only the machine-checked source excerpt supports a factual opener.
   const evidence = {
@@ -101,7 +107,7 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
         ? `I saw ${seen}.`
         : `I saw that ${lowerFirst(seen)}.`
   return {
-    subject: `Quick question for ${company || lead.name || 'you'}`.slice(0, 150),
+    subject: `Quick question for ${company || contactName || 'you'}`.slice(0, 150),
     body: `Hi ${who},\n\n${opener}\n\n${offerSentence(name, offer)}\n\nOpen to a quick chat?\n\nThanks,`,
   }
 }
