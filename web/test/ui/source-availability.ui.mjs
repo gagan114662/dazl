@@ -3,7 +3,7 @@
 // Real production build, throwaway database, server under test/helpers/net-fence.ts, EVERY /api/* call answered from a
 // stub in the browser: no scan runs, no key check. Off-host requests are aborted. It proves:
 //   1. the play entry lists only the sources a scan here CAN use (capability wording, never "every scan searches");
-//      a usable opt-in social source is not listed; with no key it says a scan cannot start until a key is added;
+//      a usable opt-in social source is not listed; with no key and the free searches used up it names the plan, never a key;
 //   2. each unavailable source is marked with its reason, and a link to fix it when the user can (no key and no searches left -> See your plan,
 //      social not connected / no consent -> Set up); operator-off sources say "not set up on this server", no link;
 //   3. the progress view names only usable sources plus the extras this run asked for, never an unavailable one, and
