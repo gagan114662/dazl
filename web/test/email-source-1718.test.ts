@@ -18,7 +18,7 @@ import { fetchPageDetailed, htmlToText } from '../lib/scan/fetch-page.ts'
 import { checkEmailSource, checkLead } from '../lib/discover/check.ts'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
-import { discoverContact, discoverSources, isDiscoverLead, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
+import { discoverContact, discoverSources, isDiscoverLead, isPageProvenEmail, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
 
 import { displayedEmailSource, emailsInText, publishedEmail } from '../lib/outreach/published-email.ts'
 
@@ -62,11 +62,15 @@ test('a longer mailbox or hostname does not prove a substring', async () => {
   assert.equal(lead.email, null)
 })
 
-test('a legacy discovery citation does not prove the address was read', () => {
-  const lead = { source_kind: 'discover', name: 'Dana Buyer', source_url: url,
-    enrichments: [{ connector: 'discover', kind: 'email', value: email, source_url: url, label: 'published on a public page' }] }
-  assert.equal(discoverContact(lead)?.email, null)
-  assert.equal(discoverSources(lead).some(source => source.field === 'email'), false)
+test('a legacy published Discovery email remains visible with its source without qualifying as newly page-proven', () => {
+  const row = { connector: 'discover', kind: 'email', value: email, source_url: url, label: 'published on a public page' }
+  const lead = { source_kind: 'discover', name: 'Dana Buyer', enrichments: [row] }
+  assert.equal(isPageProvenEmail(row), false)
+  assert.deepEqual(discoverContact(lead)?.email, { address: email, source: url })
+  assert.deepEqual(discoverSources(lead), [{ field: 'email', label: 'Email', url }])
+  for (const source_url of [null, 'javascript:alert(1)', 'https://user:password@example.com/about']) {
+    assert.equal(discoverContact({ ...lead, enrichments: [{ ...row, source_url }] })?.email, null)
+  }
 })
 
 test('a proof-marked email supplies its own source and a raw guess stays hidden', () => {
