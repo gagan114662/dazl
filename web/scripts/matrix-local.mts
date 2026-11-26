@@ -27,6 +27,7 @@ import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { RunDeps, runJob } from '../lib/scan/runner.ts'
 import type { CaseResult, MatrixCase, MatrixThresholds } from './matrix-score.mts'
 import { parseEnvFile } from './matrix-env.mts'   // no pipeline import: the env file is read before the pipeline loads
 
@@ -84,6 +85,11 @@ if (flag('apollo-budget')) {
   }
   apolloBudget = Math.min(requested, operatorApolloCap)
 }
+const evidenceOutput = flag('apollo-evidence-out') ? opt('apollo-evidence-out') ?? '' : null
+if (evidenceOutput !== null && (!evidenceOutput || !apolloBudget || flag('dry') || cases.length !== 1)) {
+  refuse('Apollo evidence export requires one non-dry case, --contacts and --apollo-budget. Not running.')
+}
+if (evidenceOutput && existsSync(expand(evidenceOutput))) refuse('Apollo evidence output already exists. Not running.')
 process.env.APOLLO_CREDIT_CAP = String(apolloBudget)
 const pdlKey = (process.env.MATRIX_PDL_KEY || '').trim()
 if (flag('apollo-plan-db') || flag('apollo-plan-input')) {
@@ -166,7 +172,23 @@ if (contacts) {
 const results: CaseResult[] = []
 let crashed = false
 for (const c of cases) {
-  const r = await runCase(db, c, { tenant: tenantOf(c), cap, timeoutS, thresholds, deps: { master }, contacts })
+  const tenantId = tenantOf(c)
+  let scanId: string | undefined
+  let candidates: Parameters<NonNullable<RunDeps['onApolloEvidence']>>[0] = []
+  let run: typeof runJob | undefined
+  if (evidenceOutput) {
+    const runner = await import('../lib/scan/runner.ts')
+    run = (store, job, deps) => {
+      scanId = job.id
+      return runner.runJob(store, job, { ...deps, onApolloEvidence: rows => { candidates = rows } })
+    }
+  }
+  const r = await runCase(db, c, { tenant: tenantId, cap, timeoutS, thresholds, deps: { master }, contacts, run })
+  if (evidenceOutput && scanId && !r.error && r.status === 'done') {
+    const snapshot = { tenantId, scanId, scanLimit: apolloBudget, candidates }
+    writeFileSync(expand(evidenceOutput), JSON.stringify(snapshot), { flag: 'wx', mode: 0o600 })
+    console.error(`Apollo evidence saved: ${candidates.length} eligible lead(s); no Apollo requests sent`)
+  }
   if (r.error?.startsWith('crashed')) crashed = true
   results.push(r)
   console.error(`${c.id}: ${r.status}${r.error ? ` (${r.error})` : ''} cand=${r.candidates} leads=${r.leads} ready=${r.ready} usd=${r.usd == null ? '?' : r.usd.toFixed(3)} (${r.seconds}s)`)
