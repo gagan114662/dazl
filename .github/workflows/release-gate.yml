@@ -30,9 +30,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # PRs: one group per PR. Pushes to main (#1504): one shared group; a newer main push cancels the older run.
+  # PRs cancel stale runs. Main pushes share a group so the active run finishes
+  # and GitHub replaces older pending runs with the newest one.
   group: ${{ github.event_name == 'push' && 'release-gate-main' || format('release-gate-{0}', github.event.pull_request.number || github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   browser:
     runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
