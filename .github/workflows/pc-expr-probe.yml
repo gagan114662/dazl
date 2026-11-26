@@ -1,0 +1,35 @@
+name: pc-expr-probe
+# Temporary probe (never merged): proves expression-selected job/service containers on the dazl-ci lane.
+on:
+  pull_request:
+    paths: [".github/workflows/pc-expr-probe.yml"]
+permissions:
+  contents: read
+jobs:
+  mapping-container:
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER || 'ubuntu-latest' }}
+    container: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && fromJSON('{"image":"ubuntu:24.04","options":"--cpus 4 --memory 6g --memory-swap 6g --pids-limit 2048 --shm-size 1g --umask 0022"}') || '' }}
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.PR_CI_RUNNER == 'dazl-ci' && fromJSON('[]') || fromJSON('["5432:5432"]') }}
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        shell: ${{ vars.PR_CI_RUNNER == 'dazl-ci' && 'bash --noprofile --norc -eo pipefail {0}' || 'bash -e {0}' }}
+    steps:
+      - run: |
+          cat /etc/os-release | head -2; id -u; umask
+          test -f /.dockerenv && echo IN_CONTAINER
+          getent hosts postgres
+  empty-container:
+    runs-on: ${{ vars.PR_CI_RUNNER || 'ubuntu-latest' }}
+    container: ${{ false && fromJSON('{"image":"ubuntu:24.04"}') || '' }}
+    timeout-minutes: 5
+    steps:
+      - run: echo "host mode (expected to be rejected by dazl-ci's REQUIRE_JOB_CONTAINER)"
