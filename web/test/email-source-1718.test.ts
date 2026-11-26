@@ -295,8 +295,9 @@ test('the lead card disables Approve when the recipient source is hidden', () =>
   assert.ok(button)
   let parent: ts.Node = button
   while (!ts.isBlock(parent) || !parent.statements.some(statement => statement.getText(source).startsWith('const lp ='))) parent = parent.parent
-  const declarations = parent.statements.filter(statement => ts.isVariableStatement(statement))
-    .slice(2).map(statement => statement.getText(source))
+  const contactPersonIndex = parent.statements.findIndex(statement => statement.getText(source).startsWith('const lp ='))
+  const declarations = parent.statements.slice(contactPersonIndex + 1)
+    .filter(ts.isVariableStatement).map(statement => statement.getText(source))
   const compiled = ts.transpileModule(`${declarations.join('\n')}
 exports.button = (${button.getText(source)})`, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
