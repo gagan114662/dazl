@@ -16,7 +16,7 @@ globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network 
 const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
 const { GET, POST } = await import('../../app/api/outreach/replies/route.ts')
 
-type Info = RepliesViewInput & { consent: { version: string; accepted: boolean }; bounce_scan: { version: string; accepted: boolean }; read_granted: boolean; gmail_connected: boolean }
+type Info = RepliesViewInput & { consent: { version: string; accepted: boolean }; bounce_scan: { version: string; accepted: boolean }; read_granted: boolean; gmail_connected: boolean; followups_enabled: boolean }
 const as = (tenant: string) => setUser({ id: tenant, business_name: 'Test Co' })
 let ip = 0
 const post = (body: unknown, headers: Record<string, string> = { origin: 'http://localhost' }) => POST(new NextRequest('http://localhost/api/outreach/replies', {
