@@ -25,7 +25,7 @@ export interface ErrorContext {
   ref?: string
   // the request id proxy.ts gave the request (lib/ops/request-log.ts): a random UUIDv4, dropped unless it has that shape
   requestId?: string | null
-  react?: { componentStack: string[]; digest?: string }
+  react?: { componentStack: string[] }
 }
 
 export interface ErrorRecord {
@@ -109,7 +109,7 @@ export function toRecord(e: unknown, ctx: ErrorContext, now = new Date()): Error
 }
 
 // Keep React diagnostics out of the serialized record and the non-Sentry alert.
-const sentryReact = new WeakMap<ErrorRecord, { componentStack?: string[]; digest?: string }>()
+const sentryReact = new WeakMap<ErrorRecord, { componentStack: string[] }>()
 
 export type ErrorSink = (r: ErrorRecord) => void
 const stderrSink: ErrorSink = r => { process.stderr.write(JSON.stringify(r) + '\n') }
@@ -128,10 +128,7 @@ export function captureError(e: unknown, ctx: ErrorContext): ErrorRecord | null 
   try { r = toRecord(e, ctx) } catch { return null }
   if (r.source === 'client' && ctx.react) {
     const componentStack = ctx.react.componentStack.filter(name => scrub(name) === name && !/[0-9]{4}/.test(name))
-    const digest = ctx.react.digest
-    if (componentStack.length || digest) {
-      sentryReact.set(r, { ...(componentStack.length ? { componentStack } : {}), ...(digest ? { digest } : {}) })
-    }
+    if (componentStack.length) sentryReact.set(r, { componentStack })
   }
   for (const s of sinks) { try { s(r) } catch { /* a broken sink never breaks the caller */ } }
   for (const h of alertHooks()) { try { h(r) } catch { /* same */ } }

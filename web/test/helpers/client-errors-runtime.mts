@@ -50,8 +50,9 @@ test('client error endpoint', async () => {
     assert.equal(await diagnostic.text(), '', 'the API response never returns telemetry JSON')
     const dsn = parseSentryDsn('https://test@example.test/12')
     assert.ok(dsn)
-    assert.deepEqual(JSON.parse(toSentryEnvelope(got[2], dsn).split('\n')[2]).contexts.react,
-      { componentStack: ['LeadCard'], digest: '1971300154' })
+    const event = JSON.parse(toSentryEnvelope(got[2], dsn).split('\n')[2])
+    assert.deepEqual(event.contexts.react, { componentStack: ['LeadCard'] })
+    assert.doesNotMatch(JSON.stringify(event), /1971300154/)
     assert.doesNotMatch(JSON.stringify(got[2]), /LeadCard|1971300154/)
     // 30 per IP per 10 minutes, counted in the shared rate_limits table
     const codes: number[] = []

@@ -6,11 +6,11 @@
 //   path    - the page's path, recorded only as its route template ('/app/campaigns/[id]'), never the concrete URL
 //   frames  - at most 8 { file, line, col } whose file is a /_next/static/ bundle this build emitted
 //             (lib/ops/emitted.ts); a path that only looks like one, and anything else, is dropped
-//   componentStack, digest - bounded React diagnostics for Sentry only
+//   componentStack - bounded React component names for Sentry only
 // The record carries no message text. The tenant comes from the session cookie (the route looks it up), never the body.
 import { captureError, type ErrorRecord } from './errors.ts'
 import { routeTemplate } from './request-log.ts'
-import { CLIENT_ERROR_TYPES, isComponentName, isReactDigest, MAX_COMPONENT_NAMES } from '../client-error-report.ts'
+import { CLIENT_ERROR_TYPES, isComponentName, MAX_COMPONENT_NAMES } from '../client-error-report.ts'
 import { bundleFile } from './emitted.ts'
 
 export const CLIENT_ERROR_KINDS = ['boundary', 'error', 'unhandledrejection'] as const
@@ -46,7 +46,6 @@ export function recordClientError(body: unknown, ctx: { tenantId?: string | null
   e.name = type
   e.stack = [`${type}: browser error`, ...frames(b.frames, ctx.root)].join('\n')
   const componentStack = Array.isArray(b.componentStack) ? b.componentStack.slice(0, MAX_COMPONENT_NAMES).filter(isComponentName) : []
-  const digest = isReactDigest(b.digest) ? b.digest : undefined
   // where: the page's route template, prefixed so client and server records of one page stay apart
-  return captureError(e, { source: 'client', where: `${b.kind}:${pageTemplate(b.path)}`, tenantId: ctx.tenantId, requestId: ctx.requestId, react: { componentStack, digest } })
+  return captureError(e, { source: 'client', where: `${b.kind}:${pageTemplate(b.path)}`, tenantId: ctx.tenantId, requestId: ctx.requestId, react: { componentStack } })
 }

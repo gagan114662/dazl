@@ -16,6 +16,7 @@ const fixtureStack = [
   'LeadsPage@https://example.test/_next/static/chunks/page.js:1:2',
   '    at sk_live_abcdefghijklmnop (https://example.test/_next/static/chunks/page.js:1:2)',
   '    at someone@example.test',
+  '    at invalid-frame (<anonymous>)',
   'someone@example.test',
 ].join('\n')
 
@@ -34,15 +35,17 @@ test('#1776 the Next callback carries component names into Sentry only', () => {
   assert.ok(exports.onRecoverableError)
   exports.onRecoverableError(originalError, { componentStack: fixtureStack })
   assert.equal(reported, originalError)
-  const body = clientReport('error', reported, '/app/leads')
+  const body = JSON.parse(clientReport('error', reported, '/app/leads'))
+  assert.equal(Object.hasOwn(body, 'digest'), false)
+  assert.doesNotMatch(JSON.stringify(body.componentStack), /invalid-frame|someone@example/)
   const restore = setErrorSinks([])
   try {
-    const r = recordClientError(JSON.parse(body), {})
+    const r = recordClientError({ ...body, digest: '1971300154', componentStack: [...body.componentStack, 'invalid-frame'] }, {})
     const dsn = parseSentryDsn('https://test@example.test/12')
     assert.ok(r && r !== 'invalid' && dsn)
     const event = JSON.parse(toSentryEnvelope(r, dsn).split('\n')[2])
-    assert.deepEqual(event.contexts.react, { componentStack: ['LeadCard', 'section', 'LeadsPage'], digest: '1971300154' })
-    assert.doesNotMatch(JSON.stringify(event), /someone@example|sk_live_|private message|https:\/\/example.test/)
+    assert.deepEqual(event.contexts.react, { componentStack: ['LeadCard', 'section', 'LeadsPage'] })
+    assert.doesNotMatch(JSON.stringify(event), /1971300154|someone@example|sk_live_|private message|https:\/\/example.test/)
     assert.doesNotMatch(JSON.stringify([r, outboundRecord(r, { environment: 'test' })]), /LeadCard|1971300154/)
   } finally { restore() }
 })
@@ -63,6 +66,6 @@ test('#1776 error boundaries render only their public copy', () => {
     const { createElement } = require('react') as typeof import('react')
     const html = renderToStaticMarkup(createElement(exports.default, { error, retry: () => {} }))
     assert.match(html, /Reload/)
-    assert.doesNotMatch(html, /LeadCard|LeadsPage|1971300154|private message|someone@example/)
+    assert.doesNotMatch(html, /componentStack|digest|LeadCard|LeadsPage|1971300154|private message|someone@example/)
   }
 })
