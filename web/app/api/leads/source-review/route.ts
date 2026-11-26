@@ -1,5 +1,6 @@
 import {NextRequest,NextResponse} from 'next/server'
-import {getScanDb,requireUser} from '@/lib/scan/service'
+import {getDb} from '@/lib/db/client'
+import {requireUser} from '@/lib/scan/service'
 import {sameOriginJson} from '@/lib/same-origin'
 import {rateLimit} from '@/lib/rate-limit'
 import {createSourceReview,parseSourceReview,SourceReviewError} from '@/lib/scan/source-review'
@@ -17,7 +18,7 @@ export async function POST(req:NextRequest){
  try{body=JSON.parse(raw)}catch{return NextResponse.json({error:'Bad request'},{status:400})}
  try{
  const input=parseSourceReview(body)
- const result=await createSourceReview(getScanDb(),user.tenantId,input)
+ const result=await createSourceReview(await getDb(),user.tenantId,input)
  return NextResponse.json(result,{status:201})
  }catch(e){if(e instanceof SourceReviewError)return NextResponse.json({error:e.message},{status:400});throw e}
 }

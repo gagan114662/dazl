@@ -1,3 +1,6 @@
+import {pgDb} from '../lib/db/client.ts'
+import {runPgMigrations} from '../lib/db/migrate-pg.ts'
+import {PG_URL,freshSchema,pgSkip} from './helpers/pg-test.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
@@ -34,4 +37,23 @@ test('invalid inputs rejected before fetch or write; impossible dates and unsafe
 test('thrown fetch fails closed and tenant linkage prevents orphan/cross-job source metadata disclosure',async()=>{
  const db=setup();const r=await createSourceReview(db,'A',input,async()=>{throw new Error('network')});assert.equal(r.check.fetch_status,'error');assert.equal(sourceCheckForLead(db,'A','missing'),null)
  db.prepare("UPDATE source_reviews SET tenant_id='B'").run();assert.equal(sourceCheckForLead(db,'A',r.lead_id),null);assert.equal(sourceCheckForLead(db,'B',r.lead_id),null)
+})
+
+test('Postgres source review persists held evidence and isolates independent tenant submissions', { skip: pgSkip }, async () => {
+ const {schema,drop}=await freshSchema()
+ const db=pgDb({connectionString:PG_URL!,searchPath:schema,max:1})
+ try {
+  await runPgMigrations(db.pool)
+  const owner=await createSourceReview(db,'A',input,async()=>page)
+  const unrelated=await createSourceReview(db,'B',input,async()=>({fail:'not_found'}))
+  assert.deepEqual(owner.check,{fetch_status:'fetched',quote_match:true,company_named:true,contact_match:true,checked_at:page.retrievedAt})
+  const rows=await db.all(`SELECT j.user_id, j.status, l.contact, l.date_status, l.review_reason, r.fetch_status
+    FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id
+    WHERE r.tenant_id=j.user_id AND r.job_id=j.id ORDER BY j.user_id`)
+  assert.deepEqual(rows,[
+   {user_id:'A',status:'done',contact:input.contact,date_status:'unverified',review_reason:'source_review_required',fetch_status:'fetched'},
+   {user_id:'B',status:'done',contact:null,date_status:'unverified',review_reason:'source_review_required',fetch_status:'not_found'},
+  ])
+  assert.notEqual(owner.job_id,unrelated.job_id)
+ } finally { await db.close(); await drop() }
 })

@@ -1,6 +1,7 @@
 import {contactContext} from '../outreach/contact-context.ts'
 import {randomBytes} from 'node:crypto'
 import type Database from 'better-sqlite3'
+import {asDb,type DbLike} from '../db/client.ts'
 import {fetchPageDetailed,isFail,type Page,type FetchFail} from './fetch-page.ts'
 import {companyKey,hasPhrase,norm,pageHeadingNames} from './evidence.ts'
 import {PUBLISHED_EMAIL_RE} from '../outreach/published-email.ts'
@@ -29,7 +30,7 @@ export function migrateSourceReview(db:Database.Database):void {
 export interface SourceCheck {fetch_status:string;quote_match:boolean;company_named:boolean;contact_match:boolean;checked_at:number}
 // This path has no model, discovery, enrichment, renderer fallback or send. It
 // records literal source checks only. The supplied signal/date remain claims.
-export async function createSourceReview(db:Database.Database,tenant:string,input:SourceReviewInput,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=Math.floor(Date.now()/1000)) {
+export async function createSourceReview(db:DbLike,tenant:string,input:SourceReviewInput,fetcher:(url:string)=>Promise<Page|FetchFail>=(url)=>fetchPageDetailed(url,async()=>null),now=Math.floor(Date.now()/1000)) {
  input=parseSourceReview(input)
  const page=await fetcher(input.source_url).catch(()=>({fail:'error' as const}))
  const ok=!isFail(page)
@@ -38,13 +39,13 @@ export async function createSourceReview(db:Database.Database,tenant:string,inpu
  const emailMatch=ok&&!!input.contact&&page.text.toLowerCase().split(/[^a-z0-9@._%+\-]+/).includes(input.contact.trim().toLowerCase())
  const check:SourceCheck={fetch_status:ok?'fetched':page.fail,quote_match:quoteMatch,company_named:quoteMatch&&ok&&key.length>=2&&(hasPhrase(norm(input.excerpt),key)||pageHeadingNames(page,key)),contact_match:emailMatch,checked_at:ok?page.retrievedAt:now}
  const jobId=randomBytes(12).toString('hex'),leadId=randomBytes(12).toString('hex'),id=randomBytes(12).toString('hex')
- db.transaction(()=>{
- db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Source review intake','manual','manual','running')").run(jobId,tenant)
- // Never promote these literal checks to semantic verification or human consent.
- db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind) VALUES(?,?,?,?,?,?,?,?,?,?,NULL,'source_review_required','manual_source')").run(leadId,jobId,input.company,input.signal,input.source_url,input.excerpt,check.contact_match?input.contact:null,input.event_date,input.event_date?'unverified':'undated',ok?page.retrievedAt:null)
- db.prepare('INSERT INTO source_reviews(id,tenant_id,job_id,lead_id,input_json,fetch_status,quote_match,company_named,contact_match,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,tenant,jobId,leadId,JSON.stringify({...input,contact_context:ok&&input.contact?contactContext(page.text,input.contact,input.source_url):null}),check.fetch_status,+check.quote_match,+check.company_named,+check.contact_match,check.checked_at)
- db.prepare("UPDATE scan_jobs SET status='done',finished_at=?,candidates=1,verified=0,needs_review=1,dropped=0 WHERE id=?").run(now,jobId)
- })()
+ await asDb(db).tx(function* (tx) {
+  yield* tx.run("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Source review intake','manual','manual','running')",[jobId,tenant])
+  // Never promote these literal checks to semantic verification or human consent.
+  yield* tx.run("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind) VALUES(?,?,?,?,?,?,?,?,?,?,NULL,'source_review_required','manual_source')",[leadId,jobId,input.company,input.signal,input.source_url,input.excerpt,check.contact_match?input.contact:null,input.event_date,input.event_date?'unverified':'undated',ok?page.retrievedAt:null])
+  yield* tx.run('INSERT INTO source_reviews(id,tenant_id,job_id,lead_id,input_json,fetch_status,quote_match,company_named,contact_match,checked_at) VALUES(?,?,?,?,?,?,?,?,?,?)',[id,tenant,jobId,leadId,JSON.stringify({...input,contact_context:ok&&input.contact?contactContext(page.text,input.contact,input.source_url):null}),check.fetch_status,+check.quote_match,+check.company_named,+check.contact_match,check.checked_at])
+  yield* tx.run("UPDATE scan_jobs SET status='done',finished_at=?,candidates=1,verified=0,needs_review=1,dropped=0 WHERE id=?",[now,jobId])
+ })
  return {job_id:jobId,lead_id:leadId,check}
 }
 export function sourceCheckForLead(db:Database.Database,tenant:string,lead:string):SourceCheck|null{
