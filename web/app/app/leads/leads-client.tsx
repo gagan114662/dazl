@@ -201,7 +201,7 @@ function SourceAvailability({ core, social, keyState }: { core: SourceRow[] | nu
   const enrichment = enrichmentLabels(core)
   return (
     <div className="text-xs text-[#555] mt-2 space-y-1" data-testid="source-availability">
-      {analysis && !analysis.usable && <p data-testid="analysis-prerequisite">A scan needs an AI key for analysis and extraction ({analysis.reason}). <a className="underline text-[#111]" href={analysis.fix!.href}>Add key</a>. Adding a key does not enable discovery sources.</p>}
+      {analysis && !analysis.usable && <p data-testid="analysis-prerequisite">A scan needs analysis and extraction ({analysis.reason}). <a className="underline text-[#111]" href={analysis.fix!.href}>{analysis.fix!.label}</a>.</p>}
       <p data-testid="sources-usable">{on ? <>Discovery sources a scan here can use: {on}. Extra sources are optional, under More sources.</> : <>No usable primary discovery source is available on this server. Optional sources can be chosen under More sources; an AI key does not enable web research.</>}</p>
       {enrichment && <p data-testid="sources-enrichment">After discovery: {enrichment}. This enriches leads already found; it does not discover leads.</p>}
       {off.length > 0 && <p data-testid="sources-unavailable">Not available: {off.map((r, i) => <span key={r.id} data-testid={`source-off-${r.id}`}>{i > 0 && '; '}{r.label} ({r.reason}{r.fix && <>, <a className="underline text-[#111]" href={r.fix.href}>{r.fix.label}</a></>})</span>)}.</p>}
