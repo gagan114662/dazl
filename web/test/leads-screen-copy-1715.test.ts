@@ -24,9 +24,9 @@ test('#1715 Ready cards render one plain timing message from the saved timing st
   assert.doesNotMatch(page, /data-testid="timing-proof"|\(timing proof-backed\)/)
 })
 
-test('#1715 Leads renders customer-facing labels for supplied details, reported events and a saved profile', () => {
+test('#1715 Leads renders customer-facing labels for source review, reported events and a saved profile', () => {
   assert.doesNotMatch(page, /Manually supplied claim|Saved signal claim|carried from a saved profile/i)
-  assert.match(page, /Details you provided/)
+  assert.match(page, /source_review_required: 'Review the source\./)
   assert.match(page, /Reported event:/)
   assert.match(page, /from your saved profile\. Approval for this search isn’t recorded/)
 })
@@ -42,3 +42,10 @@ for (const [file, label] of [
     assert.ok(component.includes(label))
   })
 }
+
+test('#1715 a shared review reason does not attribute scan results to the customer', () => {
+  const label = page.match(/source_review_required: '([^']+)'/)?.[1]
+  assert.ok(label)
+  assert.doesNotMatch(label, /you provided|you supplied/i)
+  assert.match(label, /^Review the source\./)
+})
