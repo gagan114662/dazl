@@ -14,7 +14,8 @@ const full = "${{ github.event_name == 'push' || github.event_name == 'merge_gro
 for (const name of ['web-ci', 'release-gate', 'release-preflight']) {
   test(`#1906 ${name} starts on label changes and on workflow-only PRs`, () => {
     const workflow = read(name)
-    assert.equal(workflow.on.pull_request.paths, undefined)
+    if (name === 'web-ci') assert.deepEqual(workflow.on.pull_request.paths, ['load/**', '**'])
+    else assert.equal(workflow.on.pull_request.paths, undefined)
     assert.ok(workflow.on.pull_request.types.includes('labeled'))
     assert.ok(workflow.on.pull_request.types.includes('unlabeled'))
   })

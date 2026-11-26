@@ -2,6 +2,8 @@ name: web-ci
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Include the load harness and keep required checks reporting for every PR.
+    paths: ["load/**", "**"]
   push:
     branches: [main]
     # no path filter on main: every merged commit gets the full suite and, if green, main-green (gate 3)
@@ -66,7 +68,7 @@ jobs:
           if [ -z "$selected" ]; then echo "::error::Missing affected test selection"; exit 1; fi
           if [ "$selected" = ALL ]; then
             echo "Shared changes require the full tier. Running explicitly changed tests now." >> "$GITHUB_STEP_SUMMARY"
-            selected=$(git diff --name-only --diff-filter=AM "$PR_BASE_SHA...$GITHUB_SHA" -- test/ |
+            selected=$(git diff --name-only --find-renames --diff-filter=AMR "$PR_BASE_SHA...$GITHUB_SHA" -- test/ |
               sed 's#^web/##' | sed -nE '/^test\/[a-zA-Z0-9_.-]+\.test\.(ts|mjs)$/p' | paste -sd ' ' -)
           fi
           if [ -z "$selected" ] || [ "$selected" = NONE ]; then echo "No affected unit tests selected."; exit 0; fi

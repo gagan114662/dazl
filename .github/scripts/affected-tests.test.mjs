@@ -83,21 +83,41 @@ test('a changed top-level test still selects itself', t => {
 
 
 test('fast PR checks run explicitly changed tests when shared changes require the full tier', t => {
-  const [cwd, base] = repo(t)
+  const [cwd] = repo(t)
   mkdirSync(join(cwd, '.github/scripts'), { recursive: true })
   writeFileSync(join(cwd, '.github/scripts/affected-tests.mjs'), readFileSync(select))
   writeFileSync(join(cwd, 'web/test/helpers/runtime.mts'), 'export {}')
   writeFileSync(join(cwd, 'web/test/other.test.ts'), "console.log('changed test executed')")
+  writeFileSync(join(cwd, 'web/test/rename-source.test.ts'), "console.log('renamed test executed')")
+  git(cwd, 'add', 'web/test/rename-source.test.ts')
+  git(cwd, 'commit', '-m', 'add test to rename', '--', 'web/test/rename-source.test.ts')
+  const beforeChanges = git(cwd, 'rev-parse', 'HEAD')
+  git(cwd, 'mv', 'web/test/rename-source.test.ts', 'web/test/rename-target.test.ts')
   git(cwd, 'add', '.'); git(cwd, 'commit', '-m', 'shared and top-level changes')
   const start = workflow.indexOf('      - name: Run affected unit tests')
   assert.ok(start >= 0)
   const body = workflow.slice(start).match(/^        run: \|\n((?:^          .*\n)+)/m)?.[1]
   assert.ok(body)
-  const env = { ...process.env, PR_BASE_SHA: base, GITHUB_SHA: git(cwd, 'rev-parse', 'HEAD'),
+  const env = { ...process.env, PR_BASE_SHA: beforeChanges, GITHUB_SHA: git(cwd, 'rev-parse', 'HEAD'),
     GITHUB_STEP_SUMMARY: join(cwd, 'summary') }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync('bash', ['-e', '-c', body], { cwd: join(cwd, 'web'), env, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stdout + result.stderr)
   assert.match(result.stdout, /changed test executed/)
+  assert.match(result.stdout, /renamed test executed/)
   assert.match(readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), /Shared changes require the full tier/)
+})
+
+test('renamed library source selects its consumers while a docs-only diff selects none', t => {
+  const [cwd, base] = repo(t)
+  git(cwd, 'mv', 'web/lib/other.ts', 'web/lib/renamed.ts')
+  git(cwd, 'commit', '-m', 'rename library source')
+  assert.equal(git(cwd, 'diff', '--name-status', '-M', base, 'HEAD'), 'R100\tweb/lib/other.ts\tweb/lib/renamed.ts')
+  assert.equal(run(cwd, base, 'HEAD'), 'test/other.test.ts')
+
+  const renamed = git(cwd, 'rev-parse', 'HEAD')
+  writeFileSync(join(cwd, 'README.md'), '# Documentation')
+  git(cwd, 'add', 'README.md')
+  git(cwd, 'commit', '-m', 'docs only')
+  assert.equal(run(cwd, renamed, 'HEAD'), 'NONE')
 })
