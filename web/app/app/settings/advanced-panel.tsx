@@ -1,12 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { panelError } from './panel-error'
-import { CHANNELS, TIER_LABEL, type Channel } from '@/lib/channels'
+import { CHANNELS, connectorBadge, type Channel } from '@/lib/channels'
 import Caveat from '@/app/app/caveat'
 import LinkedinConnect, { type ConnectState } from './linkedin-connect'
 
 interface P { platform: string; allowed: boolean; supported?: boolean; unsupported_reason?: string | null; consent: boolean; connected: boolean; enabled: boolean; last4: string | null; high_risk: boolean }
-const BADGE = { live: 'Working', worker: 'Needs worker', soon: 'Coming soon' } as const
+const GROUP_LABEL = { 0: 'Works without setup', 1: 'Needs your own account session', 2: 'Needs you to sign in' } as const
 
 export default function AdvancedPanel() {
   const [st, setSt] = useState<{ available: boolean; version: string; platforms: P[]; linkedin_connect?: ConnectState | null } | null>(null)
@@ -66,14 +66,14 @@ export default function AdvancedPanel() {
       <Caveat className="text-[#555] text-sm mb-4" summary="Your session is encrypted and used only for your scans; leads from pages behind a login always go to needs review.">Your session is encrypted, used only for your scans, rate limited, and logged below your scans in the lookup history. Leads from pages behind a login are never verified automatically. They go to needs review. Remove a session at any time.</Caveat>
       {([0, 1, 2] as const).map(t => (
         <div key={t} className="mt-5">
-          <div className="text-xs font-mono uppercase tracking-wider text-[#555] mb-1">{TIER_LABEL[t]}</div>
+          <div className="text-xs font-mono uppercase tracking-wider text-[#555] mb-1">{GROUP_LABEL[t]}</div>
           {CHANNELS.filter(c => c.tier === t && c.id !== 'linkedin' /* LinkedIn has its own card: linkedin-extension-panel.tsx */).map(c => {
             const p = c.platform ? st.platforms.find(x => x.platform === c.platform) : undefined
             return (
               <div key={c.id} className="border-t border-[#ddd] pt-3 mt-3 text-sm">
                 <div className="flex items-center justify-between gap-3 mb-1">
                   <span className="font-medium">{c.name}</span>
-                  <span className="badge">{BADGE[c.status]}</span>
+                  <span className="badge">{connectorBadge(c, p)}</span>
                 </div>
                 <p className="text-[#555] mb-2">{c.note}</p>
                 {p && Row(c, p)}

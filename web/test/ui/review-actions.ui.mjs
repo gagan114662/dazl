@@ -78,7 +78,7 @@ try {
   const rows = await actions.evaluateAll(els => els.map(e => [[...e.querySelectorAll('a,button')].map(x => x.textContent), e.querySelector('a').getAttribute('href'), e.querySelector('[data-testid=review-hint]').textContent]))
   assert.deepEqual(rows.map(r => r[0]), [['Open source', 'I checked the source - use it'], ['Open source', 'I checked the date - use it'], ['Open source', 'Keep as research'], ['Open source', 'Keep as research'], ['Open source', 'Keep as research']])
   assert.deepEqual(rows.map(r => r[1]), ['https://news.example/quote', 'https://news.example/stale', 'https://news.example/window', 'https://news.example/undated', 'https://news.example/future'])
-  assert.match(rows[0][2], /never shown as source-checked/)
+  assert.match(rows[0][2], /You checked the source, so the lead shows as confirmed by you/)
   assert.match(rows[1][2], /dazl has not verified the date or current need/)
   assert.match(rows[2][2], /older than the time window you asked for.*only a new scan with a wider window can find it as current \(it uses your usual scan budget\)/)
   for (const i of [3, 4]) {

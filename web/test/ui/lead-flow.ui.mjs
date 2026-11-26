@@ -34,12 +34,20 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const JOB = 'b'.repeat(24)
 const ICP = { summary: 'Growing dental practices', who: ['Practice owner'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['new location'], exclude: [] }
-const person = (name, url) => ({ connector: 'sitecrawl', kind: 'person', value: name, label: null, source_url: url, source_date: '2026-10-20', confidence: null })
-const lead = (id, company, over = {}) => ({ id, name: '', company, contact: null, signal: `${company} opened a second office`, source_url: `https://www.daytondailynews.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'verified', confidence: 90, review_reason: null, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office and is hiring front-desk staff. More detail follows here.`, signals: null, icp_match: null, enrichments: [], events: [], ...over })
+// Match the stored crawl evidence required to display a named buyer.
+const companySite = (domain, person, profile) => [
+  { connector: 'sitecrawl', kind: 'domain', value: `${domain}|evidence_own_domain`, label: 'domain-basis-v1:evidence_own_domain', source_url: `https://${domain}/news` },
+  { connector: 'sitecrawl', kind: 'person', value: person, label: `sitecrawl-profile-v1: https://www.linkedin.com/in/${profile}`, source_url: `https://${domain}/team/${profile}`, retrieved_at: Math.floor(Date.now() / 1000) },
+]
+const lead = (id, company, over = {}) => {
+  const source = `https://www.daytondailynews.example/${id.slice(0, 4)}`
+  const contact_context = over.contact ? { excerpt: `For business inquiries, email ${over.contact}`, source_url: source } : null
+  return { id, name: '', company, contact: null, signal: `${company} opened a second office`, source_url: source, contact_context, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-12', date_status: 'verified', confidence: 90, review_reason: null, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 4, action: 3, why: `${company} just opened a second Ohio office and is hiring front-desk staff. More detail follows here.`, signals: null, icp_match: null, enrichments: [], events: [], ...over }
+}
 const A = 'a'.repeat(24), C = 'c'.repeat(24), M = 'd'.repeat(24)
 const LEADS = [
-  lead(A, 'Bright Dental', { contact: 'hello@brightdental.example', enrichments: [person('Dana Smith, Practice owner', 'https://www.daytondailynews.example/aaaa')] }),
-  lead(M, 'Maple Family Dentistry', { contact: 'office@mapledental.example', enrichments: [person('Sam Ortiz, Office manager', 'https://www.daytondailynews.example/dddd')] }),
+  lead(A, 'Bright Dental', { contact: 'hello@brightdental.example', enrichments: companySite('brightdental.example', 'Dana Smith, Practice owner', 'dana-smith-example') }),
+  lead(M, 'Maple Family Dentistry', { contact: 'office@mapledental.example', enrichments: companySite('mapledental.example', 'Sam Ortiz, Office manager', 'sam-ortiz-example') }),
   lead(C, 'Lakeside Smiles'),
 ]
 const writes = []; const drafts = []
@@ -74,11 +82,13 @@ try {
   assert.equal(await cards().count(), 3)
   const bright = card('Bright Dental')
   const t = await bright.textContent()
-  assert.match(t, /Dana Smith, Practice owner/, 'contact name and role')
+  assert.match(await bright.getByTestId('lead-person').innerText(), /Dana Smith\s*·\s*Practice owner/, 'contact name and role')
+  assert.match(t, /hello@brightdental\.example/, 'published address')
+  assert.equal(await bright.getByRole('link', { name: 'Email source', exact: true }).getAttribute('href'), LEADS[0].source_url)
   assert.match(t, /Bright Dental just opened a second Ohio office and is hiring front-desk staff\./); assert.doesNotMatch(t, /More detail follows/, 'one line of why')
   assert.match(t, /daytondailynews\.example · claimed event date 12 Oct 2026/, 'source and date')
   assert.equal(await bright.getByRole('button', { name: 'Approve' }).isEnabled(), true); assert.equal(await bright.getByRole('button', { name: 'Reject' }).isEnabled(), true)
-  assert.equal(await card('Lakeside Smiles').getByRole('button', { name: 'Approve' }).isDisabled(), true)
+  assert.equal(await card('Lakeside Smiles').getByRole('button', { name: 'Approve', exact: true }).count(), 0)
   assert.equal(await card('Lakeside Smiles').getByTestId('approve-hold').isVisible(), true, 'a held lead says it cannot be approved yet; the reason is behind its (i)')
   const visibleText = await page.locator('main').innerText()
   for (const caveat of [/approving a card makes a draft/i, /Kept with its evidence/, /Reject this lead\?/, /To approve:/, /Cards shown below/]) assert.doesNotMatch(visibleText, caveat, `no caveat paragraph on screen: ${caveat}`)
@@ -118,7 +128,7 @@ try {
   ], 'only the existing draft and quarantine actions are written')
   // 4. At 390px the actions stack under the identity: a long company name, its email and the role warning get the card's width.
   const L = 'e'.repeat(24), LONG = 'Northern Kentucky Pediatric & Family Dental Associates of Greater Cincinnati'
-  LEADS.push(lead(L, LONG, { contact: 'frontdesk.scheduling@northernkentuckypediatricdental.example', enrichments: [person('Alexandra Montgomery-Whitfield, Practice owner and clinical director', 'https://www.daytondailynews.example/eeee')] }))
+  LEADS.push(lead(L, LONG, { contact: 'frontdesk.scheduling@northernkentuckypediatricdental.example', enrichments: companySite('northernkentuckypediatricdental.example', 'Alexandra Montgomery-Whitfield, Practice owner and clinical director', 'alexandra-montgomery-whitfield-example') }))
   await page.setViewportSize({ width: 390, height: 844 })
   await page.reload({ waitUntil: 'networkidle' })
   const long = card(LONG); await long.waitFor()

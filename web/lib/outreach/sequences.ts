@@ -126,8 +126,14 @@ export function testAddresses(db: Database.Database, tenantId: string): string[]
   try { return (JSON.parse(r?.test_addresses ?? '[]') as string[]).map(norm) } catch { return [] }
 }
 // The ONLY place test timing comes from. Never trust a stored flag: membership is
-// re-checked against the current allowlist on every call.
-export const isTestRecipient = (db: Database.Database, tenantId: string, email: string) => testAddresses(db, tenantId).includes(norm(email))
+// re-checked against the current allowlist on every call. Minute gaps are a property of the
+// env-designated test account (OUTREACH_TEST_TENANT_ID, the same designation the test-inbox
+// allowlist in service.ts uses), never of a list a normal account saved for itself: an ordinary
+// account's saved addresses get the normal 3 and 7 day gaps. Every reader of sequence timing
+// (this module, the pg reader in lib/db/leads-read-pg.ts, oldestDue in lib/ops/scheduler-runs.ts)
+// applies this same gate — Capy caught the two readers still trusting the raw list.
+export const isTestRecipient = (db: Database.Database, tenantId: string, email: string) =>
+  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId && testAddresses(db, tenantId).includes(norm(email))
 
 // ---------- templates and LLM drafting for steps 2/3 (no-reply nudges) ----------
 export function sequenceStepText(step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, _businessName: string, bookingUrl?: string | null): string {

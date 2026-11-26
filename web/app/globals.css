@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./design-tokens.css";
 
 /* Light-theme readability: Tailwind's stock gray-300 (#d1d5db, ~1.6:1) and
    gray-400 (#9ca3af, ~2.9:1) fail WCAG AA on white at 12px. Remap the scale

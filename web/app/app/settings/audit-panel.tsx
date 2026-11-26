@@ -47,7 +47,7 @@ export default function AuditPanel() {
       <p className="text-[#555] text-sm mb-4">
         Who changed credentials, billing, CRM, sending and pipeline settings, exported data or deleted it, newest first. Only owners and admins
         see this. Events cannot be edited or removed, and never contain keys, secrets or message text. Nothing is deleted
-        automatically unless your operator has set a retention period.
+        automatically unless a retention period is set for your workspace.
       </p>
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <select className="input min-h-11" aria-label="Show" value={filter} onChange={e => setFilter(e.target.value)}>

@@ -5,6 +5,7 @@
 //   kind   - boundary | error | unhandledrejection
 //   type   - the error's class if it is a built-in one (TypeError, ...), else 'Error'
 //   path   - location.pathname (the server keeps only its route template)
+//   componentStack - bounded component identifiers for Sentry only.
 //   frames - up to 8 stack frames as { file, line, col }, and only for scripts this page actually loaded from this
 //            app (/_next/static/..., without query: the page's <script> tags and script resources it fetched). A path
 //            that merely looks like a bundle is left out, as is any other frame
@@ -14,6 +15,21 @@
 import { isChunkLoadError } from './chunk-recovery.ts'
 export type ClientErrorKind = 'boundary' | 'error' | 'unhandledrejection'
 export interface ClientFrame { file: string; line: number; col: number }
+const componentStackKey = Symbol.for('dazl.react.componentStack')
+export const MAX_COMPONENT_NAMES = 8
+export const isComponentName = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z_$][A-Za-z0-9_$]{0,47}$/.test(value)
+
+function reactDiagnostics(err: unknown): { componentStack?: string[] } {
+  if (!(err instanceof Error)) return {}
+  const raw = Object.getOwnPropertyDescriptor(err, componentStackKey)?.value
+  const componentStack = typeof raw === 'string' ? raw.slice(0, 8000).split('\n').flatMap(line => {
+    const name = /^\s*at ([^\s(]+)(?:\s+\(|$)/.exec(line)?.[1] ?? /^([^@\s]+)@https?:\/\//.exec(line.trim())?.[1]
+    return isComponentName(name) ? [name] : []
+  }).slice(0, MAX_COMPONENT_NAMES) : []
+  return componentStack.length ? { componentStack } : {}
+}
+
 const MAX_PER_PAGE = 5
 export const MAX_BODY = 2048
 export const CLIENT_ERROR_TYPES = new Set(['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError', 'AggregateError', 'AbortError', 'TimeoutError', 'DOMException', 'NotFoundError', 'SecurityError', 'InvalidStateError', 'NetworkError', 'QuotaExceededError'])
@@ -57,7 +73,7 @@ export function clientFrames(stack: unknown, loaded: ReadonlySet<string>): Clien
 
 export function clientReport(kind: ClientErrorKind, err: unknown, path: string, loaded: ReadonlySet<string> = new Set()): string {
   const name = err instanceof Error ? err.name : ''
-  const report = { kind, type: CLIENT_ERROR_TYPES.has(name) ? name : 'Error', path: String(path).slice(0, 200), frames: clientFrames(err instanceof Error ? err.stack : undefined, loaded) }
+  const report = { kind, type: CLIENT_ERROR_TYPES.has(name) ? name : 'Error', path: String(path).slice(0, 200), frames: clientFrames(err instanceof Error ? err.stack : undefined, loaded), ...reactDiagnostics(err) }
   let body = JSON.stringify(report)
   while (body.length > MAX_BODY && report.frames.length) { report.frames.pop(); body = JSON.stringify(report) }
   return body.length > MAX_BODY ? JSON.stringify({ kind, type: report.type, path: '/', frames: [] }) : body

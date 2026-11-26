@@ -63,11 +63,17 @@ export function trialCopy(t: TrialBlock): TrialCopy {
       if (t.used) return { state: 'ineligible', text: `You have used ${freeSearches(t.used)} on this account. More need Google sign-in: link Google to this account (no card).`, next: { label: 'Link Google', href: linkGoogleHref('/app/settings') } }
       return { state: 'ineligible', text: 'Free searches need Google sign-in on this account. Link Google to this account to use them (no card).', next: { label: 'Link Google', href: linkGoogleHref('/app/settings') } }
     case 'domain_used':
-      return { state: 'ineligible', text: "Your company's email domain has already had its free searches.", next: PLAN }
+      return { state: 'ineligible', text: "Another account with your email domain already used the free searches.", next: PLAN }
     default:
       // A reason this screen does not know yet: say it cannot run now, never that searches were used.
       return { state: 'unavailable', text: "Free searches can't run right now.", next: LATER }
   }
+}
+
+export function unlimitedTrialDailyCap(t: TrialBlock): string | null {
+  return t.exempt && t.blocked !== 'global_daily_cap'
+    ? 'A shared daily limit still applies. It resets at midnight Toronto time.'
+    : null
 }
 
 // #1704: the trial line every page shows (Settings > Plan, Plays).
@@ -91,7 +97,7 @@ export function trialRuleLine(r: TrialRule): string {
 type Next = 'link_google' | 'tomorrow' | 'none'
 export const TRIAL_REFUSAL_COPY: Record<TrialRefusal, { text: string; next: Next }> = {
   google_required: { text: 'Free searches need a Google account. Link Google to run this search free (no card).', next: 'link_google' },
-  domain_used: { text: "Your company's email domain has already had its free searches.", next: 'none' },
+  domain_used: { text: "Another account with your email domain already used the free searches.", next: 'none' },
   attempts_cap: { text: FREE_SEARCHES_USED_UP, next: 'none' },
   account_total_cap: { text: "Your free searches' spending allowance is used up.", next: 'none' },
   global_daily_cap: { text: "Today's free searches are fully booked. Try again tomorrow (it resets at midnight UTC).", next: 'tomorrow' },

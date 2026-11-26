@@ -197,13 +197,14 @@ test('audit (#402): an unbuilt source adapter is unavailable with nothing that e
   // The 2026-11-06 audit counterexample: Facebook and XiaoHongShu are channels.ts 'worker' rows, but PLATFORM_SUPPORT
   // says their adapters are not built. Before the fix the record called them limited/operator_worker, as if connecting
   // a worker would turn them on, and a prospect who needs them was waitlisted instead of no-fit.
-  for (const id of ['facebook', 'xiaohongshu'] as const) {
+  // XiaoHongShu is no longer in the channel registry at all (#1721: removed from Settings), so only Facebook is left here.
+  for (const id of ['facebook'] as const) {
     const c = cap(truth, `source:${id}`)
     assert.deepEqual([c?.state, c?.requires], ['unavailable', []], id)
     assert.equal(c?.basis, `lib/advanced/config.ts PLATFORM_SUPPORT ${id}: unsupported: ${PLATFORM_SUPPORT[id].reason}`, id)
   }
   // built-but-disconnected stays limited with its worker prerequisite; shipped sources stay available
-  for (const id of ['x', 'reddit', 'instagram', 'bilibili', 'linkedin']) assert.deepEqual([cap(truth, `source:${id}`)?.state, cap(truth, `source:${id}`)?.requires], ['limited', ['operator_worker']], id)
+  for (const id of ['x', 'reddit', 'instagram', 'linkedin']) assert.deepEqual([cap(truth, `source:${id}`)?.state, cap(truth, `source:${id}`)?.requires], ['limited', ['operator_worker']], id)
   for (const id of ['web', 'youtube', 'github', 'rss', 'search', 'v2ex']) assert.deepEqual([cap(truth, `source:${id}`)?.state, cap(truth, `source:${id}`)?.requires], ['available', []], id)
   // the audit's exact call, and copy that promises the unbuilt source
   assert.deepEqual(qualifyProspect('We need facebook lead discovery.', truth), { verdict: 'no_fit', unmet: ['source:facebook'] })

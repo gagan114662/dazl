@@ -48,6 +48,13 @@ export const fixtureAvailable = (db: Database.Database, tenantId: string): boole
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId &&
   testAddresses(db, tenantId).includes(TEST_INBOX)
 
+// Eligibility to SET UP the test inbox: the designated test account alone, before anything is
+// allowlisted. Editing the allowlist is gated on this, never on fixtureAvailable — requiring the
+// inbox to be allowlisted before the editor opens makes setup impossible (Capy, PR #1759).
+// Fixture creation itself still requires fixtureAvailable above.
+export const fixtureEligible = (tenantId: string): boolean =>
+  !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
+
 export interface FixtureResult { jobId: string; leadId: string; messageId: string; sequenceId: string; created: boolean }
 
 // Shared creator: builds one fixture set in draft state (nothing approved, nothing sent) or

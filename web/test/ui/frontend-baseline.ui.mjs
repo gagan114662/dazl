@@ -235,7 +235,7 @@ try {
       await page.waitForTimeout(400)
       if (!res || res.status() >= 400) fail(key, `HTTP ${res?.status()}`)
       if (new URL(page.url()).pathname !== pathname) fail(key, `landed on ${new URL(page.url()).pathname}`)
-      if (pathname === '/app/leads' && !(await page.getByTestId('lead-card').count())) fail(key, 'no lead cards rendered from the stub')
+      if (pathname === '/app/leads' && !(await page.getByTestId('lead-card').count()) && !(await page.getByTestId('leads-table').count())) fail(key, 'no lead list rendered from the stub (neither cards nor the default table)')
       if (pathname === '/app/inbox' && !(await page.getByTestId('inbox-thread').count())) fail(key, 'no inbox threads rendered from the stub')
       for (const e of errs) fail(key, e)
       if (process.env.SHOTS) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { approve, editDraft, OutreachError, resolveUncertain, sendCapToday, sendMessage, skip } from '@/lib/outreach/service'
+import { sendDayStart } from '@/lib/outreach/send-budget'
 import { sendTestToSelf } from '@/lib/outreach/test-send'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
@@ -21,8 +22,10 @@ async function guard(req: NextRequest, id: string, action: Action) {
   return { user }
 }
 // #1618: a refusal at the daily cap carries the cap, so the page can say how many were sent today.
+// #1805: it also carries when sending resumes — the manual cap restarts at the next Toronto midnight
+// (send-budget.ts) — so the page can give the reset time in the user's own timezone, never a raw code.
 const fail = (e: unknown, tenantId?: string) => {
-  if (e instanceof OutreachError) return NextResponse.json({ error: e.code, ...(e.code === 'daily_cap' && tenantId ? { cap: sendCapToday(getScanDb(), tenantId).cap } : {}) }, { status: STATUS[e.code] ?? 400 })
+  if (e instanceof OutreachError) return NextResponse.json({ error: e.code, ...(e.code === 'daily_cap' && tenantId ? { cap: sendCapToday(getScanDb(), tenantId).cap, resets_at: sendDayStart(Math.floor(Date.now() / 1000)) + 86400 } : {}) }, { status: STATUS[e.code] ?? 400 })
   throw e
 }
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { panelError } from '../app/app/settings/panel-error.ts'
 
 const src = (f: string) => readFileSync(fileURLToPath(new URL(`../app/app/settings/${f}`, import.meta.url)), 'utf8')
-const PANELS = ['team-panel.tsx', 'plan-panel.tsx', 'crm-panel.tsx', 'enrichment-panel.tsx', 'advanced-panel.tsx']
+const PANELS = ['team-panel.tsx', 'plan-panel.tsx', 'crm-panel.tsx', 'advanced-panel.tsx']
 
 test('#719 AC-1: a reauth_required answer prints nothing in the panel (the dialog asks)', () => {
   assert.equal(panelError('reauth_required', 'Something went wrong'), '')

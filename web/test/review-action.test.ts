@@ -48,7 +48,7 @@ test('not held: date problems vouch for the date; others are confirmed by you, n
   for (const r of ['quote_unconfirmed', 'source_review_required', 'location_unconfirmed', null]) {
     const a = act({ review_reason: r, window_held: false })
     assert.equal(a.label, 'I checked the source - use it')
-    assert.match(a.hint, /confirmed by you \(never shown as source-checked\), and it can be drafted\. The other draft checks still apply\./)
+    assert.equal(a.hint, 'You checked the source, so the lead shows as confirmed by you. You can draft a message if the other checks pass.')
   }
 })
 

@@ -23,3 +23,29 @@ test('#1715 Ready cards render one plain timing message from the saved timing st
   assert.match(page, /data-testid="card-timing">\{timing\}/)
   assert.doesNotMatch(page, /data-testid="timing-proof"|\(timing proof-backed\)/)
 })
+
+test('#1715 Leads renders customer-facing labels for source review, reported events and a saved profile', () => {
+  assert.doesNotMatch(page, /Manually supplied claim|Saved signal claim|carried from a saved profile/i)
+  assert.match(page, /source_review_required: 'Review the source\./)
+  assert.match(page, /Reported event:/)
+  assert.match(page, /from your saved profile\. Approval for this search isn’t recorded/)
+})
+
+for (const [file, label] of [
+  ['evidence-recheck', 'Recheck saved source (free)'],
+  ['page-signals', 'Read passages about finding customers (free)'],
+  ['qualify-preview', 'See what a fit check would read (free)'],
+]) {
+  test(`#1715 ${file} shows the free action without implementation jargon`, () => {
+    const component = readFileSync(new URL(`../app/app/leads/${file}.tsx`, import.meta.url), 'utf8')
+    assert.equal(component.includes('no AI call'), false)
+    assert.ok(component.includes(label))
+  })
+}
+
+test('#1715 a shared review reason does not attribute scan results to the customer', () => {
+  const label = page.match(/source_review_required: '([^']+)'/)?.[1]
+  assert.ok(label)
+  assert.doesNotMatch(label, /you provided|you supplied/i)
+  assert.match(label, /^Review the source\./)
+})
