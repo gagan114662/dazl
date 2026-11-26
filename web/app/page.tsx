@@ -115,7 +115,7 @@ export default function Home() {
             <p className="text-[var(--ink-2)] text-sm mb-4">{FREE_BETA_TERMS}</p>
             {/* #1705: counters the bait-and-switch read of a run's dollar amounts: those are provider costs dazl
                 pays for free searches (lib/scan/price-estimate.ts), never a charge. */}
-            <p className="text-[var(--ink-2)] text-sm mb-4"><span data-testid="landing-trial-allowance"><Suspense fallback={null}><PublicTrialAllowance /></Suspense></span> A dollar amount shown on a free run is the provider cost paid by dazl.</p>
+            <p className="text-[var(--ink-2)] text-sm mb-4"><span data-testid="landing-trial-allowance"><Suspense fallback={null}><PublicTrialAllowance /></Suspense></span> No card and no AI key needed to start. A dollar amount shown on a free run is the provider cost paid by dazl, not a charge to you.</p>
             <ul className="text-sm text-[var(--ink-2)] leading-relaxed mb-6 grid gap-2 list-disc pl-5">
               {FREE_BETA.map(x => <li key={x}>{x}</li>)}
             </ul>
