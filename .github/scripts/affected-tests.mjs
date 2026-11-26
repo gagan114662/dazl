@@ -4,7 +4,8 @@
 // usage: node .github/scripts/affected-tests.mjs <base-sha> [head-sha]
 // Rules: a changed runnable top-level test runs itself; other test-tree changes select ALL; a changed source file under web/ runs every test whose text imports or names
 // its module (basename without extension); a change to shared plumbing (package files, test helpers, db schema/migrations,
-// lib/db/*) prints ALL so the PR falls back to the full suite. Nothing affected prints NONE.
+// lib/db/*) prints ALL so the PR falls back to the full suite. Source changes also select the SQLite import ratchet.
+// Nothing affected prints NONE.
 import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, basename, extname } from 'node:path'
@@ -18,6 +19,10 @@ if (web.some(f => ALL.some(r => r.test(f)))) { console.log('ALL'); process.exit(
 const testDir = 'web/test'
 const tests = readdirSync(testDir).filter(f => /\.test\.(ts|mjs)$/.test(f))
 const out = new Set()
+const sqliteRatchet = 'sqlite-import-ratchet.test.ts'
+if (tests.includes(sqliteRatchet) && changed.some(f => /\.[cm]?[jt]sx?$/.test(f))) {
+  out.add(`test/${sqliteRatchet}`)
+}
 for (const f of web) {
   if (f.startsWith('test/')) {
     // Only existing top-level tests are runnable shard entries. The text scan
