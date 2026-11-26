@@ -87,3 +87,9 @@ test('a bare hospital ending does not establish public-sector ownership', () => 
   assert.equal(isPublicSectorBody({ company: 'Hamilton General Hospital', domain: 'hhsc.ca' }).nonBuyer, true);
   assert.equal(isPublicSectorBody({ company: 'Central Hospital', domain: 'health.gov' }).nonBuyer, true);
 });
+
+test('multi-word public hospital names remain held without a government hostname', () => {
+  for (const company of ['Toronto Western Hospital', 'Mount Sinai Hospital', "St. Michael's Hospital", 'Credit Valley Hospital']) {
+    assert.equal(isPublicSectorBody({ company }).nonBuyer, true, company);
+  }
+});

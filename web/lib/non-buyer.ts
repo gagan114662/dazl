@@ -3,7 +3,9 @@ const INSTITUTION_FORMS = new Set([
   'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
 ]);
 
-const PUBLIC_HOSPITAL_TYPES = new Set(['general', 'regional', 'memorial', 'district', 'university']);
+const NON_PUBLIC_HOSPITAL_WORDS = new Set([
+  'animal', 'veterinary', 'vet', 'pet', 'laptop', 'phone', 'computer', 'doll', 'teddy', 'toy', 'private',
+]);
 
 export function isPublicSectorBody(input: {
   company: string;
@@ -39,8 +41,9 @@ export function isPublicSectorBody(input: {
   const localGovernment = first !== 'the' && words.length > 1 && (
     last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
   );
-  const hospital = (last === 'hospital' || last === 'hospitals') &&
-    (PUBLIC_HOSPITAL_TYPES.has(words.at(-2) ?? '') || words.slice(-3, -1).join(' ') === 'children s');
+  // One-word names have too little context to infer ownership without a government domain.
+  const hospital = words.length >= 3 && (last === 'hospital' || last === 'hospitals') &&
+    !words.slice(0, -1).some(word => NON_PUBLIC_HOSPITAL_WORDS.has(word));
   const namedBody = civicPlace || council || localGovernment || hospital || INSTITUTION_FORMS.has(lastTwo);
   const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 
