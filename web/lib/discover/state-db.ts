@@ -6,8 +6,8 @@ import type { Db } from '../db/client.ts'
 import { discoverCounts, discoverState, type DiscoverCounts, type DiscoverState } from './card.ts'
 
 // The columns of a lead its state is read from, for a caller that reads the workspace's own lead rows itself (aliased `l`).
-export const DISCOVER_LEAD_COLUMNS = 'l.name, l.company_domain, l.event_date, l.fit, l.intent, l.source_kind'
-export type DiscoverLeadRow = { id: string; scan_job_id: string; name: string | null; company_domain: string | null; review_reason: string | null; event_date: string | null; fit: number | null; intent: number | null; quarantined_at: number | null; source_kind?: string | null }
+export const DISCOVER_LEAD_COLUMNS = 'l.name, l.company_domain, l.event_date, l.date_status, l.fit, l.intent, l.source_kind'
+export type DiscoverLeadRow = { id: string; scan_job_id: string; name: string | null; company_domain: string | null; review_reason: string | null; event_date: string | null; date_status?: string | null; fit: number | null; intent: number | null; quarantined_at: number | null; source_kind?: string | null }
 export type DiscoverStoredRow = { lead_id: string; kind: string; connector: string; value: string; source_url: string | null }
 const marks = (n: number) => Array.from({ length: n }, () => '?').join(',')
 const leadsSql = (n: number) => `SELECT l.id, l.scan_job_id, l.review_reason, l.quarantined_at, ${DISCOVER_LEAD_COLUMNS}
