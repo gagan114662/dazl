@@ -11,6 +11,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
 import { createQueryJob } from '../lib/scan/store.ts'
+import { htmlToText } from '../lib/scan/fetch-page.ts'
 import { checkEmailSource, checkLead } from '../lib/discover/check.ts'
 import { runDiscovery } from '../lib/discover/run.ts'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
@@ -98,6 +99,21 @@ test('search results and other pages do not prove the email; a read of the exact
     assert.equal(source, url)
     return { text: email }
   }), lead)
+})
+
+test('an incomplete snapshot falls back to the exact cited page and retains its mailto address', async () => {
+  const lead = { email, email_source_url: url }
+  const snapshot = { url, title: null, page_age: null, text: quote }
+  const reads: string[] = []
+  const read = async (source: string) => {
+    reads.push(source)
+    return htmlToText(`<p>${quote}</p><a href="mailto:${email}">Email Dana</a>`, true)
+  }
+  assert.deepEqual(await checkEmailSource(lead, [snapshot], read), lead)
+  assert.deepEqual(reads, [url])
+  reads.length = 0
+  assert.deepEqual(await checkEmailSource(lead, [{ ...snapshot, text: email }], read), lead)
+  assert.deepEqual(reads, [])
 })
 
 test('the scan writes no published enrichment for a missing address with guessing off', async () => {

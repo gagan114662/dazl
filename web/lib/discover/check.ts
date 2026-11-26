@@ -165,9 +165,9 @@ export async function checkEmailSource<T extends Pick<DiscoveredLead, 'email' | 
   const url = source && publicUrl(source)
   if (email && url) {
     const key = emailPageKey(url)
-    const samePage = seen.filter(page => page.text && emailPageKey(page.url) === key)
-    const pages = samePage.length ? samePage : [await read(url.href).catch(() => null)]
-    if (pages.some(page => page?.text && emailInPageText(email, page.text))) return lead
+    if (seen.some(page => page.text && emailPageKey(page.url) === key && emailInPageText(email, page.text))) return lead
+    const page = await read(url.href).catch(() => null)
+    if (page?.text && emailInPageText(email, page.text)) return lead
   }
   return { ...lead, email: null, email_source_url: null }
 }
