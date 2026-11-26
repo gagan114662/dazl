@@ -51,6 +51,10 @@ await page.getByTestId('competitor-name-0').waitFor({ timeout: 15000 })
 assert.equal(await page.getByTestId('competitor-name-0').inputValue(), 'Acme Rivals', 'the stored list renders, one name row per competitor')
 assert.equal(await page.getByTestId('competitor-page-0').inputValue(), 'https://www.linkedin.com/company/acme-rivals/', 'the competitor\u2019s LinkedIn page renders in its own input')
 assert.equal(await page.getByTestId('competitor-page-1').inputValue(), '', 'a competitor without a page has an empty page input')
+for (const id of ['competitor-name-0', 'competitor-page-0']) {
+  const box = await page.getByTestId(id).boundingBox()
+  assert.ok(box && box.height >= 44, `${id} is ${box?.height}px tall: every control is at least 44px (the /app browser gate)`)
+}
 await page.getByTestId('competitor-add').click()
 await page.getByTestId('competitor-name-2').fill('Third Rival')
 await page.getByTestId('competitor-page-2').fill('https://www.linkedin.com/in/third-founder/')

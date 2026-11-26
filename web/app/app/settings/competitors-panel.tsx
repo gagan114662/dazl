@@ -59,14 +59,14 @@ export default function CompetitorsPanel() {
           {rows.map((row, i) => (
             <div key={i} className="flex flex-col gap-2 sm:flex-row sm:items-center mb-2">
               <input
-                className="input sm:flex-1"
+                className="input min-h-11 sm:flex-1"
                 placeholder={i === 0 ? 'Competitor name' : 'Name'}
                 value={row.name}
                 data-testid={`competitor-name-${i}`}
                 onChange={e => setRows(rows.map((r, j) => j === i ? { ...r, name: e.target.value } : r))}
               />
               <input
-                className="input sm:flex-1"
+                className="input min-h-11 sm:flex-1"
                 placeholder="Its LinkedIn page, optional (https://www.linkedin.com/company/...)"
                 value={row.page}
                 data-testid={`competitor-page-${i}`}
