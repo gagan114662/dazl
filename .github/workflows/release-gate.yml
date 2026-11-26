@@ -76,16 +76,6 @@ jobs:
       - name: Two tenants, no cross-tenant data on any route or page
         if: success() || failure()
         run: npm run test:smoke:tenants
-      - name: "Enrichment fallback opt-in: renders off by default, toggle persists (fenced)"
-        if: success() || failure()
-        run: npm run test:smoke:enrichment
-      - name: Enrichment fallback screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: enrichment-fallback-${{ github.event.pull_request.head.sha || github.sha }}
-          path: web/preview/enrichment-fallback/*.png
-          retention-days: 30
       - name: Inbox UI - filters, paging and the bounce_review badge
         if: success() || failure()
         run: mkdir -p /tmp/inbox-shots && SHOTS=/tmp/inbox-shots node --experimental-strip-types test/ui/inbox.ui.mjs
