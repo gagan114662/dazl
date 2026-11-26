@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { mergeIntoRunReport } from '../lib/scan/enrichment-trace.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -128,4 +130,46 @@ test('the result notice stays available when optional diagnostics are disabled',
 test('#1719: two requested countries do not inherit an unrelated saved market', () => {
   const market = resolveSearchMarket('Find manufacturers in France, Germany', { country: 'CA', language: 'en' }, { country: 'CH', language: 'fr' })
   assert.deepEqual(tinyfishMarket(market), {})
+})
+
+
+test('#1719: overlapping or stopped polls cannot restore an obsolete market notice', async () => {
+  const source = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  const noticeUpdate = source.indexOf("      setMarketNotice(typeof notice")
+  const start = source.lastIndexOf('    let stop = false', noticeUpdate)
+  assert.ok(start >= 0 && noticeUpdate > start)
+  const end = source.indexOf('\n', noticeUpdate)
+  const responses: Promise<Response>[] = []
+  const notices: unknown[] = []
+  const { tick, stopPolling } = runInNewContext(
+    `${source.slice(start, end)}\n    }\n    ;({ tick, stopPolling: () => { stop = true } })`,
+    {
+      fetch: () => responses.shift()!,
+      jobId: 'test-job', passiveJob: { current: false }, statusFails: { current: 0 },
+      setMarketNotice: (notice: unknown) => notices.push(notice),
+    },
+  ) as { tick: () => Promise<void>; stopPolling: () => void }
+
+  const deferred = () => {
+    const body = Promise.withResolvers<unknown>()
+    responses.push(Promise.resolve({ ok: true, json: () => body.promise } as Response))
+    return body
+  }
+  const first = deferred()
+  const firstPoll = tick()
+  const second = deferred()
+  const secondPoll = tick()
+  second.resolve({ attempts: 2, run_report: [] })
+  await secondPoll
+  first.resolve({ attempts: 1, run_report: [{ attempt: 1, market_notice: MARKET_NOTICE }] })
+  await firstPoll
+  assert.deepEqual(notices, [null])
+
+  const third = deferred()
+  const thirdPoll = tick()
+  await Promise.resolve()
+  stopPolling()
+  third.resolve({ attempts: 2, run_report: [{ attempt: 2, market_notice: MARKET_NOTICE }] })
+  await thirdPoll
+  assert.deepEqual(notices, [null])
 })

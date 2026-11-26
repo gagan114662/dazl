@@ -754,20 +754,25 @@ export default function LeadsClient() {
   useEffect(() => {
     if (!jobId || status === 'done' || status === 'failed' || statusError) return
     let stop = false
+    let started = 0, accepted = 0
     const tick = async () => {
+      const poll = ++started
       const r = await fetch(`/api/scan/status?job_id=${jobId}${passiveJob.current ? '&passive=1' : ''}`).catch(() => null)
-      if (stop) return
+      if (stop || poll < accepted) return
       // 404: this account cannot see that scan - terminal, say so and stop.
-      if (r && r.status === 404) { setStatusError('not_found'); return }
+      if (r && r.status === 404) { accepted = poll; setStatusError('not_found'); return }
       // Network/5xx: the scan itself may be fine. Retry a few times, then surface a
       // status-load error with a retry affordance - never mark the scan failed.
       if (!r || !r.ok) {
+        accepted = poll
         statusFails.current += 1
         if (statusFails.current >= 3) setStatusError('unavailable')
         return
       }
-      statusFails.current = 0
       const s = await r.json()
+      if (stop || poll < accepted) return
+      accepted = poll
+      statusFails.current = 0
       const report = s.run_report?.at(-1)
       const notice = report?.attempt === s.attempts ? report?.market_notice : null
       setMarketNotice(typeof notice === 'string' ? { job: jobId, text: notice } : null)
