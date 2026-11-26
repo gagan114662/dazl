@@ -61,3 +61,9 @@ test('matrix dry mode reports the bounded call count from an evidence snapshot',
     } finally { db.close() }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('a dry matrix command cannot produce a live scan evidence export', () => {
+  const result = dry('--contacts', '--apollo-budget', '2', '--apollo-evidence-out', 'never-created.json')
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /evidence export requires one non-dry case/)
+})
