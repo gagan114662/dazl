@@ -25,16 +25,21 @@ export async function findContactForConfirmedLead(
   ).get(leadId, userId) as { id: string; scan_job_id: string; company: string; contact: string | null; source_url: string; human_confirmed_at: number | null; human_confirmed_from: string | null; source_kind: string | null } | undefined
   if (!lead) return { status: 'not_found', contacts: 0 }
   if (lead.human_confirmed_at === null) return { status: 'not_confirmed', contacts: 0 }
+  let crawlUrl = lead.source_url
   if (!companySearchEligible(lead)) {
     // #1177: a customer-mention lead is still searched when its own site is settled on the stored rows (see
     // find-contact-eligible.ts); the crawl below then runs on that site, under every existing guard.
     const rows = db.prepare('SELECT connector, kind, value, label, source_url FROM lead_enrichments WHERE lead_id = ?').all(lead.id) as { connector: string; kind: string; value: string; label: string | null; source_url: string | null }[]
     const identity = identityOf({ id: lead.id, contact: lead.contact }, rows)
-    if (!companySearchEligibleSettled(lead, siteSettled(identity) && domainMatchesCompany(identity.site, lead.company))) return { status: 'not_company', contacts: 0 }
+    const settledSite = siteSettled(identity) ? identity.site : null
+    if (!companySearchEligibleSettled(lead, settledSite !== null && domainMatchesCompany(settledSite, lead.company))) return { status: 'not_company', contacts: 0 }
+    // The crawl starts from the settled site itself, not the citing page: starting from source_url let it
+    // wander to a different same-name site and store that site's contacts as this company's (Qodo, #1177).
+    crawlUrl = `https://${settledSite}`
   }
   if (!sitecrawlEnabled(deps.env)) return { status: 'disabled', contacts: 0 }
   const count = () => (db.prepare("SELECT count(*) AS n FROM lead_enrichments WHERE lead_id = ? AND connector = 'sitecrawl' AND kind IN ('email','phone')").get(lead.id) as { n: number }).n
   const before = count()
-  await crawlJob(db, userId, lead.scan_job_id, { ...deps, leads: [{ id: lead.id, company: lead.company, source_url: lead.source_url }] })
+  await crawlJob(db, userId, lead.scan_job_id, { ...deps, leads: [{ id: lead.id, company: lead.company, source_url: crawlUrl }] })
   return { status: 'done', contacts: Math.max(0, count() - before) }
 }

@@ -144,8 +144,9 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
       // #1177: a customer-mention row shows its published addresses when its own site is settled (ctx) and the
-      // settled domain matches its company name, like the lookup.
-      if ((!eligibleWorkEmailLead(l) && !(ctx && counterpartySettledPath(l, domainMatchesCompany(ctx.site, l.company)))) || isWorkEmailFixtureLead(l)) continue
+      // settled domain matches its company name, like the lookup. A rejected (quarantined) row shows nothing:
+      // the lookup itself refuses it ('this lead was rejected'), so the reader must not publish its address.
+      if ((!eligibleWorkEmailLead(l) && !(ctx && !l.quarantined_at && counterpartySettledPath(l, domainMatchesCompany(ctx.site, l.company)))) || isWorkEmailFixtureLead(l)) continue
       if (!ctx) continue
       out[l.id] = ctx.people.map(person => strictPublishedRow(targetKey(person), person.name, ctx, candidates[l.id] ?? [], now)).filter(r => r.status === 'published')
     }

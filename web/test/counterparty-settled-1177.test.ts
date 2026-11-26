@@ -11,7 +11,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { createJob } from '../lib/scan/store.ts'
 import { reviewLaneWorkEmailTargets } from '../lib/people/work-email-review-lane.ts'
-import { findWorkEmail } from '../lib/people/work-email.ts'
+import { findWorkEmail, strictPublishedWorkEmailsForLeads } from '../lib/people/work-email.ts'
 import { findContactForConfirmedLead } from '../lib/scan/find-contact.ts'
 import { recordEmailGuesses } from '../lib/people/email-pattern.ts'
 import type { Get } from '../lib/connectors/sitecrawl.ts'
@@ -99,12 +99,12 @@ const pages: Record<string, string> = {
   '/a': html('<a href="https://stabyl.com">site</a>'), '/robots.txt': '', '/': html('Stabyl home <a href="/contact-us">c</a>'), '/contact-us': html('Email: hello@stabyl.com'),
 }
 const get: Get = async url => { const p = pages[new URL(url).pathname]; return p === undefined ? { status: 404, body: '', finalUrl: url } : { status: 200, body: p, finalUrl: url } }
-function contactFixture(from: string, ownDomain: boolean) {
+function contactFixture(from: string, ownDomain: boolean, domain = 'stabyl.com') {
   const db = new Database(':memory:'); migrateConnectors(db)
   db.exec("CREATE TABLE scan_jobs (id TEXT, user_id TEXT); CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, source_kind TEXT, contact TEXT)")
   db.prepare("INSERT INTO scan_jobs VALUES ('j1','u1')").run()
   db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://jobs.example/a','source_review_required',NULL,50,NULL,1700000000,?,'ats',NULL)").run(from)
-  if (ownDomain) db.prepare("INSERT INTO lead_enrichments (lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('l1','u1','sitecrawl','domain','stabyl.com|evidence_own_domain','domain-basis-v1:evidence_own_domain','https://stabyl.com/','2026-11-13',1700000000)").run()
+  if (ownDomain) db.prepare("INSERT INTO lead_enrichments (lead_id, tenant_id, connector, kind, value, label, source_url, source_date, retrieved_at) VALUES ('l1','u1','sitecrawl','domain',?,'domain-basis-v1:evidence_own_domain',?,'2026-11-13',1700000000)").run(`${domain}|evidence_own_domain`, `https://${domain}/`)
   return db
 }
 
@@ -113,4 +113,28 @@ test('#1177 find contact: a confirmed counterparty lead with a settled own site 
   assert.equal(ok.status, 'done', JSON.stringify(ok)); assert.ok(ok.contacts >= 1)
   assert.equal((await findContactForConfirmedLead(contactFixture('counterparty_signal', false), 'u1', 'l1', { get, gapMs: 0, env: {} })).status, 'not_company')
   assert.equal((await findContactForConfirmedLead(contactFixture('author_post', true), 'u1', 'l1', { get, gapMs: 0, env: {} })).status, 'not_company')
+})
+
+test('#1177 find contact: a settled domain naming another company is refused (the domain check is load-bearing)', async () => {
+  const r = await findContactForConfirmedLead(contactFixture('counterparty_signal', true, 'harlowreedlaw.example'), 'u1', 'l1', { get, gapMs: 0, env: {} })
+  assert.equal(r.status, 'not_company', JSON.stringify(r)); assert.equal(r.contacts, 0)
+})
+
+test('#1177 find contact: the crawl starts from the settled site, not the citing page', async () => {
+  const fetched: string[] = []
+  const tracking: Get = async url => { fetched.push(url); return get(url) }
+  const ok = await findContactForConfirmedLead(contactFixture('counterparty_signal', true), 'u1', 'l1', { get: tracking, gapMs: 0, env: {} })
+  assert.equal(ok.status, 'done', JSON.stringify(ok)); assert.ok(ok.contacts >= 1)
+  assert.ok(fetched.length > 0 && new URL(fetched[0]).host === 'stabyl.com', `first fetch is the settled site: ${fetched[0]}`)
+  assert.ok(!fetched.some(u => new URL(u).host === 'jobs.example'), 'the citing page is never fetched')
+})
+
+test('#1177 reader: a rejected (quarantined) counterparty row shows no published email, though the same row unrejected does', async () => {
+  const s = seeded('counterparty_signal')
+  recordEmailGuesses(s.db, 'A', s.id, 'beneschlaw.example', [], ['Jordan Hammond, Chief Marketing Officer'], { env: {}, homeText: '71 S Wacker Dr, Chicago, IL 60606', seen: [{ address: 'jhammond@beneschlaw.example', url: 'https://www.beneschlaw.example/contact-us/' }] })
+  const shown = strictPublishedWorkEmailsForLeads(s.db, 'A', [s.id], Math.floor(NOW / 1000))
+  assert.ok((shown[s.id] ?? []).some(r => r.status === 'published'), 'control: the unrejected row shows its published address')
+  s.db.prepare("UPDATE leads SET quarantined_at = ? WHERE id = ?").run(Math.floor(NOW / 1000), s.id)
+  const after = strictPublishedWorkEmailsForLeads(s.db, 'A', [s.id], Math.floor(NOW / 1000))
+  assert.deepEqual(after[s.id] ?? [], [], 'a rejected lead shows no published email (the lookup refuses it too)')
 })
