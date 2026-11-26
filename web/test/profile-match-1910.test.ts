@@ -123,9 +123,10 @@ for (const invalidReply of [false, true]) {
     assert.equal(status.icp_source, invalidReply ? 'request_only' : 'inferred')
     assert.ok(profiles.length)
     for (const profile of profiles) assert.deepEqual(profile, status.icp)
-    assert.equal(status.icp?.summary, query)
-    assert.deepEqual(status.icp?.who, invalidReply ? [] : ['Dental clinics'])
-    assert.deepEqual(status.icp?.sizes, [])
+    const requestOnly = fallbackIcp(query)
+    assert.deepEqual(status.icp, invalidReply ? requestOnly : {
+      ...requestOnly, who: ['Dental clinics'], industries: ['dental'], where: ['Toronto'], signals: ['hiring'], country: 'CA',
+    })
     assert.equal(warnings.mock.callCount(), Number(invalidReply))
     assert.deepEqual(db.prepare('SELECT kind FROM scan_spend_calls WHERE scan_job_id = ? ORDER BY rowid').all(id),
       [{ kind: 'llm.anthropic' }, { kind: 'llm.anthropic.web_search' }])
