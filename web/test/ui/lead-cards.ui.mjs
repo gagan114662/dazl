@@ -62,7 +62,9 @@ let heldMode = false; const retryCalls = []
 const writes = []; const outreachBodies = []; const quarantineCalls = []
 const b = await chromium.launch(); const ctx = await b.newContext({ viewport: { width: 1280, height: 1000 } })
 await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
-await ctx.route('**/*', async route => {
+// One API stub for every context in this file: register it on each new context (a context without it
+// would hit the real server and see no seeded leads - the first 390px run failed exactly this way).
+const routeApi = async route => {
   const req = route.request(); const u = new URL(req.url()); const m = req.method()
   if (u.origin !== base) return route.abort()
   if (!u.pathname.startsWith('/api/')) return route.continue()
@@ -83,7 +85,8 @@ await ctx.route('**/*', async route => {
   const er = /^\/api\/leads\/([a-f0-9]{24})\/enrich-retry$/.exec(u.pathname)
   if (er && m === 'POST') { retryCalls.push({ lead: er[1], body: req.postData() ? JSON.parse(req.postData()) : null }); return json({ retried: true, attached: 1, releases: ['apollo people'] }) }
   return json({}, 404)
-})
+}
+await ctx.route('**/*', routeApi)
 const page = await ctx.newPage()
 const shot = async name => { if (process.env.SHOTS) await page.screenshot({ path: path.join(process.env.SHOTS, `${name}.png`), fullPage: true }) }
 try {
@@ -229,6 +232,7 @@ try {
   // right edge and the summary's left edge with no sideways scroll).
   const ctx390 = await b.newContext({ viewport: { width: 390, height: 844 } })
   await ctx390.addCookies([{ name: 'dazl_session', value: token, url: base }])
+  await ctx390.route('**/*', routeApi)
   const p390 = await ctx390.newPage()
   await p390.goto(`${base}/app/leads?job_id=${JOB}&passive=1`, { waitUntil: 'networkidle' })
   const north = p390.getByTestId('lead-card').filter({ hasText: 'Northgate Dental' })
