@@ -3,6 +3,8 @@ const INSTITUTION_FORMS = new Set([
   'police department', 'fire department', 'public agency', 'housing authority', 'transit authority', 'public works',
 ]);
 
+const PUBLIC_HOSPITAL_TYPES = new Set(['general', 'regional', 'memorial', 'district', 'university']);
+
 export function isPublicSectorBody(input: {
   company: string;
   domain?: string | null;
@@ -37,7 +39,8 @@ export function isPublicSectorBody(input: {
   const localGovernment = first !== 'the' && words.length > 1 && (
     last === 'county' || last === 'township' || (words.length > 2 && (lastTwo === 'city council' || lastTwo === 'town council'))
   );
-  const hospital = words.length > 1 && (last === 'hospital' || last === 'hospitals');
+  const hospital = (last === 'hospital' || last === 'hospitals') &&
+    (PUBLIC_HOSPITAL_TYPES.has(words.at(-2) ?? '') || words.slice(-3, -1).join(' ') === 'children s');
   const namedBody = civicPlace || council || localGovernment || hospital || INSTITUTION_FORMS.has(lastTwo);
   const requiresGovernmentDomain = first === 'ministry' || first === 'department' || first === 'government';
 

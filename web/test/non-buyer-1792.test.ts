@@ -76,3 +76,14 @@ test('hospitals and health authorities are public-sector bodies for private-sect
   }
   assert.equal(isPublicSectorBody({ company: 'North Valley Hospital Supplies', offer }).nonBuyer, false);
 });
+
+test('a bare hospital ending does not establish public-sector ownership', () => {
+  for (const company of [
+    'VCA Animal Hospital', 'Bloor Animal Hospital', 'Kingsway Animal Hospitals', 'Toronto Veterinary Hospital',
+    'Pet Hospital', 'The Laptop Hospital', 'Phone Hospital', 'Doll Hospital', 'Shouldice Hospital',
+  ]) {
+    assert.equal(isPublicSectorBody({ company, domain: 'clinic.example' }).nonBuyer, false, company);
+  }
+  assert.equal(isPublicSectorBody({ company: 'Hamilton General Hospital', domain: 'hhsc.ca' }).nonBuyer, true);
+  assert.equal(isPublicSectorBody({ company: 'Central Hospital', domain: 'health.gov' }).nonBuyer, true);
+});
