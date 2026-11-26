@@ -114,6 +114,36 @@ test('a read that throws or hits its deadline is marked not finished, and retry 
   assert.equal(hiringFeedStatus(db2, 'A', r2.job_id!)[0].state, 'cut_off')
 })
 
+test('#1674 a transient homepage failure stays retryable despite a failure audit row', async () => {
+  const db = mk()
+  try {
+    let unavailable = true
+    const transient: Get = async url => unavailable && new URL(url).hostname === 'acmeco.example' && new URL(url).pathname === '/'
+      ? { status: 503, body: '', finalUrl: url }
+      : okGet(url)
+    const intake = await run(db, { get: transient })
+    await intake.crawl
+    assert.ok(intake.job_id)
+    assert.deepEqual(db.prepare("SELECT status FROM connector_audit WHERE connector = 'sitecrawl' AND scan_job_id = ?").all(intake.job_id),
+      [{ status: 'site_unreachable' }])
+    assert.deepEqual(hiringFeedStatus(db, 'A', intake.job_id).map(r => [r.state, r.emails]), [['failed', 0]])
+
+    // Match an old row that was incorrectly persisted as finished before the retry fix.
+    db.prepare("UPDATE hiring_feed_crawl SET status = 'finished' WHERE job_id = ?").run(intake.job_id)
+    assert.equal(hiringFeedStatus(db, 'A', intake.job_id)[0].state, 'failed')
+    assert.deepEqual(hiringFeedStatus(db, 'B', intake.job_id), [])
+    assert.equal((await retryHiringFeedContacts(db, 'B', intake.job_id, { get: transient })).retrying, 0)
+
+    unavailable = false
+    const retry = await retryHiringFeedContacts(db, 'A', intake.job_id, { get: transient, gapMs: 0, env: {} })
+    assert.equal(retry.retrying, 1)
+    await retry.crawl
+    assert.deepEqual(hiringFeedStatus(db, 'A', intake.job_id).map(r => [r.state, r.emails]), [['finished', 1]])
+    assert.equal((await retryHiringFeedContacts(db, 'A', intake.job_id)).retrying, 0)
+    assert.deepEqual(db.prepare('SELECT count(*) AS count FROM leads').get(), { count: 1 })
+  } finally { db.close() }
+})
+
 test('a stale reading row shows as interrupted, and running the same intake again re-reads it instead of stranding it behind the duplicate skip', async () => {
   const db = mk()
   const r = await run(db, { get: async () => null }); await r.crawl
