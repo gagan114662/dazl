@@ -13,6 +13,7 @@
 //   - Prompt text and responses are NOT stored (only prompt length and a fixed-template stage label).
 // ON by default; DAZL_MODEL_USAGE=0 turns recording off. Never throws into the scan.
 import type Database from 'better-sqlite3'
+import type { Db, Param } from '../db/client.ts'
 import type { Provider } from '../llm/provider.ts'
 import { SpendRefused } from '../llm/spend-guard.ts'
 
@@ -92,15 +93,49 @@ export function migrateModelUsage(db: Database.Database): void {
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS scan_model_calls_job ON scan_model_calls(job_id, attempt, seq)')
 }
 
-// Called from the job's finish transaction (done, failed or retry), so a failed scan still leaves its usage behind.
-// job_id null = a call made before any job exists (profile generation from the form); linked by tenant only.
-export function writeModelCalls(db: Database.Database, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env: Record<string, string | undefined> = process.env, startSeq = 0): boolean {
+const INSERT_MODEL_CALL_SQL = `INSERT INTO scan_model_calls
+  (tenant_id,job_id,attempt,seq,stage,method,model_requested,model_served,input_tokens,output_tokens,outcome,max_tokens,prompt_chars)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (job_id, attempt, seq) DO NOTHING`
+
+function modelCallParams(tenantId: string, jobId: string | null, attempt: number, seq: number, c: ModelCall): Param[] {
+  return [tenantId, jobId, attempt, seq, c.stage, c.method, c.model_requested, c.model_served, c.input_tokens, c.output_tokens, c.outcome, c.max_tokens, c.prompt_chars]
+}
+
+// The job's finish path records calls even for failures or retries. A null job is a profile call linked by tenant only.
+export function writeModelCalls(db: Database.Database, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env?: Record<string, string | undefined>, startSeq?: number): boolean
+export function writeModelCalls(db: Db, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env?: Record<string, string | undefined>, startSeq?: number): Promise<boolean>
+export function writeModelCalls(db: Db | Database.Database, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env: Record<string, string | undefined> = process.env, startSeq = 0): boolean | Promise<boolean> {
+  if ('kind' in db) return writeModelCallsDb(db, tenantId, jobId, attempt, calls, env, startSeq)
   if (!modelUsageEnabled(env) || calls.length === 0) return false
   try {
     migrateModelUsage(db)
-    const ins = db.prepare('INSERT OR IGNORE INTO scan_model_calls (tenant_id,job_id,attempt,seq,stage,method,model_requested,model_served,input_tokens,output_tokens,outcome,max_tokens,prompt_chars) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    calls.forEach((c, i) => ins.run(tenantId, jobId, attempt, startSeq + i, c.stage, c.method, c.model_requested, c.model_served, c.input_tokens, c.output_tokens, c.outcome, c.max_tokens, c.prompt_chars))
+    const insert = db.prepare(INSERT_MODEL_CALL_SQL)
+    for (const [i, call] of calls.entries()) {
+      try { insert.run(...modelCallParams(tenantId, jobId, attempt, startSeq + i, call)) }
+      catch (e) {
+        // The legacy SQLite INSERT OR IGNORE skipped malformed telemetry and kept flushing the batch.
+        const code = (e as { code?: string }).code
+        if (code !== 'SQLITE_CONSTRAINT_CHECK' && code !== 'SQLITE_CONSTRAINT_NOTNULL') throw e
+      }
+    }
     return true
+  } catch { return false }
+}
+
+async function writeModelCallsDb(db: Db, tenantId: string, jobId: string | null, attempt: number, calls: ModelCall[], env: Record<string, string | undefined>, startSeq: number): Promise<boolean> {
+  if (!modelUsageEnabled(env) || calls.length === 0) return false
+  try {
+    return await db.tx(function* (tx) {
+      if (jobId !== null) {
+        const lock = tx.kind === 'pg' ? ' FOR SHARE' : ''
+        const owned = yield* tx.get('SELECT id FROM scan_jobs WHERE id = ? AND user_id = ?' + lock, [jobId, tenantId])
+        if (!owned) return false
+      }
+      for (const [i, call] of calls.entries()) {
+        yield* tx.run(INSERT_MODEL_CALL_SQL, modelCallParams(tenantId, jobId, attempt, startSeq + i, call))
+      }
+      return true
+    })
   } catch { return false }
 }
 
