@@ -21,7 +21,7 @@ export default function QualifyPreview({leadId,allowRun=false,sourceBlocked=fals
  const sent=(u:string)=>p?.scope?.pages_included.find(x=>x.url===u)
  const shown=p?.notes.filter(n=>!/^No verified price|^No AI key/.test(n))??[]
  return <div className="text-xs text-[#333] mt-2 mb-3">
- <button type="button" onClick={()=>void go()} disabled={busy||sourceBlocked} className="underline">{busy?'Looking...':'What a fit check would read (free, no AI call)'}</button>
+ <button type="button" onClick={()=>void go()} disabled={busy||sourceBlocked} className="underline">{busy?'Looking...':'See what a fit check would read (free)'}</button>
  {sourceBlocked&&<p>The saved source blocked an earlier check. This preview will not retry it or bypass that block.</p>}
  {err&&<span className="ml-2">{err}</span>}
  {p&&<div className="border-l-2 border-black/30 pl-3 mt-2 space-y-1">

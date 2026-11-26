@@ -24,7 +24,7 @@ const reason = 'The results did not match what you asked for.'
 const nextStep = 'Try a broader signal.'
 const action = { label: 'Edit the request', href: '/app/leads' }
 
-function renderHelp(record: typeof scan, withAction = true) {
+function renderHelp(record: object, withAction = true, useProductionReason = false) {
   const render = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'renderZeroResultReason')
   assert.ok(render, 'Leads must render the zero-result explanation')
   const { outputText } = ts.transpileModule(render.getText(source), {
@@ -34,7 +34,7 @@ function renderHelp(record: typeof scan, withAction = true) {
   const calls: unknown[] = []
   const stub = (input: Parameters<typeof zeroResultReason>[0]) => {
     calls.push({ ...input })
-    return { code: 'unknown', reason, nextStep, action: withAction ? action : undefined }
+    return useProductionReason ? zeroResultReason(input) : { code: 'unknown', reason, nextStep, action: withAction ? action : undefined }
   }
   const element = runInNewContext(outputText + '\nrenderZeroResultReason(scan)', {
     exports: {}, zeroResultReason: stub, statedOffer, scan: record,
@@ -80,9 +80,80 @@ test('#1726: a working, failed or nonzero scan does not call the helper or show 
   }
 })
 
-test('#1726: a trial spending stop keeps the existing spending explanation', () => {
-  const capped = { ...scan, error: 'trial_budget_reached' }
-  assert.deepEqual(renderHelp(capped), { html: '', calls: [] })
+const emptyScan = { ...scan, quality: { candidates: 0, dropped: 0 } }
+
+test('#1726: a recorded native web search exhaustion names the search limit and suggests narrowing', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    run_report: [{
+      native_web_search: { searches: 2, max_searches: 4, evidence_diagnostic: { result_errors: { max_uses_exceeded: 1 } } },
+    }],
+  }, true, true)
+  assert.match(html, /reached its web search limit/)
+  assert.match(html, /Try a narrower request/)
+  assert.doesNotMatch(html, /spending limit/)
+})
+
+test('#1726: a trial spending stop preserves the recorded reason and shows its next step', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    error: 'trial_budget_reached',
+    run_report: [{ discover: { stop: 'search_allowance_reached', searches: 4 } }],
+    outcome: {
+      kind: 'stopped',
+      label: 'This free scan reached its spending limit.',
+      detail: 'The scan stopped before it could finish looking.',
+      next: { text: 'Try a narrower search', href: '/app/leads' },
+    },
+  }, true, true)
+  assert.match(html, /spending limit/)
+  assert.match(html, /stopped before it could finish looking/)
+  assert.match(html, /Try a narrower search/)
+  assert.doesNotMatch(html, /web search limit/)
+})
+
+test('#1726: a recorded zero match explicitly says nothing matched and suggests widening', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    outcome: {
+      kind: 'zero_match',
+      label: 'Zero match - the sources returned nothing',
+      next: { text: 'Widen the search', href: '/app/leads' },
+    },
+  }, true, true)
+  assert.match(html, /Nothing matched this search/)
+  assert.match(html, /Widen the search/)
+})
+
+test('#1726: an extraction shortfall shows the recorded cause instead of asserting a zero match', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    outcome: {
+      kind: 'none_extracted',
+      label: 'No candidates were extracted',
+      detail: 'The pages read did not identify a matching company.',
+      next: { text: 'See what the scan read', href: '/app/leads?job_id=example' },
+    },
+  }, true, true)
+  assert.match(html, /The pages read did not identify a matching company/)
+  assert.match(html, /Try rewording/)
+  assert.doesNotMatch(html, /Nothing matched this search/)
+})
+
+test('#1726: an inconclusive discovery stop keeps the recorded source gap', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    run_report: [{ discover: { stop: 'max_tokens', searches: 2 } }],
+    outcome: {
+      kind: 'none_extracted',
+      label: 'No candidates - a source was unavailable',
+      detail: 'The search has no recorded source counts.',
+      next: null,
+    },
+  }, true, true)
+  assert.match(html, /a source was unavailable/)
+  assert.match(html, /no recorded source counts/)
+  assert.match(html, /Try rewording/)
 })
 
 const limitInput = {

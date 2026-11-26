@@ -1479,7 +1479,6 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const source = 'search:claude_discover'
   ledger.record(source, 'started')
   assertOwned(db, job)
-  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   // the play's own offer as saved on this job (reviewed offer first, then what it was created with)
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   // A play that runs again (a watch) tells the loop which companies its earlier runs already found, so each run brings new ones.
@@ -1489,14 +1488,23 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   // #1579: a profile the person reviewed for this search (icp_inferred 0), or a saved play's own on its repeat runs, narrows the request.
   // One carried over unreviewed from an earlier search is background: the typed request decides who, where and which signal.
   const profileCarried = discoverProfileCarried(sells?.icp_inferred, job.watch_id)
+  let providerDispatchStarted = false
+  const providerFetch: typeof fetch = (input, init) => {
+    const signal = init && 'signal' in init ? init.signal : input instanceof Request ? input.signal : null
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    providerDispatchStarted = true
+    return (fetchImpl ?? fetch)(input, init)
+  }
+  const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   let run: DiscoveryRun
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
     run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
       { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
-      { apiKey: key, fetch: fetchImpl, discover, enrich })
+      { apiKey: key, fetch: fetchImpl, providerFetch, discover, enrich })
   } catch (e) {
-    await hold?.settle(null)   // the call may have been billed: keep the worst case
+    // An SDK preflight can throw before it invokes fetch. Give back the hold only with that evidence.
+    await hold?.settle(providerDispatchStarted ? null : 0)
     ledger.record(source, 'error')
     const status = (e as { status?: number })?.status
     finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)

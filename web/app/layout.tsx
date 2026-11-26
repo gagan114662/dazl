@@ -7,7 +7,7 @@ import { stagingBannerOn } from '@/lib/staging-banner'
 import { SITE_BASE, SITE_TITLE } from '@/lib/site'
 import ClientErrorReporter from './client-error-reporter'
 
-const geist = Geist({ subsets: ['latin'] })
+const geist = Geist({ subsets: ['latin'], variable: '--dazl-geist' })
 
 // #1705: the fallback meta/OG description pitches the same single first step as the landing hero and the
 // app's first screen, with honest proof wording (dazl does not open every source page, #1716). Local because
@@ -32,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Runs before the page's chunks load; see lib/chunk-recovery.ts for the bounded reload policy. */}
         <script dangerouslySetInnerHTML={{ __html: chunkRecoveryScript(process.env.NEXT_PUBLIC_DAZL_BUILD || '') }} />
       </head>
-      <body className={`${geist.className} antialiased`}>
+      <body className={`${geist.className} ${geist.variable} antialiased`}>
         <a href="#main" className="skip-link">Skip to content</a>
         {stagingBannerOn() && <div role="note" data-testid="staging-banner" className="bg-[#fde68a] text-[#111] text-center text-xs font-mono uppercase tracking-wider py-1">{STAGING_BANNER}</div>}
         <ClientErrorReporter />
