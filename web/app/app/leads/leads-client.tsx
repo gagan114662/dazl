@@ -1741,6 +1741,9 @@ export default function LeadsClient() {
               <div key={l.id} className="p-4 text-sm" data-testid="review-row">
                 <ReviewCompanyWebsite lead={l} />
                 {!l.quarantined_at && peopleSearchable(l.review_reason) && <div className="text-xs"><WebsiteProvenance lead={l} /><PublishedEmailProvenance lead={l} /></div>}
+                {/* #1832: a research-only row shows its published email even under a hold that is not a searchable one; the
+                    website line keeps the gate above, because such a hold can put the company itself in doubt. Display only. */}
+                {part === 'research' && !l.quarantined_at && !peopleSearchable(l.review_reason) && <div className="text-xs"><PublishedEmailProvenance lead={l} /></div>}
                 {/* #1037: a held lead names its person too (a labelled search result or site listing; it does not make the lead ready). No line when the
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}

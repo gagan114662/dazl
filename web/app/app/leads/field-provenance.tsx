@@ -46,24 +46,38 @@ type EmailLead = PublishedEmailLead & {
   company_first_published_email?: { address: string; source_url: string; display_only: true } | null
 }
 
-function emailEvidence(lead: EmailLead): { address: string; source: string | null | undefined } | null {
+function emailEvidence(lead: EmailLead): { address: string; source: string | null | undefined; note?: string } | null {
   const published = lead.company_first_published_email
   if (published?.display_only === true) return { address: published.address, source: published.source_url }
 
   if (lead.source_kind === 'discover') {
+    // #1832: the run's own record of the named person's published address shows wherever the run found it, with the
+    // page it came from. When that page is not the company's own site (the owner decision in lib/discover/card.ts
+    // emailOnCompanySite, which decides what COUNTS for a draft), the address is shown display only, never as a
+    // contact - research rows stay not approvable either way.
     const email = discoverContact(lead)?.email
-    return email && emailOnCompanySite(email.address, email.source, lead.company_domain) ? email : null
+    if (email) {
+      return emailOnCompanySite(email.address, email.source, lead.company_domain)
+        ? { address: email.address, source: email.source }
+        : { address: email.address, source: email.source, note: `display only - another site prints it, not the company's own domain or website, so it is not a contact` }
+    }
   }
 
   const contact = publishedContact(lead)
-  if (!contact || contact.purpose === 'non-sales') return null
+  if (!contact) return null
   const matchingRows = (lead.enrichments ?? []).filter(row =>
     row.connector === 'sitecrawl' && row.kind === 'email' && row.value.trim().toLowerCase() === contact.email)
   const crawl = matchingRows.reduce<(typeof matchingRows)[number] | undefined>((latest, row) =>
     !latest || (row.retrieved_at ?? 0) > (latest.retrieved_at ?? 0) ? row : latest, undefined)
   const context = lead.contact_context
   const citedAddress = context?.excerpt.toLowerCase().split(/[\s"'<>(),;:]+/).includes(contact.email)
-  return { address: contact.email, source: crawl ? crawl.source_url : citedAddress ? context?.source_url : null }
+  // #1832: a restricted inbox (press@, support@ ...) is still an address the company published about itself. Show
+  // it, marked display only and not a sales contact, instead of hiding a found address behind "unavailable".
+  const note = contact.purpose === 'non-sales' ? `display only - a ${contact.purposeHint ?? 'non-sales'} inbox, not a sales contact` : undefined
+  // A direct contact is an address the cited page printed (lib/outreach/published-email.ts); the draft gate cites
+  // that same page (addressCitationUrl) when no crawl row recorded the address separately.
+  const source = crawl ? crawl.source_url : citedAddress ? context?.source_url : contact.source === 'lead' ? lead.source_url : null
+  return { address: contact.email, source, note }
 }
 
 export function PublishedEmailProvenance({ lead }: { lead: EmailLead }) {
@@ -71,7 +85,7 @@ export function PublishedEmailProvenance({ lead }: { lead: EmailLead }) {
   if (!email) return <div className="text-xs text-[var(--ink-2)]">Published work email unavailable</div>
 
   return <div className="text-xs text-[var(--ink-2)] break-words" data-testid={lead.company_first_published_email?.display_only ? 'company-first-published-email' : 'published-work-email'}>
-    Published work email{lead.company_first_published_email?.display_only ? ' (display only)' : ''}: {email.address}{' '}
+    Published work email{email.note ? ` (${email.note})` : lead.company_first_published_email?.display_only ? ' (display only)' : ''}: {email.address}{' '}
     <FieldSource field="Email" source={email.source} />
   </div>
 }
