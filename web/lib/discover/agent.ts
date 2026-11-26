@@ -5,6 +5,7 @@
 // A record is a claim with its proof attached (evidence_url, signal_date). lib/discover/check.ts then reads the proof page
 // itself and labels the record; it never hides one.
 import Anthropic from '@anthropic-ai/sdk'
+import { profileMarketLines } from './profile-market.ts'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
 
@@ -17,7 +18,7 @@ export interface DiscoverInput { query: string; offer?: string | null; today?: D
 // The customer's saved buyer profile for this play, in their own words. One they reviewed for THIS search narrows the request; the
 // request's own words win where they differ. One carried over unreviewed from an earlier search (profileCarried, #1579) is background
 // only: a new typed request for other buyers ran beside "Toronto agencies hiring an SDR" on production and found nothing, twice.
-export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; exclude?: string[] }
+export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; country?: string; language?: string; exclude?: string[] }
 // Whether a job's profile was carried into the search unreviewed (scan_jobs.icp_inferred: 0 = the person reviewed it for this search).
 // A saved play's repeat run keeps its own profile as the play's.
 export const discoverProfileCarried = (icpInferred: number | null | undefined, watchId: string | null | undefined): boolean => !watchId && icpInferred !== 0
@@ -25,7 +26,7 @@ export const CARRIED_PROFILE_HEAD = "Background only, NOT a filter: the seller's
 export function profileLines(p: DiscoverProfile | null | undefined, carried = false): string[] {
   if (!p) return []
   const list = (label: string, v: unknown) => { const xs = Array.isArray(v) ? v.map(x => str(x, 120)).filter(Boolean).slice(0, 8) : []; return xs.length ? `${label}: ${xs.join('; ')}` : '' }
-  const lines = [p.summary ? `Who they sell to: ${str(p.summary, 400)}` : '', list('Buyer roles', p.who), list('Industries', p.industries), list('Company sizes', p.sizes), list(carried ? 'Usual locations (apply only if the request names no place)' : 'Locations (only companies in these places, unless the request names another place)', p.where), list('Leave out', p.exclude)].filter(Boolean)
+  const lines = [p.summary ? `Who they sell to: ${str(p.summary, 400)}` : '', list('Buyer roles', p.who), list('Industries', p.industries), list('Company sizes', p.sizes), list(carried ? 'Usual locations (apply only if the request names no place)' : 'Locations (only companies in these places, unless the request names another place)', p.where), ...profileMarketLines(p), list('Leave out', p.exclude)].filter(Boolean)
   return lines.length ? [carried ? CARRIED_PROFILE_HEAD : "The seller's saved buyer profile:", ...lines] : []
 }
 export interface DiscoveredLead {
