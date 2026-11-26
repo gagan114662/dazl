@@ -13,7 +13,7 @@ BEGIN
   END IF;
 END $guard$;
 
-DROP TABLE IF EXISTS adv_budget_lock, adv_requests, advanced_consent, app_leases, audit_closing_gate, audit_events, audit_purge_gate, autopilot_audit, autopilot_launch_policy, autopilot_settings, autopilot_work, bounce_records, calcom_bookings, calcom_hooks, company_events, connector_audit, connector_claims, consent_ledger, crawl_pages, crm_push_claims, csv_batches, email_candidates, email_patterns, email_tokens, email_verify_usage, evidence_purge_audit, evidence_purge_gate, first_party_config_meta, first_party_withdrawals, followup_messages, followup_threads, gmail_accounts, hiring_feed_crawl, inbound_messages, inbox_thread_reads, invitations, lead_enrichments, lead_evidence_copies, lead_feedback, lead_need_evidence, lead_qualifications, li_ext_tokens, li_results, li_task_gate, li_tasks, lifecycle_events, mail_bounce_scan_consent, mail_read_consent, memberships, monitor_events, monitors, newsjacks, oauth_identities, oauth_states, onboarding_audit, onboarding_audit_purge_gate, onboarding_enrollments, onboarding_policies, organizations, outreach_llm_usage, outreach_messages, outreach_settings, outreach_signal_context, play_alerts, play_research_sources, preview_claim_events, preview_claims, rate_limits, reopen_messages, reply_drafts, reply_queries, reply_threads, scan_jobs, scan_model_calls, scan_native_search_calls, scan_run_report, scan_source_runs, scan_source_stats, scan_spend_calls, scan_traces, scheduler_progress, scheduler_runs, seller_decisions, seo_audits, seo_briefs, seo_index_configs, seo_index_keywords, seo_index_results, seo_index_runs, sequence_settings, sequence_steps, sequences, sessions, source_reviews, stripe_ended_subscriptions, stripe_events, suppressions, system_mail_outbox, tenant_competitors, tenant_connections, tenant_connectors, tenant_llm_keys, tenant_memory, tenant_plans, tenant_spend_pools, tenant_tombstone_keys, tenant_tombstones, tinyfish_usage, trial_budget_lock, trial_reservations, trial_scans, users, warm_user_paths, watches, work_email_lookups, work_queue, work_queue_meta, worker_catalog, worker_deployments, worker_events, worker_grants, worker_runs, commenter_batches, csv_rows, leads, monitor_alerts, monitor_cursors, monitor_runs, monitor_seen, published_work_email_display, watch_seen, commenter_rows, company_first_published_email_display, lead_sources CASCADE;
+DROP TABLE IF EXISTS adv_budget_lock, adv_requests, advanced_consent, app_leases, audit_closing_gate, audit_events, audit_purge_gate, autopilot_audit, autopilot_launch_policy, autopilot_settings, autopilot_work, bounce_records, calcom_bookings, calcom_hooks, company_events, connector_audit, connector_claims, consent_ledger, crawl_pages, crm_push_claims, csv_batches, email_candidates, email_patterns, email_tokens, email_verify_usage, evidence_purge_audit, evidence_purge_gate, first_party_config_meta, first_party_withdrawals, followup_messages, followup_threads, gmail_accounts, hiring_feed_crawl, inbound_messages, inbox_thread_reads, invitations, lead_enrichments, lead_evidence_copies, lead_feedback, lead_need_evidence, lead_qualifications, li_ext_tokens, li_results, li_task_gate, li_tasks, lifecycle_events, mail_bounce_scan_consent, mail_read_consent, memberships, monitor_events, monitors, newsjacks, oauth_identities, oauth_states, onboarding_audit, onboarding_audit_purge_gate, onboarding_enrollments, onboarding_policies, organizations, outreach_llm_usage, outreach_messages, outreach_settings, outreach_signal_context, play_alerts, play_research_sources, preview_claim_events, preview_claims, rate_limits, reopen_messages, reply_drafts, reply_queries, reply_threads, scan_jobs, scan_model_calls, scan_native_search_calls, scan_run_report, scan_source_runs, scan_source_stats, scan_spend_calls, scan_traces, scheduler_progress, scheduler_runs, seller_decisions, seo_audits, seo_briefs, seo_index_configs, seo_index_keywords, seo_index_results, seo_index_runs, sequence_linkedin_tasks, sequence_settings, sequence_steps, sequences, sessions, source_reviews, stripe_ended_subscriptions, stripe_events, suppressions, system_mail_outbox, tenant_competitors, tenant_connections, tenant_connectors, tenant_llm_keys, tenant_memory, tenant_plans, tenant_spend_pools, tenant_tombstone_keys, tenant_tombstones, tinyfish_usage, trial_budget_lock, trial_reservations, trial_scans, users, warm_user_paths, watches, work_email_lookups, work_queue, work_queue_meta, worker_catalog, worker_deployments, worker_events, worker_grants, worker_runs, commenter_batches, csv_rows, leads, monitor_alerts, monitor_cursors, monitor_runs, monitor_seen, published_work_email_display, watch_seen, commenter_rows, company_first_published_email_display, lead_sources CASCADE;
 
 CREATE SEQUENCE IF NOT EXISTS connector_audit_insert_seq_seq;
 
@@ -867,6 +867,20 @@ CREATE TABLE seo_index_runs (
       searches  BIGINT NOT NULL
     );
 
+CREATE TABLE sequence_linkedin_tasks (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      sequence_id TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      kind        TEXT NOT NULL CHECK (kind IN ('connect','message')),
+      body        TEXT NOT NULL,
+      profile_url TEXT,
+      due_at      BIGINT,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done','skipped')),
+      done_at     BIGINT,
+      created_at  BIGINT NOT NULL DEFAULT (CAST(floor(extract(epoch from now())) AS BIGINT))
+    );
+
 CREATE TABLE sequence_settings (
       tenant_id      TEXT PRIMARY KEY,
       test_addresses TEXT NOT NULL DEFAULT '[]',
@@ -1460,6 +1474,8 @@ CREATE INDEX seo_briefs_tenant ON seo_briefs (tenant_id, created_at);
 CREATE INDEX seo_index_results_domain ON seo_index_results (tenant_id, domain, keyword, checked_at);
 
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
+
+CREATE INDEX sequence_linkedin_tasks_tenant ON sequence_linkedin_tasks (tenant_id, status, due_at);
 
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
 
@@ -2311,6 +2327,15 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_seo_index_runs ON seo_index_runs;
 CREATE TRIGGER tomb_seo_index_runs BEFORE INSERT ON seo_index_runs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_seo_index_runs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_sequence_linkedin_tasks() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  IF (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_sequence_linkedin_tasks ON sequence_linkedin_tasks;
+CREATE TRIGGER tomb_sequence_linkedin_tasks BEFORE INSERT ON sequence_linkedin_tasks FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_sequence_linkedin_tasks();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_sequence_settings() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -3373,6 +3398,16 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS tomb_upd_seo_index_runs ON seo_index_runs;
 CREATE TRIGGER tomb_upd_seo_index_runs BEFORE UPDATE OF tenant_id ON seo_index_runs FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_seo_index_runs();
+
+CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_sequence_linkedin_tasks() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock_shared(hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(hashtext(OLD.tenant_id));
+  IF (NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id)))) THEN RAISE EXCEPTION 'tenant deleted'; END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tomb_upd_sequence_linkedin_tasks ON sequence_linkedin_tasks;
+CREATE TRIGGER tomb_upd_sequence_linkedin_tasks BEFORE UPDATE OF tenant_id ON sequence_linkedin_tasks FOR EACH ROW EXECUTE FUNCTION dazl_guard_tomb_upd_sequence_linkedin_tasks();
 
 CREATE OR REPLACE FUNCTION dazl_guard_tomb_upd_sequence_settings() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

@@ -6,6 +6,7 @@ import { conversionBlockedNow, displayStopReason, drainVerifiedPendingLifecycle 
 import { hasReadConsent, syncReplies } from './replies.ts'
 import { randomBytes, createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { confirmedSendResult, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { auditAt, getState, pause } from './autopilot.ts'
@@ -74,6 +75,20 @@ export function migrateSequences(db: Database.Database): void {
     BEFORE UPDATE ON sequence_steps
     WHEN OLD.status = 'sent' AND (NEW.status <> 'sent' OR NEW.subject <> OLD.subject OR NEW.body <> OLD.body)
     BEGIN SELECT RAISE(ABORT, 'sent sequence step is final'); END;
+    CREATE TABLE IF NOT EXISTS sequence_linkedin_tasks (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      sequence_id TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      kind        TEXT NOT NULL CHECK (kind IN ('connect','message')),
+      body        TEXT NOT NULL,
+      profile_url TEXT,
+      due_at      INTEGER,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done','skipped')),
+      done_at     INTEGER,
+      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
+    CREATE INDEX IF NOT EXISTS sequence_linkedin_tasks_tenant ON sequence_linkedin_tasks (tenant_id, status, due_at);
     CREATE INDEX IF NOT EXISTS sequences_tenant ON sequences (tenant_id, status);
   `)
   // #414: auto-enrolled cold sequences carry the policy version and a hash of the claims their words rely on;
@@ -128,6 +143,62 @@ export function testAddresses(db: Database.Database, tenantId: string): string[]
 // The ONLY place test timing comes from. Never trust a stored flag: membership is
 // re-checked against the current allowlist on every call.
 export const isTestRecipient = (db: Database.Database, tenantId: string, email: string) => testAddresses(db, tenantId).includes(norm(email))
+
+// ---------- #1039: manual LinkedIn tasks beside the email steps ----------
+// A LinkedIn step is a task for the user, never an automated send: dazl makes no request to LinkedIn for this
+// feature. The words are drafted from the same lead evidence as the email steps; the user copies them, opens the
+// person's profile in their own browser, and marks the task done or skipped. Approval starts the clock (the
+// connect task is due at once, the message task at the step-2 gap); the email steps neither wait for a task nor
+// are advanced by one. Marking done records the touch (autopilot_audit 'linkedin_touch', counted by
+// linkedinTouches); the default set is LinkedIn connect, Email 1, LinkedIn message, Email 2, Email 3.
+export type LinkedinTaskKind = 'connect' | 'message'
+export interface LinkedinTask { id: string; sequence_id: string; lead_id: string; kind: LinkedinTaskKind; body: string; profile_url: string | null; due_at: number | null; status: string; done_at: number | null; company?: string; name?: string | null }
+const LINKEDIN_PROFILE = /^https:\/\/([a-z]{2,3}\.)?(www\.)?linkedin\.com\/in\//
+export function linkedinTaskText(kind: LinkedinTaskKind, lead: { company: string; name: string; signal: string; source_url: string }): string {
+  const who = lead.name ? lead.name.split(' ')[0] : 'there'
+  const fact = `${lead.signal} (${lead.source_url})`
+  if (kind === 'connect') return `Hi ${who}, I saw ${fact}. I help companies like ${lead.company} act on exactly that, and I would be glad to connect.`.slice(0, 300)
+  return `Hi ${who},\n\nFollowing up here as well — I emailed about ${fact}. If ${lead.company} is looking at this, I would be glad to send a couple of examples.\n\nThanks,`
+}
+function leadLinkedinProfile(db: Database.Database, tenantId: string, leadId: string): string | null {
+  const rows = db.prepare('SELECT kind, source_url FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ?').all(leadId, tenantId) as { kind: string; source_url: string | null }[]
+  for (const r of rows) if (r.source_url && LINKEDIN_PROFILE.test(r.source_url)) return r.source_url
+  for (const r of rows) if (r.kind === 'contact' && r.source_url) return r.source_url // a contact row's source is the profile (people/rank.ts)
+  return null
+}
+function createLinkedinTasks(db: Database.Database, tenantId: string, sequenceId: string, leadId: string, lead: { company: string; name: string; signal: string; source_url: string }): void {
+  const profile = leadLinkedinProfile(db, tenantId, leadId)
+  const ins = db.prepare('INSERT INTO sequence_linkedin_tasks (id, tenant_id, sequence_id, lead_id, kind, body, profile_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  for (const kind of ['connect', 'message'] as const) ins.run(randomBytes(12).toString('hex'), tenantId, sequenceId, leadId, kind, linkedinTaskText(kind, lead), profile)
+}
+// The task reads and outcome writes run on the Db layer (lib/db/client.ts), so their statements PREPARE on
+// Postgres (migration 0074 creates the table there; test/pg-sql-audit.test.ts holds the manifest at 1 for this
+// module). The task INSERT in createSequence and the due_at UPDATEs in approveSequence stay on the raw handle:
+// they sit inside those functions' better-sqlite3 transactions, alongside grantConsent and auditAt, and the Db
+// layer cannot join a raw transaction already in progress.
+export async function linkedinTasksForSequence(db: Db, tenantId: string, sequenceId: string): Promise<LinkedinTask[]> {
+  return db.all<LinkedinTask>("SELECT id, sequence_id, lead_id, kind, body, profile_url, due_at, status, done_at FROM sequence_linkedin_tasks WHERE tenant_id = ? AND sequence_id = ? ORDER BY CASE kind WHEN 'connect' THEN 0 ELSE 1 END", [tenantId, sequenceId])
+}
+export async function dueLinkedinTasks(db: Db, tenantId: string, now = Math.floor(Date.now() / 1000)): Promise<LinkedinTask[]> {
+  return db.all<LinkedinTask>(`SELECT t.id, t.sequence_id, t.lead_id, t.kind, t.body, t.profile_url, t.due_at, t.status, t.done_at, l.company, l.name
+    FROM sequence_linkedin_tasks t JOIN sequences s ON s.id = t.sequence_id AND s.tenant_id = t.tenant_id
+    JOIN leads l ON l.id = t.lead_id
+    WHERE t.tenant_id = ? AND t.status = 'pending' AND t.due_at IS NOT NULL AND t.due_at <= ? AND s.status IN ('approved','active')
+    ORDER BY t.due_at, CASE t.kind WHEN 'connect' THEN 0 ELSE 1 END`, [tenantId, now])
+}
+export async function markLinkedinTask(db: Db, raw: Database.Database, tenantId: string, taskId: string, action: 'done' | 'skipped', now = Math.floor(Date.now() / 1000)): Promise<void> {
+  const t = await db.get<{ sequence_id: string; lead_id: string; kind: string; status: string }>('SELECT sequence_id, lead_id, kind, status FROM sequence_linkedin_tasks WHERE id = ? AND tenant_id = ?', [taskId, tenantId])
+  if (!t || t.status !== 'pending') throw new SequenceError('not_found')
+  await db.run('UPDATE sequence_linkedin_tasks SET status = ?, done_at = ? WHERE id = ? AND tenant_id = ?', [action === 'done' ? 'done' : 'skipped', now, taskId, tenantId])
+  if (action === 'done') auditAt(raw, tenantId, 'linkedin_touch', t.kind, t.lead_id, getSeq(raw, tenantId, t.sequence_id)?.message_id, now)
+}
+export async function removeLinkedinTask(db: Db, tenantId: string, taskId: string): Promise<void> {
+  if ((await db.run("DELETE FROM sequence_linkedin_tasks WHERE id = ? AND tenant_id = ? AND status = 'pending'", [taskId, tenantId])).changes === 0) throw new SequenceError('not_found')
+}
+export async function linkedinTouches(db: Db, tenantId: string): Promise<number> {
+  const row = await db.get<{ n: number | string }>("SELECT count(*) AS n FROM sequence_linkedin_tasks WHERE tenant_id = ? AND status = 'done'", [tenantId])
+  return Number(row?.n ?? 0)
+}
 
 // ---------- templates and LLM drafting for steps 2/3 (no-reply nudges) ----------
 export function sequenceStepText(step: 2 | 3, lead: { company: string; name: string; signal: string; source_url: string }, _businessName: string, bookingUrl?: string | null): string {
@@ -200,6 +271,7 @@ export function createSequence(db: Database.Database, tenantId: string, messageI
   ins.run(tenantId, id, 1, m.subject, m.body)
   // Templates are ready immediately. draftSequenceSteps can replace them before approval.
   for (const step of [2, 3] as const) ins.run(tenantId, id, step, re(m.subject), sequenceStepText(step,lead,businessName,settings?.booking_url))
+  createLinkedinTasks(db, tenantId, id, m.lead_id, lead) // #1039: the default set carries the two manual LinkedIn tasks
   })()
   return id
 }
@@ -322,6 +394,9 @@ export function approveSequence(db: Database.Database, tenantId: string, sequenc
   for (const st of steps)
     db.prepare("UPDATE sequence_steps SET approved_hash = ?, status = 'approved' WHERE tenant_id = ? AND sequence_id = ? AND step = ?").run(hash(s.to_email, st.subject, st.body), tenantId, sequenceId, st.step)
   db.prepare("UPDATE sequences SET status = 'approved' WHERE tenant_id = ? AND id = ?").run(tenantId, sequenceId)
+  // #1039: approval starts the LinkedIn tasks' clock — connect due at once, message due at the step-2 gap.
+  db.prepare("UPDATE sequence_linkedin_tasks SET due_at = ? WHERE tenant_id = ? AND sequence_id = ? AND kind = 'connect' AND status = 'pending'").run(now, tenantId, sequenceId)
+  db.prepare("UPDATE sequence_linkedin_tasks SET due_at = ? WHERE tenant_id = ? AND sequence_id = ? AND kind = 'message' AND status = 'pending'").run(now + GAPS_S[1], tenantId, sequenceId)
   grantConsent(db, tenantId, s.to_email, { channel: 'email', scope: 'sequence', basis: 'user_approved_set', evidenceRef: `sequence:${sequenceId}`, now })
   db.prepare('INSERT OR IGNORE INTO autopilot_settings (tenant_id) VALUES (?)').run(tenantId)
   auditAt(db, tenantId, 'sequence_approved', `${steps.length} steps`, s.lead_id, s.message_id, now)

@@ -951,6 +951,20 @@ CREATE TABLE seo_index_runs (
       searches  INTEGER NOT NULL
     );
 
+CREATE TABLE sequence_linkedin_tasks (
+      id          TEXT PRIMARY KEY,
+      tenant_id   TEXT NOT NULL,
+      sequence_id TEXT NOT NULL,
+      lead_id     TEXT NOT NULL,
+      kind        TEXT NOT NULL CHECK (kind IN ('connect','message')),
+      body        TEXT NOT NULL,
+      profile_url TEXT,
+      due_at      INTEGER,
+      status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done','skipped')),
+      done_at     INTEGER,
+      created_at  INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    );
+
 CREATE TABLE sequence_settings (
       tenant_id      TEXT PRIMARY KEY,
       test_addresses TEXT NOT NULL DEFAULT '[]',
@@ -1420,6 +1434,8 @@ CREATE INDEX seo_index_results_domain ON seo_index_results (tenant_id, domain, k
 
 CREATE INDEX seo_index_results_tenant ON seo_index_results (tenant_id, keyword, checked_at);
 
+CREATE INDEX sequence_linkedin_tasks_tenant ON sequence_linkedin_tasks (tenant_id, status, due_at);
+
 CREATE INDEX sequences_tenant ON sequences (tenant_id, status);
 
 CREATE INDEX sessions_expires ON sessions (expires_at);
@@ -1706,6 +1722,8 @@ CREATE TRIGGER tomb_seo_index_results BEFORE INSERT ON seo_index_results BEGIN S
 
 CREATE TRIGGER tomb_seo_index_runs BEFORE INSERT ON seo_index_runs BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_sequence_linkedin_tasks BEFORE INSERT ON sequence_linkedin_tasks BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_sequence_settings BEFORE INSERT ON sequence_settings BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_sequence_steps BEFORE INSERT ON sequence_steps BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1921,6 +1939,8 @@ CREATE TRIGGER tomb_upd_seo_index_keywords BEFORE UPDATE OF tenant_id ON seo_ind
 CREATE TRIGGER tomb_upd_seo_index_results BEFORE UPDATE OF tenant_id ON seo_index_results BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_seo_index_runs BEFORE UPDATE OF tenant_id ON seo_index_runs BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_sequence_linkedin_tasks BEFORE UPDATE OF tenant_id ON sequence_linkedin_tasks BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_sequence_settings BEFORE UPDATE OF tenant_id ON sequence_settings BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
