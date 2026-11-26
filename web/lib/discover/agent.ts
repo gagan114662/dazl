@@ -148,6 +148,11 @@ export async function discoverLeads(input: DiscoverInput, deps: { apiKey: string
   const seen = new Map<string, SeenPage>()
   for (let turn = 0; turn <= MAX_CONTINUATIONS; turn++) {
     const reservation = await searches.reserve(allowance)
+    if (allowance > 0 && reservation.allowance === 0) {
+      // A paused turn may already contain usable results. Keep them instead of sending a search with its tool removed.
+      stop = 'search_cap'
+      break
+    }
     const res = await client.beta.messages.stream({
       model: DISCOVER_MODEL, max_tokens: 16000, service_tier: 'standard_only',
       output_config: { effort: 'medium' },
