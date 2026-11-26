@@ -125,3 +125,26 @@ test('DATES control: an unrelated posting still dates itself when another record
   assert.equal(await atsDate('https://boards.greenhouse.io/brightloop/jobs/4567890', f, NOW), null, 'the edited-only record stays undated')
   assert.equal((await atsDate('https://jobs.lever.co/otherco/9f1c2f7a-1b2c-4d5e-8f90-1234567890ab', f, NOW))?.date, '2026-11-20', 'an unrelated posting is unaffected')
 })
+
+// The same rule has to hold for any board, industry and country: the reader knows boards, not businesses. One board per platform,
+// four different industries in four different countries, and a posting looked up in the wrong board's index must give nothing.
+test('DATES board index pages date postings for any industry and country, and never across boards', async () => {
+  const { atsList, atsListDate } = await import('../lib/discover/ats-dates.ts')
+  const boards = [
+    { index: 'https://boards.greenhouse.io/northlinecare', posting: 'https://boards.greenhouse.io/northlinecare/jobs/4466', body: { jobs: [{ id: '4466', absolute_url: 'https://boards.greenhouse.io/northlinecare/jobs/4466', first_published: '2026-11-17T00:00:00Z' }] } },
+    { index: 'https://jobs.eu.lever.co/hafenwerk', posting: 'https://jobs.eu.lever.co/hafenwerk/11111111-2222-3333-4444-555555555555', body: [{ id: '11111111-2222-3333-4444-555555555555', hostedUrl: 'https://jobs.eu.lever.co/hafenwerk/11111111-2222-3333-4444-555555555555', createdAt: Date.parse('2026-11-18T00:00:00Z') }] },
+    { index: 'https://jobs.ashbyhq.com/harbourlegal', posting: 'https://jobs.ashbyhq.com/harbourlegal/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', body: { jobs: [{ id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', jobUrl: 'https://jobs.ashbyhq.com/harbourlegal/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', publishedAt: '2026-11-19T00:00:00Z' }] } },
+    { index: 'https://werkstatt.workable.com/', posting: 'https://apply.workable.com/werkstatt/j/ZZ9Y8X7W', body: { jobs: [{ shortcode: 'ZZ9Y8X7W', url: 'https://apply.workable.com/werkstatt/j/ZZ9Y8X7W', published_on: '2026-11-20' }] } },
+  ]
+  for (const b of boards) {
+    const rec = atsList(b.index)
+    assert.ok(rec, `${b.index} is a board index`)
+    const own = await atsListDate(b.index, b.posting, stub({ [rec.apiUrl]: { body: b.body } }).f, NOW)
+    assert.ok(own, `${b.index} dates its own posting`)
+    assert.equal(own.sourceUrl, rec.apiUrl)
+  }
+  // the fail-closed half: a different board's index cannot date this posting, even when it lists postings
+  const other = atsList('https://boards.greenhouse.io/northlinecare')!
+  assert.equal(await atsListDate('https://boards.greenhouse.io/northlinecare', boards[3].posting, stub({ [other.apiUrl]: { body: boards[0].body } }).f, NOW), null, 'a posting from another board is not dated here')
+})
+
