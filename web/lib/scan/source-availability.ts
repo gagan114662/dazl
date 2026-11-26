@@ -47,10 +47,10 @@ export function socialSources(adv: Advanced | null): SourceRow[] {
 export const usableLabels = (rows: SourceRow[]) => rows.filter(r => r.usable && r.purpose !== 'enrichment').map(r => r.label).join(', ')
 export const enrichmentLabels = (rows: SourceRow[]) => rows.filter(r => r.usable && r.purpose === 'enrichment').map(r => r.label).join(', ')
 
-// A model key funds analysis/extraction, not discovery. Retired provider research is never a source, even on a trial.
+// dazl's own AI funds analysis/extraction (free searches, then the plan), not discovery. Retired provider research is never a source, even on a trial.
 export function analysisPrerequisite(key: KeyState | null): SourceRow | null {
   if (!key) return null
   const usable = !!key.has_key || (!!key.trial?.funded && (key.trial.remaining ?? 0) > 0)
   return usable ? { id: 'analysis', label: 'AI analysis', usable: true }
-    : { id: 'analysis', label: 'AI analysis', usable: false, reason: key.trial?.funded ? 'free searches used up; no key' : 'no key', fix: { href: '/app/settings#model-key', label: 'Add key' } }
+    : { id: 'analysis', label: 'AI analysis', usable: false, reason: 'free searches used up', fix: { href: '/app/settings#plan', label: 'See your plan' } }
 }

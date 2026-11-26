@@ -242,7 +242,7 @@ test('E (#1721): Settings no longer has an AI key panel; the inline key prompt s
   assert.doesNotMatch(page, /LlmKeyPanel|model-key|Model key|your AI key/, 'the page no longer names a key panel or section')
   const inline = src('app/app/key-inline.tsx')
   assert.doesNotMatch(inline.replace(/^\s*\/\/.*$/gm, ''), /platform\.openai\.com|OpenAI/, 'nothing the user sees offers an OpenAI key')
-  assert.match(inline, /Searches run on Claude/)
+  assert.match(inline, /return null/, 'KeyInline renders nothing (#1703)')
   for (const p of ['app/app/first-run.tsx', 'app/app/readiness.tsx']) assert.doesNotMatch(src(p), /Anthropic or OpenAI key/, p)
 })
 
