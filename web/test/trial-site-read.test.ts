@@ -160,7 +160,7 @@ bothEngines('#409 wallet: a read counts its full reserve until it settles to the
 })
 
 bothEngines('#409 wallet: across midnight a pending read counts toward both days; one settled before midnight does not', async ({ db }) => {
-  const NOW = 1_800_000_000, DAY = trialDay(NOW), lastSecond = trialDayStart(DAY + 1) - 1, next = trialDayStart(DAY + 1) + 60
+  const NOW = 1_800_000_000, DAY = trialDay(NOW, 'UTC'), lastSecond = trialDayStart(DAY + 1, 'UTC') - 1, next = trialDayStart(DAY + 1, 'UTC') + 60 // #2054: no saved zone on these accounts: the UTC fallback day
   const env = wallet('10', '0.30')
   const a = await user(db, uid(440), 'mn1@gmail.com'), b = await user(db, uid(441), 'mn2@gmail.com'), c = await user(db, uid(442), 'mn3@gmail.com')
   const pending = await admitTrialSiteReadBudget(db, a, { env, now: lastSecond })
@@ -177,7 +177,7 @@ bothEngines('#409 wallet: across midnight a pending read counts toward both days
 // AT its reserve (null) and ends; a read that never settles (crash) ends for the day ceiling READ_GRACE_S after admission.
 // Either way the account keeps paying the reserve.
 bothEngines('#444 R2-1: a failed read ends at its reserve and a never-settled read expires for the day ceiling; the account keeps paying the reserve', async ({ db }) => {
-  const NOW = 1_800_000_000, DAY = trialDay(NOW), dayStart = trialDayStart(DAY)
+  const NOW = 1_800_000_000, DAY = trialDay(NOW, 'UTC'), dayStart = trialDayStart(DAY, 'UTC') // #2054: no saved zone: the UTC fallback day
   // The global day ceiling is exactly one scan reserve: any read still counting today refuses the scan.
   const env = { ...wallet('10', '0.30'), DAZL_TRIAL_SCAN_RESERVE_USD: '0.30' }
   const a = await user(db, uid(470), 'r21a@gmail.com'), probe = await user(db, uid(471), 'r21p@gmail.com')

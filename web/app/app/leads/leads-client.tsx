@@ -30,7 +30,7 @@ import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import LeadsTable from './leads-table'
 import { reviewAction } from '@/lib/scan/review-action'
-import { uncheckableCause } from '@/lib/lead-state'
+import { isUnconfirmedTimingResearch, uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
@@ -1034,7 +1034,7 @@ export default function LeadsClient() {
     return () => { live = false }
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
-  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at && l.human_confirmed_at == null)
+  const unconfirmedTiming = leads.filter(isUnconfirmedTimingResearch)
   const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
   const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
   const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
@@ -1103,7 +1103,8 @@ export default function LeadsClient() {
           {scanActive && !otherActiveJobId && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
-        {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
+        {requestProfile && !openWebsiteDraft && !scanActive && !offerConflict?.direct && <p className="text-xs text-[#555] mt-2" data-testid="request-target">Search target: {query}</p>}
+        {!requestProfile && businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
           {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Use Review profile first to build a new one from your sentence.
         </p>}
         </div>
@@ -1882,12 +1883,14 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
   const targeting = c.freshTarget && !onWrite
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
+    {c.incomplete && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request says you sell <strong>{c.stated}</strong>. Confirm this offer before running the search.</p>
+      : c.incomplete && !c.saved ? <p className="mt-1 text-[var(--ink-2)]">There is no saved offer for this workspace. Write what this play sells before running the search.</p>
+      : c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
       : targeting && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
       : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-names-workspace">This request names <strong>{c.stated}</strong>; your saved offer is <strong>{c.saved.replace(/\.$/, "")}</strong>. Choose what this play sells. Neither choice changes Settings.</p>
       : c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
-      : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
+      : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request does not identify one clear offer. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}

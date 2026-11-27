@@ -18,7 +18,7 @@ import { fitRationale } from '@/lib/scan/score'
 import { timingProofGap } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
-import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/need-evidence'
+import { currentBuyingNeedsForLeads } from '@/lib/scan/need-evidence'
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 import { discoverCounts } from '@/lib/discover/card'
@@ -83,19 +83,17 @@ export async function GET(req: NextRequest) {
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
-    currentness_held:companyFirst ? !results?.readyIds.has(l.id) : currentnessHeld(scanDb,user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null, recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
-    lookalike_fit:la && la !== 'unreadable' ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
+    currentness_held:currentnessHeld(scanDb,user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null, recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
+    lookalike_fit:la && la !== 'unreadable' && !la.exclusionsOnly ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
   // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.
   const needByLead = new Map<string, string>()
   try {
     const adb = await getDb()
-    const needCtx = await needReadContext(adb, user.tenantId, job.id, windowDays ?? undefined)
-    const needRecords = new Map((await adb.all<NeedRecord>('SELECT * FROM lead_need_evidence WHERE tenant_id = ? AND job_id = ?', [user.tenantId, job.id])).map(r => [r.lead_id, r]))
-    for (const l of leads) {
-      const bn = await currentBuyingNeed(adb, user.tenantId, job.id, l.id, { context: needCtx, record: needRecords.get(l.id) ?? null })
-      needByLead.set(l.id, bn.status === 'unproven' ? bn.reason : bn.status)
-    }
+    const needs = await currentBuyingNeedsForLeads(adb, user.tenantId, job.id, leads.map(lead => lead.id), {
+      windowDays: windowDays ?? undefined,
+    })
+    for (const [id, need] of needs) needByLead.set(id, need.status === 'unproven' ? need.reason : need.status)
   } catch { /* an older store without the table simply has no buying-need column */ }
   const intentByLead = new Map(safeLeads.map(l => [l.id, l.intent]))
   for (const [id, p] of Object.entries(pri)) if (p) p.intent = intentByLead.get(id) ?? 0

@@ -5,7 +5,7 @@
 import { createRequire } from 'node:module'
 import { createHash,randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { existsSync,mkdtempSync,rmSync } from 'node:fs'
+import { existsSync,mkdirSync,mkdtempSync,rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -18,16 +18,19 @@ const require=createRequire(join(dir,'package.json'))
 const Database=require('better-sqlite3')
 const httpOnly=process.argv.includes('--http-only')
 const sameBrand=process.argv.includes('--same-brand')
+const sellerDescription=process.argv.includes('--seller-description')
 assert.ok(existsSync(join(dir,'.next/BUILD_ID')),'build the actual app before this test')
 const root=mkdtempSync(join(tmpdir(),'dazl-signed-offer-1436-')), file=join(root,'app.db')
 const db=new Database(file)
 const actor='fixture-owner',away='fixture-other',oldJob='a'.repeat(24)
 const oldQuery='Find independent dental practices in New York City hiring a receptionist.'
 const dental='Dental appointment reminder software'
-const savedOffer=sameBrand?'dazl':dental
-const chosenOffer=sameBrand?savedOffer:'Software for finding qualified business leads'
+const savedOffer=sellerDescription?'B2B sales-automation SaaS':sameBrand?'dazl':dental
+const chosenOffer=sellerDescription||sameBrand?savedOffer:'CRM setup services'
 const buyer={summary:'Independent dental practices in New York City',who:['Practice owner'],where:['New York City'],industries:['Dental'],sizes:[],signals:[],exclude:[],country:'US',language:'en',window_days:45}
-const query='Find leads for dazl (dazl.ai): small marketing and creative agencies in Toronto, Ontario hiring an SDR or sales development rep.'
+const query=sellerDescription?'I run a dental practice in Austin':sameBrand
+  ?'Find leads for dazl (dazl.ai): small marketing and creative agencies in Toronto, Ontario hiring an SDR or sales development rep.'
+  :'We sell CRM setup services to independent creative agencies in Toronto hiring their first sales rep.'
 const fakeSession=()=>randomBytes(32).toString('hex')
 const token=fakeSession(),other=fakeSession()
 const port=pickUiPort(),base='http://127.0.0.1:'+port
@@ -88,8 +91,11 @@ try{
   assert.match(await leads.text(),/Who do you want to reach/)
   const before=await request('/api/scan/estimate',{query,icp:latest.data.icp,reviewed:false})
   console.log('signed old-context quote status:',before.status,'same brand:',sameBrand)
-  assert.equal(before.status,409,'No cost panel before a real offer choice')
-  assert.deepEqual(before.data,{error:'offer_conflict',stated:'dazl',saved:savedOffer,fresh_target:true})
+  assert.equal(before.status,sameBrand?200:409,'only a different seller offer needs a choice')
+  if(sameBrand) assert.equal(before.data.estimate.verdict.ok,true)
+  else assert.deepEqual(before.data,sellerDescription
+    ?{error:'offer_conflict',stated:null,saved:savedOffer,ambiguous:true}
+    :{error:'offer_conflict',stated:chosenOffer,saved:savedOffer})
   const outside=await request('/api/scan/estimate',{query,icp:latest.data.icp,reviewed:false},other)
   assert.notEqual(outside.data?.saved,savedOffer,'another workspace cannot learn the stored offer')
   const selected=await request('/api/scan/estimate',{query,offer:chosenOffer})
@@ -97,7 +103,7 @@ try{
   assert.equal(selected.data.estimate.verdict.ok,true)
   assert.equal(typeof selected.data.estimate.ack,'string')
   assert.ok(selected.data.estimate.ack.length>0)
-  console.log('signed HTTP: Settings persisted; Leads loaded; 409 Use: dazl; chosen estimate accepted')
+  console.log('signed HTTP: saved seller retained; new buyer projected; only different offers require a choice')
   if(!httpOnly){
     const {chromium}=require('playwright')
     browser=await chromium.launch()
@@ -111,30 +117,47 @@ try{
     await page.goto(base+'/app/leads',{waitUntil:'networkidle'})
     await page.getByTestId('business-profile').filter({hasText:buyer.summary}).waitFor()
     await page.getByLabel('Who do you want to reach?').fill(query)
-    const conflictResponse=page.waitForResponse(r=>r.url()===base+'/api/scan/estimate'&&r.status()===409)
+    const estimateResponse=page.waitForResponse(r=>r.url()===base+'/api/scan/estimate')
     await page.getByRole('button',{name:'Find leads'}).click()
-    assert.ok((await conflictResponse).request().postDataJSON().icp)
-    const use=page.getByRole('button',{name:'Use: dazl',exact:true})
-    await use.waitFor()
-    await page.getByRole('button',{name:'Keep saved targeting',exact:true}).waitFor()
-    assert.equal(await page.getByTestId('estimate-confirm').count(),0)
-    const quoteResponse=page.waitForResponse(r=>r.url()===base+'/api/scan/estimate'&&r.status()===200)
-    await use.click()
-    if(!sameBrand){
-      const field=page.getByRole('textbox',{name:'What does this play sell?'})
-      await field.waitFor()
-      assert.equal(await field.inputValue(),'','do not reuse the unrelated saved offer or insert the workspace name')
-      await field.fill(chosenOffer)
-      await page.getByRole('button',{name:'Use this offer',exact:true}).click()
+    const initial=await estimateResponse
+    const initialBody=initial.request().postDataJSON()
+    assert.equal(initialBody.query,query)
+    assert.equal(initialBody.icp.summary,query,'typed target is sent instead of saved dental buyer')
+    assert.deepEqual(initialBody.icp.where,[])
+    assert.equal(initialBody.icp.country,undefined)
+    assert.equal(initialBody.reviewed,false,'automatic projection is not a review')
+    if(sameBrand){
+      assert.equal(initial.status(),200)
+      assert.equal(await page.getByRole('button',{name:'Use: dazl',exact:true}).count(),0)
+      assert.equal(await page.getByRole('button',{name:'Keep saved targeting',exact:true}).count(),0)
+    }else{
+      assert.equal(initial.status(),409)
+      const use=page.getByRole('button',{name:'Use: '+chosenOffer,exact:true})
+      await use.waitFor()
+      assert.equal(await page.getByTestId('estimate-confirm').count(),0)
+      for(const width of [1280,390]){
+        await page.setViewportSize({width,height:900})
+        await use.scrollIntoViewIfNeeded()
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
+        const shots=process.env.SHOTS
+        if(shots){mkdirSync(shots,{recursive:true});await page.screenshot({path:join(shots,'different-choice-'+width+'.png')})}
+      }
+      if(sellerDescription)assert.doesNotMatch(await page.getByTestId('offer-chooser').innerText(),/parenthesis is unfinished/i,
+        'an ordinary seller description must not be blamed on a broken parenthesis')
+      const quoteResponse=page.waitForResponse(r=>r.url()===base+'/api/scan/estimate'&&r.status()===200)
+      await use.click()
+      const submitted=(await quoteResponse).request().postDataJSON()
+      assert.equal(submitted.query,query)
+      assert.equal(submitted.offer,chosenOffer)
     }
-    const quote=await quoteResponse
-    const submitted=quote.request().postDataJSON()
-    assert.equal(submitted.query,query)
-    assert.equal(submitted.offer,chosenOffer)
-    assert.equal('icp' in submitted,false)
-    assert.equal('reviewed' in submitted,false)
     await page.getByTestId('estimate-confirm-run').waitFor()
     assert.deepEqual(admissions,[])
+    for(const width of [1280,390]){
+      await page.setViewportSize({width,height:900})
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'no horizontal overflow')
+      const shots=process.env.SHOTS
+      if(shots){mkdirSync(shots,{recursive:true});await page.screenshot({path:join(shots,(sameBrand?'same':'different')+'-offer-'+width+'.png'),fullPage:true})}
+    }
     await context.close()
   }
   assert.deepEqual(await request('/api/settings/profile'),stored)
