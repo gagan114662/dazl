@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
-import { acceptReadConsent, hasReadConsent, READ_CONSENT_TEXT, READ_CONSENT_VERSION, revokeReadConsent, syncReplies } from '@/lib/outreach/replies'
-import { acceptBounceScanConsent, BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION, hasBounceScanConsent, revokeBounceScanConsent } from '@/lib/outreach/bounce-scan'
-import { followupsEnabled, runFollowups, setFollowups } from '@/lib/outreach/followups'
-import { autopilotAvailable, getState } from '@/lib/outreach/autopilot'
+import { READ_CONSENT_TEXT, READ_CONSENT_VERSION, syncReplies } from '@/lib/outreach/replies'
+import { BOUNCE_SCAN_CONSENT_TEXT, BOUNCE_SCAN_CONSENT_VERSION } from '@/lib/outreach/bounce-scan'
+import { followupsEnabled, runFollowups } from '@/lib/outreach/followups'
+import { autopilotAvailable, CONSENT_VERSION } from '@/lib/outreach/autopilot'
 import { AUTOPILOT_BETA_TEXT } from '@/lib/beta'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
 import { denied } from '@/lib/workspace-access'
 import { getDb } from '@/lib/db/client'
 import { readGmailStatus } from '@/lib/gmail/oauth'
+import { disableReplyFollowups, enableReplyFollowups, recordReplyConsent, removeReplyConsent } from '@/lib/outreach/reply-consent-db'
 import { audit } from '@/lib/audit-route'
 
 export async function GET() {
@@ -47,51 +48,49 @@ export async function POST(req: NextRequest) {
   const no = denied(user, 'send'); if (no) return no
   if (!sameOriginJson(req)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const body = await req.json().catch(() => null)
-  const db = getScanDb()
   switch (body?.action) {
     case 'consent': {
       if (body.accept !== true || body.version !== READ_CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
-      // accepting the version already on record changes nothing, so it records nothing
-      const had = hasReadConsent(db, user.tenantId)
-      acceptReadConsent(db, user.tenantId)
-      if (!had) await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
+      if (await recordReplyConsent(await getDb(), 'mail_read_consent', user.tenantId, READ_CONSENT_VERSION)) await audit(user, req, { action: 'consent.accepted', resource: 'reply_reading', summary: { version: READ_CONSENT_VERSION } })
       return NextResponse.json({ ok: true })
     }
     case 'revoke': {
       // revoking consent that is not on record (any version) changes nothing, so it records nothing; follow-ups being on
       // without consent cannot happen (followups_on requires it)
-      if (revokeReadConsent(db, user.tenantId)) await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
+      if (await removeReplyConsent(await getDb(), 'mail_read_consent', user.tenantId)) await audit(user, req, { action: 'consent.revoked', resource: 'reply_reading' })
       return NextResponse.json({ ok: true })
     }
     case 'bounce_scan_on': {
       if (body.accept !== true || body.version !== BOUNCE_SCAN_CONSENT_VERSION) return NextResponse.json({ error: 'Consent not recorded' }, { status: 400 })
-      const hadBounce = hasBounceScanConsent(db, user.tenantId)
-      acceptBounceScanConsent(db, user.tenantId)
-      if (!hadBounce) await audit(user, req, { action: 'consent.accepted', resource: 'bounce_scan', summary: { version: BOUNCE_SCAN_CONSENT_VERSION } })
+      if (await recordReplyConsent(await getDb(), 'mail_bounce_scan_consent', user.tenantId, BOUNCE_SCAN_CONSENT_VERSION)) await audit(user, req, { action: 'consent.accepted', resource: 'bounce_scan', summary: { version: BOUNCE_SCAN_CONSENT_VERSION } })
       return NextResponse.json({ ok: true })
     }
     case 'bounce_scan_off': {
-      if (revokeBounceScanConsent(db, user.tenantId)) await audit(user, req, { action: 'consent.revoked', resource: 'bounce_scan' })
+      if (await removeReplyConsent(await getDb(), 'mail_bounce_scan_consent', user.tenantId)) await audit(user, req, { action: 'consent.revoked', resource: 'bounce_scan' })
       return NextResponse.json({ ok: true })
     }
     case 'followups_off': {
-      const was = followupsEnabled(db, user.tenantId)
-      setFollowups(db, user.tenantId, false)
-      if (was) await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
+      if (await disableReplyFollowups(await getDb(), user.tenantId)) await audit(user, req, { action: 'followups.disabled', resource: 'followups' })
       return NextResponse.json({ ok: true })
     }
     case 'followups_on': {
-      const acc = db.prepare('SELECT read_granted FROM gmail_accounts WHERE tenant_id = ?').get(user.tenantId) as { read_granted: number } | undefined
-      if (!hasReadConsent(db, user.tenantId) || acc?.read_granted !== 1) return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
-      if (!autopilotAvailable()) return NextResponse.json({ error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' }, { status: 400 })
-      if (!getState(db, user.tenantId).enabled || !getState(db, user.tenantId).consent_current) return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
-      const was = followupsEnabled(db, user.tenantId)
-      setFollowups(db, user.tenantId, true)
-      if (!was) await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
+      const result = await enableReplyFollowups(await getDb(), user.tenantId, {
+        replyVersion: READ_CONSENT_VERSION,
+        autopilotVersion: CONSENT_VERSION,
+        autopilotAvailable: autopilotAvailable(),
+      })
+      if (result === 'read_required') return NextResponse.json({ error: 'Turn on reply reading first' }, { status: 400 })
+      if (result === 'unavailable') return NextResponse.json({ error: AUTOPILOT_BETA_TEXT, code: 'autopilot_unavailable' }, { status: 400 })
+      if (result === 'autopilot_required') return NextResponse.json({ error: 'Turn on autopilot first' }, { status: 400 })
+      if (result === 'enabled') await audit(user, req, { action: 'followups.enabled', resource: 'followups' })
       return NextResponse.json({ ok: true })
     }
     case 'sync': {
+      if ((await getDb()).kind === 'pg') {
+        return NextResponse.json({ error: 'Replies were not checked. Sync is unavailable on this database.', code: 'reply_sync_unavailable' }, { status: 503 })
+      }
       if (!(await rateLimit(`sync:${user.tenantId}`, 6, 60 * 60 * 1000)).ok) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+      const db = getScanDb()
       const r = await syncReplies(db, user.tenantId)
       const f = !r.error && followupsEnabled(db, user.tenantId) ? await runFollowups(db, user.tenantId, user.business_name) : null
       return NextResponse.json({ ok: true, sync: r, followups: f })
