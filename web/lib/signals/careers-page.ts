@@ -231,7 +231,7 @@ export function postingQuote(passages: string[], title: string, company?: string
   const namePatterns = names.map(n => n.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(String.raw`\s+`))
   const co = namePatterns.length ? `(?:${namePatterns.join('|')})` : null
   const legalSuffix = String.raw`(?:inc|corp|ltd|co|llc|llp)`
-  const subject = co ? String.raw`|^\s*(?:(?:about\s+)?the\s+role\s*:\s*)?${co}(?:\s+${legalSuffix}\.?)?\s+(?:is|are)` : ''
+  const subject = co ? String.raw`|^\s*(?:(?:about\s+)?the\s+(?:role|opportunity)(?:\s*:\s*|\s+))?["“‘\x27]?\s*${co}(?:\s+${legalSuffix}\.?)?\s+(?:is|are)` : ''
   const WE = String.raw`(?:\b(?:we(?:'|’)re|we\s+are|our\s+(?:[\p{L}-]+\s+){0,2}team\s+is)${subject})`
   const JOIN = String.raw`join\s+(?:us|our\s+team|the\s+team${co ? `|${co}` : ''})(?:\s+[^.!?]{0,30}?)?\s+as`
   const re = (s: string) => new RegExp(s, 'iu')
