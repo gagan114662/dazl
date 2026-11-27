@@ -42,12 +42,15 @@ test('review copy distinguishes a stored manual entry from an AI-found hold', ()
 test('held cards have no Approve button, eligible cards still do', () => {
   const actions = source.match(/<div [^\n]*data-testid="card-actions">[\s\S]*?<\/div>/)?.[0]
   assert.ok(actions)
-  const html = (ok: boolean) => render(actions, {
+  const html = (ok: boolean, sourceVisible = ok) => render(actions, {
     c: { approve: { ok, reason: 'No verified email' } }, l: { id: 'lead' },
+    approval: { ok: sourceVisible, reason: 'No visible email source' },
     approving: {}, approved: {}, rejecting: null, Icon: () => null,
   })
   assert.doesNotMatch(html(false), />Approve<\/button>/)
   assert.match(html(true), />Approve<\/button>/)
+  assert.doesNotMatch(html(true), /disabled=/)
+  assert.match(html(true, false), /<button[^>]*disabled=""[^>]*>Approve<\/button>/)
 })
 
 test('a person with no title has only one separator before their source', () => {

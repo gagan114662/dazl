@@ -36,7 +36,7 @@ function fixture(t: { after(fn: () => void): void }) {
       .run(id, scan, company, `${company.toLowerCase()}.example`, `https://${company.toLowerCase()}.example/news`,
         day, proof, 'unverified', proof ? null : 'The page prints no date. This is the day the search index dates the page.')
     const enrich = (kind: string, value: string) => addEnrichment(db, tenant, id, {
-      connector: 'discover', kind, value, label: null, confidence: null,
+      connector: 'discover', kind, value, label: kind === 'email' && proof ? 'published on a public page' : null, confidence: null,
       source_url: `https://${company.toLowerCase()}.example/team`, source_date: day, retrieved_at: 1,
     })
     enrich('person', 'Lee Rivera, Owner')

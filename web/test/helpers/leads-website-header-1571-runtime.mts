@@ -52,6 +52,7 @@ test('#1571 the card header names the website a discovery lead carries; no websi
   ]
   const canned: DiscoverResult = { leads, seen: leads.map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `On ${l.signal_date}, ${l.company} will open its second clinic.` })),
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null }
+  canned.seen.push({ url: 'https://northwind-dental.example/contact', title: 'Contact', page_age: null, text: 'Dana Ruiz: dana@northwind-dental.example' })
   let asked = 0
   const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch
   assert.equal(await runJob(db, job!, { master, fetchImpl: blocked, discover: true, enrichImpl: null, discoverImpl: async () => (asked++ === 0 ? canned : { ...canned, leads: [], seen: [] }) }), 'done')
