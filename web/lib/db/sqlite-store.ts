@@ -15,11 +15,23 @@ import { EMAIL_TOKENS_DDL } from '../email-ownership.ts'
 import { OUTBOX_DDL } from '../system-mail.ts'
 import { SESSION_COLUMNS, SESSION_INDEXES, newPublicId } from '../sessions.ts'
 
+const DEFAULT_BUSY_TIMEOUT_MS = 5000
+
+function busyTimeoutMs(): number {
+  const raw = process.env.DAZL_SQLITE_BUSY_TIMEOUT_MS?.trim()
+  if (!raw) return DEFAULT_BUSY_TIMEOUT_MS
+  const timeout = Number(raw)
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(timeout) || timeout > 2_147_483_647) {
+    throw new Error('DAZL_SQLITE_BUSY_TIMEOUT_MS must be an integer between 0 and 2147483647')
+  }
+  return timeout
+}
+
 let db: Database.Database | null = null
 
 export function getAuthDb(): Database.Database {
   if (db) return db
-  db = new Database(process.env.DB_PATH || path.join(process.cwd(), '..', '..', 'dazl-data', 'app.db'))
+  db = new Database(process.env.DB_PATH || path.join(process.cwd(), '..', '..', 'dazl-data', 'app.db'), { timeout: busyTimeoutMs() })
   db.pragma('journal_mode = WAL')
   migrateAuth(db)
   return db
