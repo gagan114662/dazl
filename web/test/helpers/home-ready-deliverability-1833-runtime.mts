@@ -10,7 +10,7 @@ import { ownSiteBuyerRows } from './own-site-buyer.ts'
 const NOW = Math.floor(Date.now() / 1000), DAY = 86400
 const recent = new Date(Date.now() - 5 * DAY * 1000).toISOString().slice(0, 10)
 
-function seed() {
+export function seedHomeReadyDeliverability(extraCases = false) {
   const db = new Database(':memory:'); migrateAllSqlite(db)
   setScanDb(db); setUser({ id: 'A', business_name: 'Acme' })
   const J = 'a'.repeat(24)
@@ -33,26 +33,28 @@ function seed() {
   lead('rejected', 'rejected')
   lead('nomx', 'no_mx', true)
   lead('ok', 'accepted')
-  lead('candidate', null, false, true)
-  lead('alternate', 'rejected', false, false, true)
-  lead('unknown', null)
+  if (extraCases) {
+    lead('candidate', null, false, true)
+    lead('alternate', 'rejected', false, false, true)
+    lead('unknown', null)
+  }
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(J)
   return db
 }
 
-test('#1833 refused addresses are held and an accepted address still shows', async () => {
-  seed()
-  const r = await homeReady('A', NOW)
-  const by = Object.fromEntries(r.companies.map(c => [c.lead_id, c]))
-  assert.deepEqual(r.companies.map(c => c.lead_id).sort(), ['alternate', 'candidate', 'nomx', 'ok', 'rejected', 'unknown'], 'all companies are judged')
-  assert.equal(by.ok.ready, true)
-  assert.equal(by.ok.details?.email, 'dana@ok.example', 'an accepted address still shows')
-  assert.ok(!by.ok.details?.email_undeliverable)
-  assert.equal(by.unknown.ready, true)
-  assert.equal(by.alternate.ready, true)
-  for (const id of ['rejected', 'nomx', 'candidate']) {
-    assert.equal(by[id].ready, false, `${id} is held`)
-    assert.equal(by[id].reason, "email can't receive mail")
-    assert.equal(by[id].details, undefined, 'the refused address is not shown as usable')
-  }
-})
+if (!process.env.DAZL_READY_1980_CHILD) {
+  test('#1833 refused addresses are held and an accepted address still shows', async () => {
+    seedHomeReadyDeliverability()
+    const r = await homeReady('A', NOW)
+    const by = Object.fromEntries(r.companies.map(c => [c.lead_id, c]))
+    assert.deepEqual(r.companies.map(c => c.lead_id).sort(), ['nomx', 'ok', 'rejected'], 'all three companies are judged')
+    assert.equal(by.ok.ready, true)
+    assert.equal(by.ok.details?.email, 'dana@ok.example', 'an accepted address still shows')
+    assert.ok(!by.ok.details?.email_undeliverable)
+    for (const id of ['rejected', 'nomx']) {
+      assert.equal(by[id].ready, false, `${id} is held`)
+      assert.equal(by[id].reason, "email can't receive mail")
+      assert.equal(by[id].details, undefined, 'the refused address is not shown as usable')
+    }
+  })
+}
