@@ -40,6 +40,7 @@ export const LOCKS: { id: string; re: RegExp; note: string }[] = [
 // Every module-level Map/Set, reviewed: what it holds and whether two instances need to share it. A new one fails
 // test/pg-inventory.test.ts until it is classified here.
 export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' | 'constant' ; note: string }> = {
+  'lib/focus-refresh.ts:subscribers': { share: 'safe to lose', note: 'browser-only (#1876/#1880): the mounted Home panels\' refresh callbacks for this page load; a reload re-subscribes, and no server instance reads it' },
   'lib/ops/loop-stall.ts:spans': { share: 'safe to lose', note: 'per-process diagnostic: recent scan start/end times, read only to name scans in this process\'s event-loop stall log line (#1463); losing it only drops names from a log line' },
   'lib/connectors/sitecrawl.ts:lastHit': { share: 'safe to lose', note: 'per-host crawl politeness delay; each instance waits on its own' },
   'lib/scan/place-agreement.ts:REGION_BY_ALIAS': { share: 'constant', note: 'region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read' },
