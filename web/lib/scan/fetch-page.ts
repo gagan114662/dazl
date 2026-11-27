@@ -257,9 +257,33 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 }
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
-export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: { allow: (url: URL) => boolean; blocked: (url: URL) => void; includeEmailLinks?: boolean }): Promise<Page | FetchFail> {
-  // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
+type HopPolicy = {
+  allow: (url: URL) => boolean
+  blocked: (url: URL) => void
+  includeEmailLinks?: boolean
+  preferLiteralAts?: boolean
+}
+
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: HopPolicy): Promise<Page | FetchFail> {
   const posting = atsPostingRef(rawUrl)
+  // This includes EU Lever postings at https://jobs.eu.lever.co, whose records use the EU API.
+  if (posting && hopPolicy?.preferLiteralAts) {
+    const literal = await fetchPageRead(rawUrl, render, signal, hopPolicy, null)
+    if ('text' in literal || signal?.aborted) return literal
+    const recordUrl = atsRecordUrl(posting)
+    return fetchPageRead(rawUrl, render, signal, {
+      ...hopPolicy,
+      allow: next => next.href === recordUrl,
+    }, posting)
+  }
+  // Ordinary ATS evidence uses the board's own API record.
+  return fetchPageRead(rawUrl, render, signal, hopPolicy, posting)
+}
+
+async function fetchPageRead(
+  rawUrl: string, render: (url: string) => Promise<string | null>, signal: AbortSignal | undefined,
+  hopPolicy: HopPolicy | undefined, posting: ReturnType<typeof atsPostingRef>,
+): Promise<Page | FetchFail> {
   try {
     let url = new URL(posting ? atsRecordUrl(posting) : rawUrl)
     for (let i = 0; i <= MAX_REDIRECTS; i++) {
