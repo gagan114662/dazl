@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 
@@ -13,10 +13,13 @@ export default function GmailPanel() {
   const [msg, setMsg] = useState('')
   const [justConnected, setJustConnected] = useState(false) // back from Google's grant: offer the way back to the emails
 
+  const latest = useRef(0)
   async function load() {
+    const request = ++latest.current
     const r = await fetch('/api/outreach/settings')
     if (!r.ok) return
     const j: State = await r.json()
+    if (request !== latest.current) return
     setS(j)
     setName(n => n || j.sender?.sender_name || '')
     setAddr(a => a || j.sender?.postal_address || '')
@@ -45,7 +48,10 @@ export default function GmailPanel() {
       if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
       else if (q) setMsg('Gmail was not connected. Try again.')
     })
-    return () => window.removeEventListener('reply-reading-updated', refreshReplyReading)
+    return () => {
+      latest.current++
+      window.removeEventListener('reply-reading-updated', refreshReplyReading)
+    }
   }, [])
 
   async function saveSender(e: React.FormEvent) {

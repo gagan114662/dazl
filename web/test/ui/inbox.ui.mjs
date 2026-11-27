@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { setTimeout as delayFor } from 'node:timers/promises'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { pickUiPort } from '../helpers/ui-port.mjs'
@@ -55,7 +56,7 @@ function serve(u, reads) {
 
 const b = await chromium.launch()
 // delay(u, method) -> ms: hold that response back (the body is computed when the request arrives, as a server would)
-async function open(url, width = 1280, height = 900, delay = () => 0, connected = true) {
+async function open(url, width = 1280, height = 900, delay = () => 0, connected = true, readStatus = async () => connected) {
   const ctx = await b.newContext({ viewport: { width, height } })
   await ctx.addCookies([{ name: 'dazl_session', value: token, url: base }])
   const reads = new Set(), calls = [], posts = []
@@ -71,8 +72,11 @@ async function open(url, width = 1280, height = 900, delay = () => 0, connected 
       if (u.searchParams.get('thread_id')) return json({ messages: [{ dir: 'in', kind: 'reply', subject: null, body: 'Yes - send details', at: now, classification: 'positive' }] })
       calls.push(u.search); const body = serve(u, reads); await wait(delay(u, 'GET')); return json(body)
     }
-    if (p === '/api/outreach/replies') return json({ available: true, gmail_connected: connected, read_granted: connected, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: connected }, bounce_scan: { version: 'fixture-bounce', text: ['Check delivery-failure notices separately.'], accepted: false }, followups_enabled: false, autopilot_on: false, inbound: [] })
-    if (p === '/api/outreach/settings') return json({ reply_reading_on: connected, gmail: connected ? { email: 'me@x.example', status: 'active', read_granted: true } : null, sender: { sender_name: 'Sam', postal_address: 'Synthetic test address' }, daily_cap: 5, sent_24h: 0, read_notice: READ_CONSENT_TEXT })
+    if (p === '/api/outreach/replies' || p === '/api/outreach/settings') {
+      const reading = await readStatus(p)
+      if (p === '/api/outreach/replies') return json({ available: true, gmail_connected: connected, read_granted: connected, consent: { version: READ_CONSENT_VERSION, text: READ_CONSENT_TEXT, accepted: reading }, bounce_scan: { version: 'fixture-bounce', text: ['Check delivery-failure notices separately.'], accepted: false }, followups_enabled: false, autopilot_on: false, inbound: [] })
+      return json({ reply_reading_on: reading, gmail: connected ? { email: 'me@x.example', status: 'active', read_granted: true } : null, sender: { sender_name: 'Sam', postal_address: 'Synthetic test address' }, daily_cap: 5, sent_24h: 0, read_notice: READ_CONSENT_TEXT })
+    }
     if (p === '/api/outreach/conversion') return json({ rows: [] })
     return json({}, 404)
   })
@@ -102,6 +106,42 @@ try {
     await shot(page, 'gmail-settings-scope-mobile')
     assert.equal(await panel.getByText(/Only threads dazl started are read|never lists, searches, or reads anything else/).count(), 0)
     await ctx.close()
+  }
+  {
+    const oldRequests = new Set()
+    const bothStarted = Promise.withResolvers()
+    const releaseOld = Promise.withResolvers()
+    let refresh = 'initial'
+    const { ctx, page } = await open('/app/settings', 390, 844, () => 0, true, async path => {
+      if (refresh === 'initial') return true
+      if (refresh === 'new') return false
+      oldRequests.add(path)
+      if (oldRequests.size === 2) bothStarted.resolve()
+      await releaseOld.promise
+      return true
+    })
+    const gmailOff = page.locator('#gmail').getByText(/^Reply reading: off\./)
+    const repliesOff = page.getByRole('button', { name: 'Turn on reply reading' })
+    try {
+      await page.getByRole('button', { name: 'Stop reading replies' }).waitFor()
+      refresh = 'old'
+      await page.evaluate(() => window.dispatchEvent(new Event('reply-reading-updated')))
+      await Promise.race([
+        bothStarted.promise,
+        delayFor(5000, undefined, { ref: false }).then(() => assert.fail('both old status requests must start')),
+      ])
+      refresh = 'new'
+      await page.evaluate(() => window.dispatchEvent(new Event('reply-reading-updated')))
+      await gmailOff.waitFor()
+      await repliesOff.waitFor()
+      releaseOld.resolve()
+      await page.waitForLoadState('networkidle')
+      assert.equal(await gmailOff.count(), 1, 'Gmail keeps the newer off state')
+      assert.equal(await repliesOff.count(), 1, 'Replies keeps the newer off state')
+    } finally {
+      releaseOld.resolve()
+      await ctx.close()
+    }
   }
   {
     const { ctx, page } = await open('/app/inbox', 390, 844, () => 0, false)
