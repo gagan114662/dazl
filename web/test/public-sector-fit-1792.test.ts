@@ -77,3 +77,27 @@ for (const r of RECS) {
     }
   })
 }
+
+test('#1792: an existing municipality without a recorded fit hold cannot get a manual draft', () => {
+  const { db, ids } = build()
+  try {
+    assert.equal(refusal(() => createDraft(db, 'T', ids.town, 'Ledgerly', { manual: true })), 'public_sector_non_buyer')
+    const drafts = db.prepare('SELECT COUNT(*) FROM outreach_messages WHERE lead_id = ?').pluck()
+    assert.equal(drafts.get(ids.town), 0)
+  } finally { db.close() }
+})
+
+test('#1792: a private buyer without a recorded fit hold remains draftable', () => {
+  const { db, ids } = build()
+  try {
+    assert.ok(createDraft(db, 'T', ids['private buyer: logistics'], 'Ledgerly', { manual: true }))
+  } finally { db.close() }
+})
+
+test('#1792: an explicitly public-sector offer can still draft to a municipality', () => {
+  const { db, ids } = build()
+  try {
+    db.prepare('UPDATE scan_jobs SET seller = ? WHERE id = ?').run('Budgeting software for municipalities', 'J')
+    assert.ok(createDraft(db, 'T', ids.town, 'Ledgerly', { manual: true }))
+  } finally { db.close() }
+})
