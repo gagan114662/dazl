@@ -39,6 +39,7 @@ import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting 
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isCountryOrRegion } from './countries.ts'
+import { collectApolloScanEvidence } from '../enrich/apollo-scan-evidence.ts'
 import { resolveSearchProfile } from './profile-match.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -1345,6 +1346,7 @@ export interface RunDeps {
   // The Claude discovery lane (runDiscoverLane). Default: on, unless DAZL_DISCOVER_LANE=0 (the fenced test harness sets that, so no test
   // reaches the live API by accident). true forces it on whatever the environment says; false forces it off.
   discover?: boolean
+  onApolloEvidence?: (rows: Awaited<ReturnType<typeof collectApolloScanEvidence>>) => void
   discoverImpl?: typeof discoverLeads   // the loop itself, replaceable in tests
   enrichImpl?: typeof enrichLeads | null   // its second pass for people and websites; null switches it off
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
@@ -1473,7 +1475,7 @@ function isJobBankPosting(raw: string): boolean {
     /^\/jobsearch\/jobposting\/\d+\/?$/.test(url.pathname)
 }
 
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch, onApolloEvidence }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch' | 'onApolloEvidence'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
   const savedSource = sells?.icp_inferred
@@ -1606,6 +1608,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   }
   if (needsContactCrawl.length && sitecrawlEnabled()) {
     beginEnrichment(db, job.id, job.attempts)
+    const completedCrawlIds: string[] = []
     try {
       const signal = AbortSignal.timeout(postFinishBudgetMs())
       const findSite = jobBankDomainLookups.size
@@ -1616,6 +1619,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
         textSites: siteHints,
         companyFirstContacts: true,
         signal,
+        ...(onApolloEvidence ? { onContactReadComplete: (id: string) => completedCrawlIds.push(id) } : {}),
         ...(findSite ? {
           findSites: async (company, where, id) => {
             if (!jobBankDomainLookups.has(id) || !postFinishAliveStrict(db, job)) return []
@@ -1642,10 +1646,16 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
             addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover', label: 'published on a public page' })
           }
         }
+        if (onApolloEvidence) {
+          try { onApolloEvidence(await collectApolloScanEvidence(sqliteDb(db), job.user_id, job.id, completedCrawlIds, new Date(now * 1000))) }
+          catch { /* evidence observation never changes the scan result */ }
+        }
       }
     } finally {
       endEnrichment(db, job.id, job.attempts)
     }
+  } else if (!needsContactCrawl.length && onApolloEvidence) {
+    try { onApolloEvidence([]) } catch { /* evidence observation never changes the scan result */ }
   }
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.

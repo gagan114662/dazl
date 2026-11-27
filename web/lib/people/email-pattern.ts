@@ -12,6 +12,7 @@
 // no format is learned and no address is built from a name, flag on or off. The verifier reads only guessed rows earlier releases
 // left at rest.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -436,6 +437,15 @@ function suppressedOf(db: Database.Database, tenantId: string, addresses: string
 export function publishedNameKey(fullName: string): string | null {
   const n = splitName(fullName)
   return n ? `${n.first}|${n.last}` : null
+}
+// An existing printed address rules out enrichment spend even if it is suppressed or ambiguous.
+export async function hasPublishedAddressForDb(db: Db, tenantId: string, leadId: string, fullName: string): Promise<boolean> {
+  const name = publishedNameKey(fullName)
+  if (!name) return false
+  const rows = await db.all<{ person: string }>(
+    "SELECT person FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'published' AND source_url IS NOT NULL",
+    [tenantId, leadId])
+  return rows.some(row => publishedNameKey(row.person.split(',')[0] ?? '') === name)
 }
 export function selectPublishedCandidate(rows: PublishedCandidateRow[], fullName: string): { address: string; url: string } | null {
   const want = publishedNameKey(fullName)
