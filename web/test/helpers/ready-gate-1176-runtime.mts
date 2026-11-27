@@ -70,7 +70,13 @@ test('#1176 a structurally proven posting day: the real scan stores the proof, t
   assert.notEqual(row.date_status, 'verified')
   assert.notEqual(row.confidence, null)
   // #1037: Flexport's own site names its buyer (the rows the real crawl stores), so the posting day is the only thing in question here
-  for (const r of ownSiteBuyerRows('flexport.example')) addEnrichment(x.db, 'A', row.id, r)
+  const domain = 'flexport.example'
+  for (const r of ownSiteBuyerRows(domain)) addEnrichment(x.db, 'A', row.id, r)
+  addEnrichment(x.db, 'A', row.id, {
+    connector: 'sitecrawl', kind: 'email', value: `buyer@${domain}`, label: null,
+    source_url: `https://${domain}/contact`, confidence: null, source_date: published,
+    retrieved_at: Math.floor(Date.now() / 1000),
+  })
   setScanDb(x.db); setUser({ id: 'A', business_name: 'Acme' })
 
   // 1. as the scan left it: the card's own rule says the day is proven, and the gate still holds the lead for what it must (timing proof)

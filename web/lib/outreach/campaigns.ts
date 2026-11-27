@@ -15,6 +15,10 @@ import { listQual } from '../run-status.ts'
 import { approveBlockReason, manualDraftBlockReason, sendBlockReason } from './service.ts'
 import { readAccountZone } from '../account-zone.ts'
 
+import { enrichmentsForLeads } from '../connectors/store.ts'
+import { legacyMailboxRefusals } from './lead-hold.ts'
+import { publishedEmail } from './published-email.ts'
+
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
 // outreach -> sequence -> reply, and the single next action. Read-only and tenant-scoped: every count is limited to the
 // signed-in user's own job and its leads. Counts are what is stored now; nothing here is a delivery or intent claim.
@@ -126,8 +130,8 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
     const L = `FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id = ?`
-    type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; name: string | null; company_domain: string | null; event_date: string | null; fit: number | null; intent: number | null; source_kind: string | null }
-    const every = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, ${DISCOVER_LEAD_COLUMNS} ${L}`).all(tenantId, j.id) as Row[]
+    type Row = { id: string; scan_job_id: string; contact: string | null; source_url: string; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; name: string | null; company_domain: string | null; event_date: string | null; fit: number | null; intent: number | null; source_kind: string | null }
+    const every = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.source_url, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, ${DISCOVER_LEAD_COLUMNS} ${L}`).all(tenantId, j.id) as Row[]
     // #1238: the new engine's leads have ONE state each (lib/discover/card.ts discoverState). They are counted from it below and are
     // left out of the older engine's rules, which `rows` and everything derived from it keep exactly as they were.
     let dStored: DiscoverStoredRow[] = []
@@ -179,7 +183,10 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // Leads page that offered no action for any lead (#1238, staging 96111ddd). A shared inbox or another employee's address is never one (#1250).
     if (dc) { sourceChecked += dc.ready; needsReview += dc.review; research += dc.research }
     const hasContact = (r: Row) => (r.contact ?? '').trim() !== ''
-    const readyWithContact = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id) && hasContact(r)).length + (dc?.ready ?? 0)
+    const qualified = liveRows.filter(r => evidenceStateOf(r) !== 'unverified' && !heldIds.has(r.id))
+    const evidence = enrichmentsForLeads(db, tenantId, qualified.map(r => r.id))
+    const refused = legacyMailboxRefusals(db, tenantId, qualified, evidence)
+    const readyWithContact = qualified.filter(r => !refused.has(r.id) && publishedEmail({ ...r, enrichments: evidence[r.id] })).length + (dc?.ready ?? 0)
     const withContact = allLive.filter(hasContact).length + (dc?.ready ?? 0)
     const msg = (status: string) => n(`SELECT count(*) AS n FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id = ? AND m.status = ? AND coalesce(m.test, 0) = 0`, tenantId, tenantId, j.id, status)
     // Test sends (outreach_messages.test) are fixtures, never real work: excluded from every count here.

@@ -22,6 +22,7 @@ const ownSiteBuyer = (l: PreviewLead) => leadPerson(l.enrichments ?? [], '', und
 
 export type PreviewLead = CardLead & { id: string; seen_before?: number | boolean | null; email_cannot_receive_mail?: boolean }
 
+export const NO_PUBLISHED_EMAIL = 'no published email'
 export const EMAIL_CANNOT_RECEIVE_MAIL = "email can't receive mail"
 
 export function publishedAddressRefused(lead: Pick<CardLead, 'contact' | 'source_url' | 'evidence_excerpt' | 'enrichments'>): boolean {
@@ -61,6 +62,7 @@ export function heldReason(l: PreviewLead): string | null {
   if (l.fit === 0 && l.intent === null) return 'not a fit'
   if (!ownSiteBuyer(l)) return NO_OWN_BUYER
   if (l.email_cannot_receive_mail ?? publishedAddressRefused(l)) return EMAIL_CANNOT_RECEIVE_MAIL
+  if (!publishedEmail(l)) return NO_PUBLISHED_EMAIL
   return null
 }
 
