@@ -76,6 +76,7 @@ const FREE: Record<string, string> = {
   'https://api.lever.co/v0/postings/': 'public job board API: free',
   'https://api.eu.lever.co/v0/postings/': 'public job board API (EU-hosted Lever boards): free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
+  'https://api.smartrecruiters.com/v1/companies/': 'reads public job postings to confirm posting dates: free and no API key',
   'https://r.jina.ai': 'Jina Reader without a key: free (lib/scrape/jina.ts)',
   'https://r.jina.ai/': 'Jina Reader without a key: free (lib/sources/jina.ts)',
   'https://www.googleapis.com/youtube/v3/search': 'YouTube Data API: quota units, no per-call charge',
