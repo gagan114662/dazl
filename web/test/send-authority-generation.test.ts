@@ -7,7 +7,10 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan } from '../lib/scan/store.ts'
-import { migrateOutreach } from '../lib/outreach/store.ts'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, PG_URL, pgSkip } from './helpers/pg-test.ts'
+import { migrateOutreach, READ_CONSENT_VERSION } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
 import { migrateLedger } from '../lib/outreach/ledger.ts'
 import { saveSettings } from '../lib/outreach/service.ts'
@@ -40,7 +43,7 @@ async function seed(db: Database.Database) {
 }
 
 import { getAccessTokenBound } from '../lib/gmail/oauth.ts'
-import { recheckSendAuthority } from '../lib/outreach/send-authority.ts'
+import { recheckReadAuthorityDb, recheckSendAuthority } from '../lib/outreach/send-authority.ts'
 
 // Connection-generation binding (Refs #739, addendum 2): the token's refresh_ct generation is bound to the send handoff.
 const tokenOk = (async () => json({ access_token: 'x' })) as unknown as typeof fetch
@@ -82,4 +85,31 @@ test('re-open send: connection replaced at the same address during the token awa
   let result = 'ok'
   try { await sendReopen(db, 'A', tid, d) } catch (e) { result = (e as Error).message }
   assert.equal(sends, 0); assert.notEqual(result, 'ok')
+})
+
+
+test('Postgres reply authority rejects revoked consent and replaced connections for the owning tenant', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  const expected = { email: 'owner@example.test', refreshCt: 'first-generation' }
+  try {
+    await runPgMigrations(db.pool)
+    await db.run(
+      "INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES (?, ?, ?, 'active', 1)",
+      ['owner', expected.email, expected.refreshCt],
+    )
+    await db.run('INSERT INTO mail_read_consent (tenant_id, version) VALUES (?, ?), (?, ?)',
+      ['owner', READ_CONSENT_VERSION, 'neighbor', READ_CONSENT_VERSION])
+    assert.equal(await recheckReadAuthorityDb(db, 'owner', expected), null)
+    assert.equal(await recheckReadAuthorityDb(db, 'neighbor', expected), 'gmail_not_connected')
+    await db.run('UPDATE gmail_accounts SET refresh_ct = ? WHERE tenant_id = ?', ['next-generation', 'owner'])
+    assert.equal(await recheckReadAuthorityDb(db, 'owner', expected), 'connection_changed')
+    const replacement = { ...expected, refreshCt: 'next-generation' }
+    assert.equal(await recheckReadAuthorityDb(db, 'owner', replacement), null)
+    await db.run('DELETE FROM mail_read_consent WHERE tenant_id = ?', ['owner'])
+    assert.equal(await recheckReadAuthorityDb(db, 'owner', replacement), 'read_consent_absent')
+  } finally {
+    await db.close()
+    await drop()
+  }
 })

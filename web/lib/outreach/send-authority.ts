@@ -1,3 +1,4 @@
+import type { Db } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { hasConsent } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
@@ -60,15 +61,37 @@ export function recheckSendAuthority(db: Database.Database, tenantId: string, i:
 // same account, same address, still active and read-granted, same refresh ciphertext (a disconnect and reconnect, even to the
 // same address, is a different connection). Returns null or the refusal reason; an unreadable check is a refusal.
 export interface ReadAuthorityInput { email: string; refreshCt: string }
+type ReadAccount = { email: string; status: string; read_granted: number; refresh_ct: string }
+
+function readAccountRefusal(account: ReadAccount | undefined, expected: ReadAuthorityInput): string | null {
+  if (!account || account.status !== 'active') return 'gmail_not_connected'
+  if (account.email.toLowerCase() !== expected.email.toLowerCase() || account.refresh_ct !== expected.refreshCt) return 'connection_changed'
+  if (Number(account.read_granted) !== 1) return 'read_not_granted'
+  return null
+}
+
 export function recheckReadAuthority(db: Database.Database, tenantId: string, i: ReadAuthorityInput): string | null {
   try {
     const c = db.prepare('SELECT version FROM mail_read_consent WHERE tenant_id = ?').get(tenantId) as { version: string } | undefined
     if (c?.version !== READ_CONSENT_VERSION) return 'read_consent_absent'
-    const a = db.prepare('SELECT email, status, read_granted, refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string; status: string; read_granted: number; refresh_ct: string } | undefined
-    if (!a || a.status !== 'active') return 'gmail_not_connected'
-    if (a.email.toLowerCase() !== i.email.toLowerCase() || a.refresh_ct !== i.refreshCt) return 'connection_changed'
-    if (Number(a.read_granted) !== 1) return 'read_not_granted'
-    return null
+    const account = db.prepare('SELECT email, status, read_granted, refresh_ct FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as ReadAccount | undefined
+    return readAccountRefusal(account, i)
+  } catch {
+    return 'authority_unreadable'
+  }
+}
+
+export async function recheckReadAuthorityDb(db: Db, tenantId: string, expected: ReadAuthorityInput): Promise<string | null> {
+  try {
+    const row = await db.get<{ version: string } & ({ email: null } | ReadAccount)>(
+      `SELECT consent.version, account.email, account.status, account.read_granted, account.refresh_ct
+       FROM mail_read_consent consent
+       LEFT JOIN gmail_accounts account ON account.tenant_id = consent.tenant_id
+       WHERE consent.tenant_id = ?`,
+      [tenantId],
+    )
+    if (row?.version !== READ_CONSENT_VERSION) return 'read_consent_absent'
+    return readAccountRefusal(row.email === null ? undefined : row, expected)
   } catch {
     return 'authority_unreadable'
   }
