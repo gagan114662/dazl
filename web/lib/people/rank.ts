@@ -47,7 +47,7 @@ const STOP = new Set([
 ])
 
 function words(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z][a-z0-9+-]{1,}/g) ?? []).filter(w => !STOP.has(w))
+  return (text.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').match(/\p{L}[\p{L}\p{N}+-]{1,}/gu) ?? []).filter(w => !STOP.has(w))
 }
 
 // A title that CONTRADICTS being the buyer of that role, even though it contains the role's words (#191 review:
