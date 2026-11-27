@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateScan } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
@@ -16,7 +17,7 @@ let fetches = 0
 globalThis.fetch = (async (u: unknown) => { fetches++; throw new Error(`network fenced: ${String(u)}`) }) as typeof fetch
 let n = 0
 function setup() { const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migratePlatform(db); setScanDb(db); return db }
-function as(db: Database.Database) { const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' }) }
+function as(db: Database.Database) { const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' }) }
 const post = (body: unknown) => POST(new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.0.1.${++n}` }, body: JSON.stringify(body) }))
 const Q = 'Find independent local businesses in Toronto'
 const BASE = { summary: 'Find independent local businesses', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
@@ -52,15 +53,15 @@ for (const [name, patch, field, kind] of CASES) {
 test('at the caps exactly: accepted and stored whole (6 exclusions, 160-char item, 300-char summary)', async () => {
   const db = setup(); as(db)
   const icp = { ...BASE, summary: long(300), exclude: ['a', 'b', 'c', 'd', 'e', 'f'], signals: [long(160)] }
-  const r = await post({ query: Q, icp })
+  const r = await post({ query: Q, icp, reviewed: true })
   assert.equal(r.status, 202, JSON.stringify(await r.clone().json()))
   const stored = JSON.parse((db.prepare('SELECT icp FROM scan_jobs').get() as { icp: string }).icp)
   assert.deepEqual(stored.exclude, icp.exclude); assert.deepEqual(stored.signals, icp.signals); assert.equal(stored.summary, icp.summary)
 })
 
-test('a valid or absent window, country and language are accepted and kept; null and "" mean not given', async () => {
+test('explicitly reviewed valid window, country and language are accepted and kept', async () => {
   const db = setup(); as(db)
-  const r1 = await post({ query: Q, icp: { ...BASE, window_days: 90, country: 'gb', language: 'EN' } })
+  const r1 = await post({ query: Q, reviewed: true, icp: { ...BASE, window_days: 90, country: 'gb', language: 'EN' } })
   assert.equal(r1.status, 202, JSON.stringify(await r1.clone().json()))
   const stored = JSON.parse((db.prepare('SELECT icp FROM scan_jobs ORDER BY rowid DESC').get() as { icp: string }).icp)
   assert.equal(stored.window_days, 90); assert.equal(stored.country, 'GB'); assert.equal(stored.language, 'en')

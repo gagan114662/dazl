@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../../lib/llm/key-store.ts'
 import { customerView, type RunEstimate } from '../../lib/scan/price-estimate.ts'
@@ -31,7 +32,7 @@ function tenant(google: boolean) {
   raw.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')").run(id, email)
   if (google) raw.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
   raw.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1700000000)").run(id, id)
-  setUser({ id, business_name: 'b', email })
+  setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'b', email })
   return { raw, id }
 }
 // Quote, confirm, start; then mark the run ended (the run page shows its cost line only then). Nothing is spent here.

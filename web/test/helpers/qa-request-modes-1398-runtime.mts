@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateScan } from '../../lib/scan/store.ts'
 import { migrateKeys, saveKey } from '../../lib/llm/key-store.ts'
 import { migratePlans } from '../../lib/plans.ts'
@@ -26,7 +27,7 @@ function setup() {
   return db
 }
 function as(db: Database.Database) {
-  const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' }); return id
+  const id = `U${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' }); return id
 }
 const req = (path: string, body: unknown) => new NextRequest(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', origin: 'http://localhost', 'x-forwarded-for': `10.0.1.${++n}` }, body: JSON.stringify(body) })
 const jobs = (db: Database.Database) => db.prepare('SELECT run_budget FROM scan_jobs').all() as { run_budget: string | null }[]
