@@ -191,7 +191,7 @@ test('the own-fetch proof retains published mailto and Cloudflare addresses', as
   assert.equal(hidden.email, null)
 })
 
-type CitationResponse = { status: number; body?: string; location?: string }
+type CitationResponse = { status: number; body?: string; location?: string; type?: string }
 
 function stubCitationTransport(t: TestContext, pages: Record<string, CitationResponse>): string[] {
   const hits: string[] = []
@@ -203,7 +203,7 @@ function stubCitationTransport(t: TestContext, pages: Record<string, CitationRes
       end() {
         const response = Object.assign(new PassThrough(), {
           statusCode: fixture.status,
-          headers: { 'content-type': 'text/html', location: fixture.location },
+          headers: { 'content-type': fixture.type ?? 'text/html', location: fixture.location },
         })
         receive(response)
         response.end(fixture.body)
@@ -304,4 +304,32 @@ test('alternate evidence confirms the signal without bypassing the cited email c
     assert.equal(checked.proof, 'confirmed')
     assert.deepEqual([checked.email, checked.email_source_url], published ? [email, alternateUrl] : [null, null])
   }
+})
+
+
+test('ATS citation reads the literal posting before its record API', async t => {
+  const posting = 'https://boards.greenhouse.io/example/jobs/123'
+  const api = 'https://boards-api.greenhouse.io/v1/boards/example/jobs/123'
+  const hits = stubCitationTransport(t, {
+    [posting]: { status: 200, body: `<p>${quote}. Contact <a href="mailto:${email}">the buyer</a> for details.</p>` },
+    [api]: { status: 200, type: 'application/json', body: JSON.stringify({ id: 123, title: 'Manager', content: quote }) },
+  })
+  const lead = { email, email_source_url: posting }
+  assert.deepEqual(await checkEmailSource(lead, []), lead)
+  assert.deepEqual(hits, [posting])
+  const ordinary = await fetchPageDetailed(posting)
+  assert.ok('text' in ordinary && ordinary.board)
+  assert.deepEqual(hits, [posting, api])
+})
+
+test('a fallback ATS record cannot serve as literal-page email proof', async t => {
+  const posting = 'https://boards.greenhouse.io/example/jobs/123'
+  const api = 'https://boards-api.greenhouse.io/v1/boards/example/jobs/123'
+  const hits = stubCitationTransport(t, {
+    [posting]: { status: 404 },
+    [api]: { status: 200, type: 'application/json', body: JSON.stringify({ id: 123, title: 'Manager', content: `${quote}. ${email}` }) },
+  })
+  const lead = { email, email_source_url: posting }
+  assert.deepEqual(await checkEmailSource(lead, []), { email: null, email_source_url: null })
+  assert.deepEqual(hits, [posting, api])
 })
