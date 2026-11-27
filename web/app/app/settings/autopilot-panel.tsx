@@ -27,7 +27,7 @@ export default function AutopilotPanel() {
     <div className="card p-6 mb-4" data-testid="autopilot-unavailable">
       <h2 className="font-semibold mb-1">Autopilot (email)</h2>
       <p className="text-[#555] text-sm">{i.unavailable_text ?? AUTOPILOT_BETA_TEXT}</p>
-      {s.enabled && <p className="text-sm text-[#555] mt-2">Your earlier autopilot setting is not running: nothing is sent without your click. <button className="underline underline-offset-2" onClick={() => act({ action: 'disable' })}>Clear that setting</button></p>}
+      {s.enabled && <p className="text-sm text-[#555] mt-2">Automatic sending is off. Emails send only when you click Send. <button className="underline underline-offset-2" onClick={() => act({ action: 'disable' })}>Clear that setting</button></p>}
       {msg && <p className="text-sm text-[#555] mt-2">{msg}</p>}
     </div>
   )

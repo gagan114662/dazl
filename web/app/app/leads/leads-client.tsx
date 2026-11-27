@@ -1672,7 +1672,7 @@ export default function LeadsClient() {
                 <div className="text-xs mt-1 space-y-0.5">
                   <div className="text-gray-500 uppercase tracking-wide text-[10px]">Right people</div>
                   <div className="text-gray-500 text-[10px]" data-people-section="verified">Verified current</div>
-                  {verified.length > 0 ? verified.map(row) : <div className="text-gray-500">None verified as current: no company-website reading in the last 180 days or provider record dated in the last 90 days names them.</div>}
+                  {verified.length > 0 ? verified.map(row) : <div className="text-gray-500">No recent source confirms who works at this company. dazl checks company websites read in the past 180 days and other records dated in the past 90 days.</div>}
                   <div className="text-gray-500 text-[10px]" data-people-section="search-only">Search result only</div>
                   {searchOnly.length > 0 ? searchOnly.map(row) : <div className="text-gray-500">None.</div>}
                   <div className="text-gray-500">{icp && icp.icp.who.length > 0 ? 'Ordered by title match to your profile - a heuristic. A match is not a verified decision maker or current employee; verify the person before reaching out.' : 'People found for this company - verify the person before reaching out.'}</div>
@@ -1809,7 +1809,7 @@ export default function LeadsClient() {
         <div key={part} data-testid={`${part}-list`}>
           {part === 'review' ? <>
           <h2 className="text-sm font-semibold mt-8 mb-2">Needs your review</h2>
-          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source and check them yourself - if a lead checks out, confirm it and it moves into your list as confirmed by you, never as source-checked.</p>
+          <p className="text-gray-500 text-xs mb-3">dazl could not confirm these leads, so they will not be emailed. Open the source to check each lead. If you confirm a lead, your list will show that you checked it yourself.</p>
           </> : <>
           <h2 className="text-sm font-semibold mt-8 mb-2" data-testid="research-heading">Research only</h2>
           <p className="text-gray-500 text-xs mb-3" data-testid="research-intro">dazl could not verify a current, dated event of their own for these leads (no usable date, older than your time window, someone else&apos;s customer, a different place or a closed opening), so they will not be emailed, and checking their sources does not make them ready. Where dazl already searched other sources automatically, each row says so. To change the result, search again with a different signal or source.</p>
@@ -1824,7 +1824,7 @@ export default function LeadsClient() {
                     hold puts the company itself in doubt (lib/people/searchable-holds.ts), the lead was rejected or the row has no company: nobody is named for a company that may be the wrong one. */}
                 {!!l.company && !l.quarantined_at && peopleSearchable(l.review_reason) && <PersonWithProvenance signalSource={l.source_url} nameOnly={onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')} p={leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))} />}
                 <div className="text-gray-400">{`Reported event: ${l.signal}`}</div>{hiringTimingLine(l.signal, l.signal_kind) && <div className="text-gray-400 text-xs" data-testid="hiring-not-buying">{hiringTimingLine(l.signal, l.signal_kind)}</div>}
-                <span className="text-[#333] text-xs mr-3">{reviewTimingCopy(unconfirmedIds.has(l.id) ? 'Event timing and current need are unconfirmed.' : (reviewLabel(l.review_reason, l.source_kind) ?? 'Not verified'), l.timing_note)}</span>
+                <span className="text-[#333] text-xs mr-3">{reviewTimingCopy(unconfirmedIds.has(l.id) ? 'dazl has not confirmed when the signal happened or whether it still applies.' : (reviewLabel(l.review_reason, l.source_kind) ?? 'Not verified'), l.timing_note)}</span>
                 {(() => { const r = recoveryNote(l); return r && <p className="text-xs text-[#333] my-1" data-testid="review-recovery">{r.text}</p> })()}
                 <DiscoveredVia l={l} />
                 {/* #1036: the buyer's work email does not wait for the review (lib/people/work-email-review-lane.ts): same targets, same lookup. */}
