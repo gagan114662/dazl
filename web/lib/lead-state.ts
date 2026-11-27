@@ -83,14 +83,16 @@ export function reviewIsActionable(l: { review_reason?: unknown; window_held?: u
   return typeof r === 'string' && REVIEWABLE.has(r) && !l.window_held && !l.gate_held && !l.buyer_unreachable
 }
 
-export function heldState(l: PreviewLead & { review_reason?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
+export function heldState(l: PreviewLead & { review_reason?: string | null; human_confirmed_from?: string | null }): { state: HeldState; cause: ResearchCause | null } | null {
   // A discovery lead has ONE state (lib/discover/card.ts discoverState); the rules below are the older engine's and are not read for it.
   // The cause only picks the words shown beside a held lead; it decides nothing.
   if (isDiscoverLead(l as { source_kind?: string | null })) {
     const s = discoverState(l as never)
     if (discoverReady(s)) return null
     if (s === 'rejected' || s === 'review') return { state: s, cause: null }
-    return { state: 'research', cause: s === 'no_contact' ? 'contact' : !l.event_date ? 'undated' : l.gate_held ? 'unsupported' : 'unfit' }
+    if (s === 'no_contact') return { state: 'research', cause: 'contact' }
+    const confirmedHold = uncheckableCause(l.human_confirmed_from)
+    return { state: 'research', cause: confirmedHold ?? (!l.event_date ? 'undated' : l.gate_held ? 'unsupported' : 'unfit') }
   }
   const why = heldReason(l)
   if (!why) return null
