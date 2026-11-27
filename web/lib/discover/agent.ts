@@ -5,6 +5,8 @@
 // A record is a claim with its proof attached (evidence_url, signal_date). lib/discover/check.ts then reads the proof page
 // itself and labels the record; it never hides one.
 import Anthropic from '@anthropic-ai/sdk'
+import type { SearchMarket } from '../scan/search-market.ts'
+import { profileMarketLines } from './profile-market.ts'
 import { intentSearchPlan } from './intent-search-plan.ts'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
@@ -15,19 +17,19 @@ const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
 const MAX_FETCHES = Number(process.env.DAZL_DISCOVER_FETCHES || 12)
 const MAX_CONTINUATIONS = 4
 
-export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean }
+export interface DiscoverInput { query: string; offer?: string | null; today?: Date; maxLeads?: number; maxSearches?: number; maxFetches?: number; exclude?: string[]; profile?: DiscoverProfile | null; profileCarried?: boolean; market?: SearchMarket }
 // The customer's saved buyer profile for this play, in their own words. One they reviewed for THIS search narrows the request; the
 // request's own words win where they differ. One carried over unreviewed from an earlier search (profileCarried, #1579) is background
 // only: a new typed request for other buyers ran beside "Toronto agencies hiring an SDR" on production and found nothing, twice.
-export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; exclude?: string[]; carry_exclude?: string[] }
+export interface DiscoverProfile { summary?: string; who?: string[]; industries?: string[]; sizes?: string[]; where?: string[]; country?: string; language?: string; exclude?: string[]; carry_exclude?: string[] }
 // Whether a job's profile was carried into the search unreviewed (scan_jobs.icp_inferred: 0 = the person reviewed it for this search).
 // A saved play's repeat run keeps its own profile as the play's.
 export const discoverProfileCarried = (icpInferred: number | null | undefined, watchId: string | null | undefined): boolean => !watchId && icpInferred !== 0 && icpInferred !== 4
 export const CARRIED_PROFILE_HEAD = "Background only, NOT a filter: the seller's usual buyers, saved from an earlier search. Use it only for what the request leaves unsaid, and ignore every part of it that differs from the request:"
-export function profileLines(p: DiscoverProfile | null | undefined, carried = false): string[] {
+export function profileLines(p: DiscoverProfile | null | undefined, carried = false, market?: SearchMarket): string[] {
   if (!p) return []
   const list = (label: string, v: unknown) => { const xs = Array.isArray(v) ? v.map(x => str(x, 120)).filter(Boolean).slice(0, 8) : []; return xs.length ? `${label}: ${xs.join('; ')}` : '' }
-  const lines = [p.summary ? `Who they sell to: ${str(p.summary, 400)}` : '', list('Buyer roles', p.who), list('Industries', p.industries), list('Company sizes', p.sizes), list(carried ? 'Usual locations (apply only if the request names no place)' : 'Locations (only companies in these places, unless the request names another place)', p.where), list('Leave out', p.exclude)].filter(Boolean)
+  const lines = [p.summary ? `Who they sell to: ${str(p.summary, 400)}` : '', list('Buyer roles', p.who), list('Industries', p.industries), list('Company sizes', p.sizes), list(carried ? 'Usual locations (apply only if the request names no place)' : 'Locations (only companies in these places, unless the request names another place)', p.where), ...(market ? [] : profileMarketLines(p)), list('Leave out', p.exclude)].filter(Boolean)
   return lines.length ? [carried ? CARRIED_PROFILE_HEAD : "The seller's saved buyer profile:", ...lines] : []
 }
 export interface DiscoveredLead {
@@ -140,10 +142,14 @@ export function usd(u: Omit<DiscoverUsage, 'usd'>): number {
 
 // What the engine is asked, as one message. With a carried profile the request is named as the whole search before the background.
 export function userMessage(input: DiscoverInput, today: string, max: number): string {
-  const profile = profileLines(input.profile, input.profileCarried === true)
+  const profile = profileLines(input.profile, input.profileCarried === true, input.market)
+  const marketHint = [
+    input.market?.country ? `Search market country ${input.market.country}. The request's specific places take precedence.` : '',
+    input.market?.language ? `Prefer sources in language ${input.market.language} when relevant to the request.` : '',
+  ].filter(Boolean).join(' ')
   return [`Today is ${today}.`, input.offer ? `The seller sells: ${str(input.offer, 600)}` : '', `Find: ${str(input.query, 1000)}`,
     input.profileCarried === true && profile.length ? 'The request above is the whole search: it decides who to look for, where, and which signal.' : '',
-    ...profile,
+    ...profile, marketHint,
     input.profile?.carry_exclude?.length ? `Mandatory exclusions (apply even when the profile above is background): ${input.profile.carry_exclude.map(c => str(c, 200)).filter(Boolean).join('; ')}` : '',
     // a play that runs again: the companies it already found are not leads this time
     input.exclude?.length ? `Already found, do not return these companies again: ${input.exclude.slice(0, 80).map(c => str(c, 80)).filter(Boolean).join('; ')}` : '',
