@@ -65,7 +65,7 @@ export function migrateCommenterImport(db: Database.Database): void {
 const PROFILE_RE = /^(?:https?:\/\/)?(?:[a-z]{2,3}\.)?linkedin\.com\/in\/([a-z0-9][a-z0-9-]{0,98}[a-z0-9])\/?(?:[?#].*)?$/i
 
 export function normalizeProfileUrl(raw: string): { url: string; slug: string } | { reason: string } {
-  let s = raw.trim()
+  const s = raw.trim()
   if (!s) return { reason: 'blank' }
   if (/linkedin\.com\/(posts|feed|company|school|groups|jobs|pulse|article)/i.test(s)) {
     return { reason: 'only profile URLs (linkedin.com/in/...) are accepted - posts and pages are never fetched' }
