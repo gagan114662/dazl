@@ -96,7 +96,7 @@ export default function SmtpForm() {
         <p>Connected as {mailbox.username}</p>
         <button type="button" disabled={saving} onClick={disconnect} className="border px-3 py-2">Disconnect mailbox</button>
       </div>}
-      <form onSubmit={submit} className="mt-3 flex max-w-sm flex-col gap-3 text-sm">
+      <form method="post" onSubmit={submit} className="mt-3 flex max-w-sm flex-col gap-3 text-sm">
         <label className="flex flex-col gap-1">SMTP host
           <input name="host" required maxLength={253} className="border p-2" />
         </label>
