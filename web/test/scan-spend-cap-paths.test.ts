@@ -72,6 +72,7 @@ const FREE: Record<string, string> = {
   'https://api.lever.co': 'reads public job postings to confirm posting dates: free and no API key',
   'https://api.eu.lever.co': 'reads EU-hosted public job postings to confirm posting dates: free and no API key',
   'https://apply.workable.com/api/v1/accounts/': 'reads public job postings to confirm posting dates: free and no API key',
+  'https://apply.workable.com/api/v1/widget/accounts/': 'reads the public account widget to confirm posting dates: free and no API key',
   'https://api.lever.co/v0/postings/': 'public job board API: free',
   'https://api.eu.lever.co/v0/postings/': 'public job board API (EU-hosted Lever boards): free',
   'https://boards-api.greenhouse.io/v1/boards/': 'public job board API: free',
