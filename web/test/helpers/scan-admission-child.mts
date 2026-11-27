@@ -18,7 +18,7 @@ atFence(db, () => {
   while (!existsSync(GO_FILE)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
 })
 setScanDb(db); setUser({ id: TENANT, business_name: 'Acme' })
-const body = JSON.stringify({ query: 'Independent dental practices hiring a receptionist in New York in the past 90 days' })
+const body = JSON.stringify({ query: 'Independent dental practices hiring a receptionist in New York in the past 90 days', offer: 'Independent compliance consulting' })
 const request = new NextRequest('http://localhost/api/scan', { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.9.0.${process.pid % 250}` }, body })
 const t0 = Date.now()
 const res = await POST(request)

@@ -193,7 +193,7 @@ test('export route: a discovery lead exports the person and the published addres
   ins.run(ids.full, job, 'FullCo', 's', 'https://fullco.example/news', 65, 65, 3, 'discover')
   ins.run(ids.bare, job, 'BareCo', 's', 'https://bareco.example/news', 65, 65, 3, 'discover')
   ins.run(ids.old, job, 'OldEngineCo', 's', 'https://old.example/news', 65, 65, 3, null)
-  const add = (lead: string, kind: string, value: string, source_url: string, connector = 'discover') => addEnrichment(db, 'A', lead, { connector, kind, value, label: 'x', confidence: null, source_url, source_date: '2026-11-22', retrieved_at: 1 })
+  const add = (lead: string, kind: string, value: string, source_url: string, connector = 'discover') => addEnrichment(db, 'A', lead, { connector, kind, value, label: kind === 'email' ? 'email verified on source page' : 'x', confidence: null, source_url, source_date: '2026-11-22', retrieved_at: 1 })
   add(ids.full, 'person', 'Dana Reyes, Head of Sales', 'https://fullco.example/team')
   add(ids.full, 'email', 'dana@fullco.example', 'https://fullco.example/contact')
   add(ids.full, 'linkedin', 'https://www.linkedin.com/in/dana-reyes', 'https://fullco.example/team')

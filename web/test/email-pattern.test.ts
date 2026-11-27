@@ -79,7 +79,7 @@ test('flag off (default, prod): no pattern and no guesses, but addresses the peo
 })
 
 // ---- part 2: US only (docs/DECISIONS.md 2026-10-26). Unknown country = not US. ----
-test('US-only: a US homepage address qualifies; Canada, a foreign scan geography or no address writes nothing', async () => {
+test('US-only eligibility remains for guessed addresses while crawl stores published addresses worldwide', async () => {
   assert.deepEqual(usEvidence('Visit us at 9 Elm St, Brooklyn, NY 11201'), { us: true, basis: 'homepage address: Brooklyn, NY 11201' })
   assert.equal(usEvidence('100 King St W, Toronto, ON M5X 1A9').us, false)
   assert.equal(usEvidence('Toronto, ON M5X 1A9 and Buffalo, NY 14202').us, false) // a Canadian address present: refuse, do not guess
@@ -89,7 +89,11 @@ test('US-only: a US homepage address qualifies; Canada, a foreign scan geography
   assert.equal(usEvidence('Springfield, ZZ 12345').us, false) // not a US state code
   for (const addr of ['100 King St W, Toronto, ON M5X 1A9', 'serving customers everywhere']) {
     const db = await crawlFixture({ EMAIL_GUESS_ENABLED: '1' }, addr)
-    assert.equal((db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'email_candidates'").get() as { n: number }).n, 0, addr)
+    assert.deepEqual(db.prepare("SELECT address, tier FROM email_candidates ORDER BY address").all(), [
+      { address: 'ben.ortiz@acmelogistics.com', tier: 'published' },
+      { address: 'dana.lee@acmelogistics.com', tier: 'published' },
+    ], addr)
+    assert.equal(db.prepare('SELECT COUNT(*) FROM email_patterns').pluck().get(), 0, addr)
   }
 })
 
@@ -260,11 +264,12 @@ test('only high-confidence guesses are eligible for the mailbox check; published
   assert.ok((db.prepare("SELECT count(*) n FROM email_candidates WHERE confidence IN ('medium','low')").get() as { n: number }).n >= 2)
 })
 
-test('free-first still US-only and fail-closed: a non-US site records neither published nor guessed addresses', () => {
+test('free-first stores the published address and records no guesses on a non-US site', () => {
   const db = new Database(':memory:')
   const r = recordEmailGuesses(db, 'A', 'L1', 'acme.ca', ['dana.lee', 'ben.ortiz'], ['Dana Lee, CEO', 'Ben Ortiz, CFO'], { env: { EMAIL_GUESS_ENABLED: '1' }, homeText: '100 King St W, Toronto, ON M5X 1A9', seen: [{ address: 'dana.lee@acme.ca', url: 'https://acme.ca/team' }] })
-  assert.equal(r, null)
-  assert.equal((db.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'email_candidates'").get() as { n: number }).n, 0)
+  assert.deepEqual(r, { format: null, confidence: null, candidates: 0, published: 1, ambiguous: 0 })
+  assert.deepEqual(db.prepare('SELECT address, country_basis, tier FROM email_candidates').all(),
+    [{ address: 'dana.lee@acme.ca', country_basis: 'homepage states a Canadian address', tier: 'published' }])
 })
 
 // ---- ambiguity (Instinct review 2026-11-06): a printed address two named people could own is nobody's ----

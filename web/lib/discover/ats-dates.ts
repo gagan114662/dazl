@@ -10,12 +10,15 @@ export interface AtsPosting {
   apiUrl: string
   // the field(s) that carry the published day, in order of preference, read from the API body
   read: (body: unknown) => unknown
+  // the posting's own title, so a page that embeds the record can be shown to name that posting
+  readTitle: (body: unknown) => unknown
 }
 
 export interface AtsDate {
   date: string
   sourceUrl: string
   platform: AtsPlatform
+  title?: string | null   // the posting's own title, when the reader had to bind the record to the page that embeds it
 }
 
 // A posting older than this is background, not a reason to write now (same horizon as the rest of discovery).
@@ -38,6 +41,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'greenhouse',
       apiUrl: `https://boards-api.greenhouse.io/v1/boards/${enc(seg[0])}/jobs/${seg[2]}`,
       read: j => obj(j).first_published, // an edit date (updated_at) is not a posting date
+      readTitle: j => obj(j).title,
     }
 
   if (/^jobs\.(?:eu\.)?lever\.co$/.test(host) && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
@@ -45,6 +49,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'lever',
       apiUrl: `${host === 'jobs.eu.lever.co' ? 'https://api.eu.lever.co' : 'https://api.lever.co'}/v0/postings/${enc(seg[0])}/${seg[1]}`,
       read: j => obj(j).createdAt,
+      readTitle: j => obj(j).text,
     }
 
   const wseg = withoutLocale(seg)
@@ -53,6 +58,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'workable',
       apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(wseg[0])}/jobs/${enc(wseg[2])}`,
       read: j => { const r = obj(j); return r.published_on ?? r.published ?? r.created_at },
+      readTitle: j => obj(j).title,
     }
   const wa = /^([a-z0-9-]+)\.workable\.com$/.exec(host)
   if (wa && seg.length >= 2 && seg[0] === 'j')
@@ -60,6 +66,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'workable',
       apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(wa[1])}/jobs/${enc(seg[1])}`,
       read: j => { const r = obj(j); return r.published_on ?? r.published ?? r.created_at },
+      readTitle: j => obj(j).title,
     }
 
   if (host === 'jobs.ashbyhq.com' && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
@@ -72,10 +79,91 @@ export function atsPosting(url: string | URL): AtsPosting | null {
         const hit = Array.isArray(jobs) ? jobs.map(obj).find(x => x.id === id || String(x.jobUrl ?? '').includes(id)) : null
         return obj(hit).publishedAt
       },
+      readTitle: j => {
+        const jobs = obj(j).jobs
+        const id = seg[1]
+        const hit = Array.isArray(jobs) ? jobs.map(obj).find(x => x.id === id || String(x.jobUrl ?? '').includes(id)) : null
+        return obj(hit).title
+      },
     }
 
   return null
 }
+
+// A company careers page often serves its own page and embeds the board inside it: a Greenhouse embed iframe, a Lever, Ashby or
+// Workable posting frame. The page then names its own posting record in its markup, and that record is the page's own data. Only one
+// posting per page counts - two different postings on one careers page settle nothing - and the day still passes dayOf's guards.
+// Only an EMBED counts (an iframe, embed or object), never a plain link: a page that merely links a posting is writing about something
+// else, and its neighbour's day is not this page's day.
+export function embeddedAtsPosting(html: string, pageUrl: string | URL | null = null): AtsPosting | null {
+  const base = (() => { try { return pageUrl ? new URL(String(pageUrl)) : null } catch { return null } })()
+  const found = new Map<string, AtsPosting>()
+  for (const m of html.matchAll(/<(?:iframe|embed|object)\b[^>]*?\b(?:src|data)=["']([^"'\s]+)["'][^>]*>/gi)) {
+    let abs: string
+    // Real markup escapes the query separator: src="...?for=acme&amp;token=4012345" names the same posting.
+    const src = m[1].replace(/&amp;/gi, '&').replace(/&#0*38;|&#x0*26;/gi, '&')
+    try { abs = base ? new URL(src, base).toString() : new URL(src).toString() } catch { continue }
+    const rec = atsPosting(abs) ?? greenhouseEmbedPosting(abs)
+    if (rec) found.set(rec.apiUrl, rec)
+  }
+  return found.size === 1 ? [...found.values()][0] : null
+}
+// Greenhouse's embed iframe names the board and the posting as query parameters: boards.greenhouse.io/embed/job_app?for=<board>&token=<job>.
+function greenhouseEmbedPosting(url: string): AtsPosting | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+  if (u.hostname.toLowerCase() !== 'boards.greenhouse.io' || u.pathname.replace(/\/+$/, '') !== '/embed/job_app') return null
+  const board = u.searchParams.get('for'), id = u.searchParams.get('token')
+  if (!board || !id || !/^\d+$/.test(id)) return null
+  return {
+    platform: 'greenhouse',
+    apiUrl: `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board)}/jobs/${id}`,
+    read: j => obj(j).first_published,
+    readTitle: j => obj(j).title,
+  }
+}
+// The day this careers page's embedded board record names for the posting the page shows.
+export async function careersAtsDate(
+  html: string,
+  pageUrl: string | URL | null,
+  fetchImpl: typeof fetch,
+  now: Date = new Date(),
+  maxAgeDays = ATS_DATE_MAX_AGE_DAYS,
+  timeoutMs = 8_000,
+  claim = '',
+): Promise<AtsDate | null> {
+  const rec = embeddedAtsPosting(html, pageUrl)
+  if (!rec) return null
+  try {
+    const r = await fetchImpl(rec.apiUrl, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 8_000)),
+      headers: { accept: 'application/json' },
+    })
+    if (!r.ok) return null
+    const body = await r.json()
+    const date = dayOf(rec.read(body), now, maxAgeDays)
+    const title = typeof rec.readTitle(body) === 'string' ? (rec.readTitle(body) as string).trim().slice(0, 200) || null : null
+    // The record is this page's posting only when the page prints that posting's own title AND the claim is that same posting: one
+    // iframe on a page says nothing about which vacancy (or which event) the page is about, and a sidebar vacancy on a page announcing
+    // a different role is a different posting, not this claim's day.
+    const bound = !!title && pageNamesTitle(html, title) && (!claim || namesTitle(claim, title))
+    return date && title && bound ? { date, sourceUrl: rec.apiUrl, platform: rec.platform, title } : null
+  } catch { return null }
+}
+
+// The page's visible words, folded the way the rest of discovery compares text (punctuation and accents are not words).
+const pageWords = (html: string): string =>
+  html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    .toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+const words = (text: string): string[] => pageWords(text).split(' ').filter(Boolean)
+// A title is named when every word of it is present ("Sales Development Representative" and "... Representatives" are one posting).
+const plural = (w: string): string => w.replace(/s$/, '').replace(/e$/, '')
+const namesTitle = (text: string, title: string): boolean => {
+  const t = words(title), h = words(text)
+  return t.length > 0 && t.every(w => h.some(x => plural(x) === plural(w) || x === w))
+}
+const pageNamesTitle = (html: string, title: string): boolean => namesTitle(html, title)
 
 export interface AtsList {
   platform: AtsPlatform

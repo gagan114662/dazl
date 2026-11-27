@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-test('#1910 Home and the scan agree on Ready through a personal LinkedIn profile', () => {
+test('#1910 Home and the scan require a named work email for Ready', () => {
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT
   const run = spawnSync(process.execPath, [

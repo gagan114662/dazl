@@ -61,6 +61,22 @@ test('the review is bound to lead, domain, basis, pages, address and every recor
   assert.equal(domainReviewFor(lead, [...rows, { ...reviewed(), connector: 'sitecrawl' }]).state, 'required')
 })
 
+test('hidden crawled addresses are neither counted nor bound to website review', () => {
+  const visible = email('sales@acme.test')
+  const hidden = email('buyer@acme.test', '', 5)
+  const domain = dom('acme.test', 'name_probe', 'https://acme.test/')
+  const baseline = domainReviewFor(lead, [visible, domain])
+  assert.ok(baseline.binding)
+  const result = domainReviewFor(lead, [visible, hidden, domain])
+  assert.deepEqual(result.covered?.addresses, [{ email: visible.value, source_url: visible.source_url }])
+  assert.equal(result.multi, false)
+  assert.equal(result.binding, baseline.binding)
+  const hiddenRecipient = domainReviewFor(lead, [visible, { ...hidden, retrieved_at: 20 }, domain])
+  assert.deepEqual(hiddenRecipient.covered?.addresses, result.covered?.addresses)
+  assert.equal(hiddenRecipient.binding, null)
+  assert.equal(hiddenRecipient.state, 'required')
+})
+
 test('setDomainReview: confirm, withdraw, tenant scope, no-op for cited-page and own-domain leads', () => {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const jobA = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })

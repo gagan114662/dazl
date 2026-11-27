@@ -46,7 +46,16 @@ export default function SequencesClient() {
     // never calls the staging-only fixture route just to ask whether it exists.
     setFixtureEligible(j.fixture_eligible === true)
   }
-  useEffect(()=>{void Promise.resolve().then(load).catch(e=>setNote(String(e.message)))},[])
+  useEffect(() => {
+    const refresh = () => void Promise.resolve().then(load).catch(e => setNote(String(e.message)))
+    refresh()
+    window.addEventListener('sender-updated', refresh)
+    window.addEventListener('reply-reading-updated', refresh)
+    return () => {
+      window.removeEventListener('sender-updated', refresh)
+      window.removeEventListener('reply-reading-updated', refresh)
+    }
+  }, [])
   async function action(body: Record<string,unknown>, target = '/api/outreach/sequences') {
     setBusy(true);setNote('')
     try {

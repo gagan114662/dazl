@@ -3,6 +3,8 @@
 // Read-only: nothing is queued, counted or reserved.
 import { cleanText } from '../validate.ts'
 import { icpLoss, MAX_QUERY, normalizeIcp, type IcpLoss } from './icp.ts'
+import { requestTarget } from './request-target.ts'
+import { retainedReviewedTarget } from './request-target-history.ts'
 import { companyFirstDiscoveryEnabled } from '../company-first/product-discovery.ts'
 import { normalizeScanBudget } from './run-budget.ts'
 import { estimateRun, type RunEstimate } from './price-estimate.ts'
@@ -67,6 +69,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
   if (isManualNativeTargetRequest(b.mode, b.budget) && (!icp || 'reviewed' in b || 'research_decisions' in b)) {
     return { ok: false, status: 400, error: 'invalid_target_review', message: 'Confirm the target for this search separately from saved research decisions. Nothing started.' }
   }
+  const retained = b.reviewed !== true && await retainedReviewedTarget(ctx.db, ctx.tenantId, query, icp)
   const pool = await pools(ctx.db, ctx.tenantId)
   // The model the run will really call, so the rows, the total, the verdict and the confirmation price THAT model (#851): an
   // own key's configured model (keyedModel), or for a trial run the operator's Anthropic key (lib/scan/trial.ts operatorKey is
@@ -95,7 +98,7 @@ export async function estimateForBody(body: unknown, ctx: { db: Db; tenantId: st
     discoverLane,
     budget, qaClaudeOnly, qaNativeWebSearch, companyFirst, payer: ctx.hasOwnKey ? 'you' : 'trial', enrichmentVendors: ctx.enrichmentVendors,
     model: ctx.hasOwnKey ? own ?? undefined : anthropicModel, modelUnknown: ctx.hasOwnKey && own === null, limited, pricedAlternative: anthropicModel, priceModel: scanModelPrice,
-    hiringRequest: salesHiringRequired(query, icp ? JSON.stringify(icp) : null),
+    hiringRequest: salesHiringRequired(query, JSON.stringify(requestTarget(query, icp, b.reviewed === true || retained || isManualNativeTargetRequest(b.mode, b.budget)))),
     // #1037: the people step the run itself will take (runner.ts: off when people search cannot run, else the first-play cap).
     firstPlayPeopleSearches: peopleSearchEnabled() ? firstPlayPeopleCap() : 0,
     trialTinyfishSearchUsd: ctx.hasOwnKey ? null : (trialCaps() ? trialTinyfishPrices()?.searchUsd : null) ?? null,

@@ -710,3 +710,34 @@ bothEngines('intake: the artifact\'s own author binds the post to the lead; an a
   assert.notEqual(anon.verdict, 'verified_buying_need')
   assert.equal(anon.author_name, null, 'no author on the artifact: none on the record (never inferred)')
 })
+
+bothEngines('Leads buying-need checks batch lead and gate reads and preserve scope', async ({ db }) => {
+  const { currentBuyingNeedsForLeads } = await import('../lib/scan/need-evidence.ts')
+  await tenant(db, A, '')
+  await tenant(db, B, '')
+  const job = await play(db, A, 'businesses hiring sales representatives', null, null)
+  const foreign = await play(db, B, 'businesses hiring sales representatives', null, null)
+  const ids = ['live-one', 'live-two', 'held', 'withdrawn']
+  for (const id of ids) await lead(db, job, id, { company: 'Fixture ' + id })
+  await lead(db, foreign, 'foreign', { company: 'Foreign fixture' })
+  await recordNeedEvidence(db, A, job, { asOf: AS_OF })
+  await recordNeedEvidence(db, B, foreign, { asOf: AS_OF })
+  await db.run("UPDATE leads SET review_reason = 'quote_unconfirmed', confidence = NULL WHERE id = ?", ['withdrawn'])
+  await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'scan:gate', 'gate_failed', 'fixture', 'https://example.test/', '2026-11-02', 1)", ['held-marker', 'held', A])
+  const requested = [...ids, 'foreign']
+  const expected = await Promise.all(requested.map(async id => [id, await currentBuyingNeed(db, A, job, id, { asOf: AS_OF })]))
+  const lookups: string[] = []
+  const counted: Db = {
+    ...db,
+    get: (sql, params) => { lookups.push(sql); return db.get(sql, params) },
+    all: (sql, params) => { lookups.push(sql); return db.all(sql, params) },
+  }
+  const actual = await currentBuyingNeedsForLeads(counted, A, job, requested, { asOf: AS_OF })
+  assert.deepEqual([...actual], expected)
+  assert.equal(lookups.filter(sql => /FROM leads\b/i.test(sql)).length, 1)
+  assert.equal(actual.get('live-one')?.status, 'trigger_only')
+  assert.equal(actual.get('live-two')?.status, 'trigger_only')
+  assert.deepEqual(actual.get('held'), { status: 'unproven', reason: 'buying_need_unproven:lead_held' })
+  assert.deepEqual(actual.get('withdrawn'), { status: 'unproven', reason: 'buying_need_unproven:lead_withdrawn' })
+  assert.deepEqual(actual.get('foreign'), { status: 'unproven', reason: 'buying_need_unproven:no_record' })
+})

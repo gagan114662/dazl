@@ -2,6 +2,7 @@
 // the queries sent, every search-result URL with its date, whether it was selected for fetching and whether TinyFish returned
 // text, the verifier's own fetch outcome per cited URL, every extracted candidate with its verification fate and reason, the
 // funnel counts, rejection reasons and model usage. Absent fields stay null ("not recorded"), never a fabricated zero.
+import type { ParseDropCounts } from '../discover/parse-drop-counts.ts'
 import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
 import { canonicalUrl } from './evidence-origin.ts'
@@ -14,6 +15,7 @@ export interface UrlRecord { url: string; hit_date: string | null; walled: boole
 export type JudgeReplyClass = 'supports' | 'contradicts' | 'explicit_unclear' | 'prefixed_unclear' | 'blank' | 'unrecognized' | 'unavailable'
 export type JudgeReplyCounts = Partial<Record<JudgeReplyClass, number>>
 export interface ReportParts {
+  market_notice?: string
   // Refs #1122: company-first funding-pass candidates dropped for their source (internal only; never shown in the product)
   funding_source_rejects?: Partial<Record<import('../company-first/funding-source.ts').FundingSourceReason, number>>
   // #1082: units the platform's fair share of the operator search budget left out (the run's results are thinner)
@@ -46,7 +48,7 @@ export interface ReportParts {
   source_skips?: { source: string; status: string; reason: string }[]
   // The Claude discovery lane's own account of its run (#1579, production job 1569fa9c: 0 leads and nothing saved to say why):
   // how it stopped, the budget it ran with, what it returned and the one sentence it gives when it found fewer leads than asked.
-  discover?: { stop: string; note: string | null; budget: 'full' | 'small' | 'smallest'; searches: number; requests: number; passes: number; returned: number; shown: number; usd: number | null } | null
+  discover?: { stop: string; note: string | null; budget: 'full' | 'small' | 'smallest'; searches: number; requests: number; passes: number; returned: number; shown: number; usd: number | null; parse_counts?: ParseDropCounts } | null
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).
@@ -96,6 +98,7 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
     funnel: { candidates: p.extracted_candidates ?? (measured ? fates.length : null), verified: measured ? count('verified') : null, needs_review: measured ? count('review') : null, dropped: measured ? count('dropped') : null, review_reasons: reasons('review'), drop_reasons: reasons('dropped'), verifier_drop_counts: p.dropCounts ?? null },
     model: p.model ?? null,
     ...(p.judge_replies ? { judge_replies: p.judge_replies } : {}),
+    ...(p.market_notice ? { market_notice: p.market_notice } : {}),
     news: p.news ?? null, stop: p.stop ?? null,
     ...(p.native_web_search ? { native_web_search: p.native_web_search } : {}),
     source_skips: (p.source_skips ?? []).slice(0, 20).map(x => ({ source: cut(x.source, 80), status: cut(x.status, 120), reason: cut(x.reason, 300) })),
@@ -107,7 +110,11 @@ export function buildRunReport(p: ReportParts, verified: FinalRow[] | null, revi
 }
 
 export function writeRunReport(db: Database.Database, jobId: string, attempt: number, report: unknown, env: Record<string, string | undefined> = process.env): boolean {
-  if (env.DAZL_RUN_REPORT === '0') return false
+  if (env.DAZL_RUN_REPORT === '0') {
+    if (!report || typeof report !== 'object' || !('market_notice' in report) || typeof report.market_notice !== 'string') return false
+    // The result disclosure is needed even when optional diagnostics are off.
+    report = { attempt, market_notice: report.market_notice }
+  }
   try {
     migrateRunReport(db)
     try { db.prepare('DELETE FROM scan_run_report WHERE created_at < ?').run(Math.floor(Date.now() / 1000) - RUN_REPORT_RETENTION_DAYS * 86_400) } catch { /* retention is best effort */ }

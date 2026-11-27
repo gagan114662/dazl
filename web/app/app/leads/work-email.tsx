@@ -1,5 +1,7 @@
 'use client'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { EmailSourceLink } from './contact-status'
+import { emailSourceUrl } from '@/lib/outreach/published-email'
 import { clicksFor, recordClick, shownWorkEmails, workEmailCopy, type PanelClicks } from '@/lib/people/work-email-eligible'
 
 // #1036 / #1250: "Find work email" for the buyer-role people on one lead gives the address the company prints for that person on its
@@ -46,7 +48,8 @@ function WorkEmailFor({ leadId, targets, initial }: { leadId: string; targets: W
       <div className="text-gray-500 uppercase tracking-wide text-[10px]">Work email for the buyer</div>
       {targets.map(t => {
         const l = lookups[t.key]
-        const v = l ? workEmailCopy(l) : null
+        const source = emailSourceUrl(l?.source_url)
+        const v = l ? workEmailCopy({ ...l, source_url: source }) : null
         return (
           <div key={t.key} className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="work-email-row" data-status={l?.status ?? 'none'}>
             <span className="text-[#111] font-medium">{t.name}</span>{t.title ? <span className="text-gray-500">{t.title}</span> : null}
@@ -57,7 +60,7 @@ function WorkEmailFor({ leadId, targets, initial }: { leadId: string; targets: W
               </span>
             )}
             {v?.showAddress && l?.address && <button type="button" className="underline text-[#111]" onClick={() => void copy(l.address!)}>{copied === l.address ? 'Copied' : 'Copy'}</button>}
-            {v?.showAddress && l?.source_url && <a className="underline text-[#111]" href={l.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>}
+            {v?.showAddress && source && <EmailSourceLink url={source} />}
             {!l && (
               <button type="button" disabled={!!busy[t.key]} onClick={() => void find(t.key)} data-testid="work-email-find"
                 className="border border-[#111] px-2 py-0.5 text-[#111] bg-white hover:bg-[#111] hover:text-white disabled:opacity-50">

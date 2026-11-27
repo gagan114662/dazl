@@ -55,6 +55,7 @@ jobs:
         run: |
           node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs
           node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs --same-brand
+          node --experimental-strip-types test/ui/signed-offer-preflight-1436.ui.mjs --seller-description
       - name: Signed clipped-offer Home card (real browser and routes)
         run: node --experimental-strip-types test/ui/signed-home-clipped-offer-1436.ui.mjs
       - name: Signed workspace auth shell and stream completion

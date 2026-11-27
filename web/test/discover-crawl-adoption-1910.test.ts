@@ -52,7 +52,14 @@ async function adopted(t: TestContext, rows: CrawlRow[]) {
   let savedLeadId: string | undefined
   assert.equal(await runJob(db, job, {
     master, discover: true, discoverImpl: async () => found, enrichImpl: null,
-    fetchImpl: async () => new Response('fixture has no external reads', { status: 403 }),
+    fetchImpl: async (input, init) => {
+      if (String(input) === 'https://api.anthropic.com/v1/messages' && init?.body &&
+          JSON.parse(String(init.body)).model === 'claude-haiku-5-5') {
+        return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+        usage: { input_tokens: 0, output_tokens: 0 } })
+      }
+      return new Response('fixture has no external reads', { status: 403 })
+    },
     crawlGet: async url => {
       if (url !== evidence) return { status: 404, body: '', finalUrl: url }
       // Seed at the crawler's persistence boundary, after its per-lead cleanup.
