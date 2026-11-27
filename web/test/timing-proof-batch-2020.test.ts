@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { addEnrichment } from '../lib/connectors/store.ts'
-import { sqliteDb, type Db } from '../lib/db/client.ts'
+import { sqliteDb, type Db, type Tx } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { createJob } from '../lib/scan/store.ts'
 import * as timing from '../lib/scan/timing-proof.ts'
@@ -47,16 +47,39 @@ test('timing proof batch matches scalar decisions with constant reads and job/te
   ]))
   assert.deepEqual([...expected(ids.slice(0, 3)).values()], [null, 'no_record', 'binding_changed'])
   const store = sqliteDb(db)
+  const evidenceError = new Error('timing evidence unavailable')
+  let failEvidence = false
   let reads = 0
+  let snapshots = 0
+  const count = (sql: string) => {
+    reads++
+    if (failEvidence && sql.includes('lead_enrichments')) throw evidenceError
+  }
   const counted: Db = {
     ...store,
-    all: (sql, params) => { reads++; return store.all(sql, params) },
-    get: (sql, params) => { reads++; return store.get(sql, params) },
+    all: (sql, params) => { count(sql); return store.all(sql, params) },
+    tx: (body, isolation) => {
+      assert.equal(isolation, 'serializable')
+      snapshots++
+      return store.tx(function* (tx) {
+        const countedTx: Tx = {
+          ...tx,
+          all: (sql, params) => { count(sql); return tx.all(sql, params) },
+        }
+        return yield* body(countedTx)
+      }, isolation)
+    },
+    get: (sql, params) => { count(sql); return store.get(sql, params) },
   }
+  failEvidence = true
+  await assert.rejects(timing.timingProofGapsDb(counted, job.user_id, job.id, ids, now), error => error === evidenceError)
+  failEvidence = false
   for (const n of [20, 40]) {
     reads = 0
+    snapshots = 0
     const requested = [...ids.slice(0, n), 'other-job', 'other-tenant', 'absent']
     assert.deepEqual(await timing.timingProofGapsDb(counted, job.user_id, job.id, requested, now), expected(requested))
+    assert.equal(snapshots, 1, 'both reads use one serializable snapshot')
     assert.equal(reads, 2, 'one lead read and one evidence read regardless of batch size')
   }
   reads = 0
