@@ -521,7 +521,7 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
     if (read?.text) {
       const candidate = { ...lead, evidence_url: alternate.url, evidence_quote: alternate.quote, signal_date: alternate.date }
       const checked = await settle(judge(candidate, read.text, 'reader', read.page_age, now), read.text, ask)
-      if (isShown(checked)) return checked
+      if (isShown(checked)) return checkEmailSource(checked, seen)
     }
   }
   // 3. nobody could read it: a search result of this run with the company in its title is a real page about that company

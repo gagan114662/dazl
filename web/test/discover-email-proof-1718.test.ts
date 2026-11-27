@@ -289,3 +289,19 @@ test('the second discovery pass checks only new companies and counts only their 
   assert.deepEqual(result.leads.map(l => [l.company, l.email]), [['Example', email], ['New Company', null]])
   assert.equal(result.emailDropped, 1)
 })
+
+test('alternate evidence confirms the signal without bypassing the cited email check', async () => {
+  const result = discoveryResult('')
+  const lead = result.leads[0]
+  const alternateUrl = 'https://example.com/news/opening'
+  const candidate = { ...lead, email_source_url: alternateUrl,
+    alternate_evidence: { url: alternateUrl, quote, date: null } }
+  for (const published of [false, true]) {
+    const seen = [{ url: alternateUrl, title: null, page_age: null,
+      text: published ? `${quote}. Contact: ${email}` : `${quote}. Contact: press@example.com` }]
+    const checked = await checkLead(candidate, seen, async () => new Response(null, { status: 403 }))
+    assert.equal(checked.evidence_url, alternateUrl)
+    assert.equal(checked.proof, 'confirmed')
+    assert.deepEqual([checked.email, checked.email_source_url], published ? [email, alternateUrl] : [null, null])
+  }
+})
