@@ -32,7 +32,7 @@ test('a verified date is acknowledged while the rest of the source proof awaits 
     reason: "dazl could not confirm this lead's proof page. Check the source under Needs your review first.",
   })
 
-  const unverified = { ...pageDateOnly, date_status: 'unverified' }
+  const unverified = { ...lead, date_status: 'unverified' }
   const refusal = discoverApprove(unverified)
   assert.equal(refusal.ok, false)
   if (!refusal.ok) assert.doesNotMatch(refusal.reason, /date is verified/)
