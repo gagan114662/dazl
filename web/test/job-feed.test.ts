@@ -194,8 +194,11 @@ test('a posting page that never answers is skipped within the page-phase limit',
 test('duplicates are refused by the database itself, not only by the application check', async () => {
   const db = mk()
   const r = await run(db, { get: okGet }); await r.crawl
-  assert.throws(() => db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES('x','A','j','acmeco','reading',1)").run(), /UNIQUE/)
-  db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES('y','B','j','acmeco','reading',1)").run()
+  const row = db.prepare("SELECT company_key FROM hiring_feed_crawl WHERE tenant_id = 'A'").get() as { company_key: string }
+  assert.equal(row.company_key, 'acmeco@acmeco.example')
+  const insert = db.prepare("INSERT INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at) VALUES(?,?,'j',?,'reading',1)")
+  assert.throws(() => insert.run('x', 'A', row.company_key), /UNIQUE/)
+  insert.run('y', 'B', row.company_key)
 })
 
 test('a stale worker finishing after a retry took over cannot overwrite the retry outcome', async () => {
@@ -217,4 +220,41 @@ test('the last check is findable for the page after a reload', async () => {
   assert.equal(latestHiringFeedJob(db, 'A'), null)
   const r = await run(db, { get: okGet }); await r.crawl
   assert.equal(latestHiringFeedJob(db, 'A'), r.job_id); assert.equal(latestHiringFeedJob(db, 'B'), null)
+})
+
+test('hiring feed keeps distinct employer sites when names differ only by legal suffix', async () => {
+  const db = new Database(':memory:')
+  try {
+    migrateScan(db); migrateOutreach(db); migrateConnectors(db)
+    const intake = async (name: string, slug: string, site: string) => {
+      const role = 'Sales Development Representative'
+      const posting = 'https://weworkremotely.com/remote-jobs/' + slug
+      const xml = item(name + ': ' + role, posting).replace('acmeco.example', site)
+      const result = await createHiringFeedIntake(db, 'A', 'sales-and-marketing', 'sales development', {
+        fetchFeed: async () => '<rss><channel>' + xml + '</channel></rss>',
+        fetchPage: async url => {
+          assert.equal(url, posting)
+          return { title: role + ' at ' + name, text: role + ' at ' + name, retrievedAt: 1800000000 }
+        },
+        get: async url => {
+          const target = new URL(url)
+          const body = target.pathname === '/robots.txt' ? 'User-agent: *\nAllow: /'
+            : target.hostname === 'weworkremotely.com' ? `<a href="https://${site}/">${name}</a>`
+            : `<p>${name}</p><a href="mailto:hello@${site}">Email</a>`
+          return { status: 200, body, finalUrl: url }
+        },
+        gapMs: 0, env: {}, now: 1800000000,
+      })
+      await result.crawl
+      return result.leads.map(lead => lead.company)
+    }
+    assert.deepEqual(await intake('Fixture Employer Inc', 'first-employer', 'first.example'), ['Fixture Employer Inc'])
+    assert.deepEqual(db.prepare("SELECT company_domain FROM leads WHERE company = 'Fixture Employer Inc'").get(),
+      { company_domain: 'first.example' })
+    db.prepare("UPDATE hiring_feed_crawl SET company_key = 'fixture employer'").run()
+    assert.deepEqual(await intake('Fixture Employer Corp', 'same-employer', 'www.first.example'), [])
+    assert.deepEqual(await intake('Fixture Employer LLC', 'other-employer', 'second.example'), ['Fixture Employer LLC'])
+  } finally {
+    db.close()
+  }
 })

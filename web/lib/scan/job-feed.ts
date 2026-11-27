@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { companyKey, hasPhrase, norm, pageHeadingNames } from './evidence.ts'
-import { crawlJob, rawGet, type Get } from '../connectors/sitecrawl.ts'
+import { crawlJob, ownSiteHost, rawGet, type Get } from '../connectors/sitecrawl.ts'
 import { guardedLookup } from './fetch-page.ts'
 import { migrateSourceReview } from './source-review.ts'
 
@@ -94,6 +94,25 @@ async function runCrawls(db: Database.Database, tenant: string, targets: CrawlTa
   }
 }
 
+// The feed states the employer site. It disambiguates matching names for intake only;
+// the existing page and contact checks still establish what can be shown about the lead.
+function feedCompanyKey(company: string, site: string | null): string {
+  const name = companyKey(company)
+  const host = site && ownSiteHost(site)
+  return host ? `${name}@${host}` : name
+}
+
+function savedCompanyKey(row: { company: string; company_domain: string | null; crawl_key: string | null }): string {
+  if (row.crawl_key?.includes('@')) return row.crawl_key
+  return feedCompanyKey(row.company, row.company_domain && `https://${row.company_domain}`)
+}
+
+function seenCompany(keys: Set<string>, key: string): boolean {
+  const name = key.split('@', 1)[0]
+  // With no site on either side, keep the conservative name-only rule.
+  return keys.has(key) || keys.has(name) || (key === name && [...keys].some(saved => saved.startsWith(`${name}@`)))
+}
+
 export async function createHiringFeedIntake(db: Database.Database, tenant: string, feed: string, rawWords: unknown, deps: FeedIntakeDeps = {}) {
   const none = (extra: Partial<{ feed_items: number; matched: number; skipped: { company: string; role: string; fetch_status: string }[]; note: string }>) => ({ crawl: Promise.resolve(), job_id: null as string | null, feed_items: 0, matched: 0, leads: [] as { lead_id: string; company: string; role: string; quote_match: boolean; fetch_status: string }[], skipped: [] as { company: string; role: string; fetch_status: string }[], note: '', ...extra })
   if (!Object.hasOwn(FEEDS, feed)) throw new JobFeedError('Pick one of the listed feeds.')
@@ -103,14 +122,23 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
   const items = parseFeedItems(xml)
   const matched = matchRoles(items, words)
   migrateHiringFeed(db)
-  const savedKeys = () => new Set((db.prepare("SELECT l.company FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ? AND l.source_kind = 'hiring_feed'").all(tenant) as { company: string }[]).map(r => companyKey(r.company)))
+  const savedKeys = () => new Set((db.prepare(`SELECT l.company, l.company_domain, c.company_key AS crawl_key
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+    LEFT JOIN hiring_feed_crawl c ON c.lead_id = l.id AND c.tenant_id = j.user_id
+    WHERE j.user_id = ? AND l.source_kind = 'hiring_feed'`).all(tenant) as Parameters<typeof savedCompanyKey>[0][]).map(savedCompanyKey))
   // Postings that state the company's own site come first: identity only, nothing about size or fit.
   const seen = savedKeys(), picked: FeedItem[] = []
-  for (const it of [...matched.filter(i => i.site), ...matched.filter(i => !i.site)]) { const k = companyKey(it.company); if (k.length < 2 || seen.has(k)) continue; seen.add(k); picked.push(it); if (picked.length >= MAX_FEED_LEADS) break }
+  for (const it of [...matched.filter(i => i.site), ...matched.filter(i => !i.site)]) {
+    const key = feedCompanyKey(it.company, it.site)
+    if (companyKey(it.company).length < 2 || seenCompany(seen, key)) continue
+    seen.add(key)
+    picked.push(it)
+    if (picked.length >= MAX_FEED_LEADS) break
+  }
   if (!picked.length) {
     if (!matched.length) return none({ feed_items: items.length, note: 'No postings matched those role words. Nothing was saved.' })
     // Saved before: no new lead. A saved company whose contact read never finished is read again, so dedupe cannot strand it.
-    const again = claimUnfinished(db, tenant, deps.now ?? Math.floor(Date.now() / 1000), { keys: new Set(matched.map(m => companyKey(m.company))) })
+    const again = claimUnfinished(db, tenant, deps.now ?? Math.floor(Date.now() / 1000), { keys: new Set(matched.map(m => feedCompanyKey(m.company, m.site))) })
     return { ...none({ feed_items: items.length, matched: matched.length, note: again.length ? `Those companies are already saved. Nothing new was saved. Reading contacts again for ${again.length} saved ${again.length === 1 ? 'company' : 'companies'} whose earlier read did not finish.` : 'Those companies are already saved. Nothing new was saved.' }), crawl: again.length ? runCrawls(db, tenant, again, deps) : Promise.resolve() }
   }
   const fetchP = deps.fetchPage ?? ((u: string) => fetchPageDetailed(u, async () => null))
@@ -136,13 +164,13 @@ export async function createHiringFeedIntake(db: Database.Database, tenant: stri
   db.transaction(() => {
     const have = savedKeys()
     for (const { it, page, quote } of checked) {
-      const k = companyKey(it.company)
-      if (have.has(k)) continue
-      have.add(k)
-      const key = k, leadId = randomBytes(12).toString('hex')
+      const crawlKey = feedCompanyKey(it.company, it.site)
+      if (seenCompany(have, crawlKey)) continue
+      have.add(crawlKey)
+      const key = companyKey(it.company), leadId = randomBytes(12).toString('hex')
       const named = key.length >= 2 && (hasPhrase(norm(quote), key) || pageHeadingNames(page, key))
       const signal = `Posted a role titled "${it.role}" (hiring signal only: not buying intent, fit or current need)`
-      if (db.prepare("INSERT OR IGNORE INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at,claim) VALUES(?,?,?,?,'reading',?,?)").run(leadId, tenant, jobId, k, now, claimOf.get(leadId) ?? (claimOf.set(leadId, randomBytes(8).toString('hex')), claimOf.get(leadId)!)).changes !== 1) continue
+      if (db.prepare("INSERT OR IGNORE INTO hiring_feed_crawl(lead_id,tenant_id,job_id,company_key,status,started_at,claim) VALUES(?,?,?,?,'reading',?,?)").run(leadId, tenant, jobId, crawlKey, now, claimOf.get(leadId) ?? (claimOf.set(leadId, randomBytes(8).toString('hex')), claimOf.get(leadId)!)).changes !== 1) continue
       if (!rows.length) db.prepare("INSERT INTO scan_jobs(id,user_id,business_name,industry,location,status) VALUES(?,?,'Hiring feed intake','manual','manual','running')").run(jobId, tenant)
       // The date is the feed's posting date, kept as an unverified claim; it is not a current-need date.
       db.prepare("INSERT INTO leads(id,scan_job_id,company,signal,source_url,evidence_excerpt,contact,event_date,date_status,retrieved_at,confidence,review_reason,source_kind) VALUES(?,?,?,?,?,?,NULL,?,?,?,NULL,'source_review_required','hiring_feed')")
@@ -182,10 +210,10 @@ export function hiringFeedStatus(db: Database.Database, tenant: string, jobId: s
 function claimUnfinished(db: Database.Database, tenant: string, now: number, where: { jobId?: string; keys?: Set<string> }): CrawlTarget[] {
   const claimed: CrawlTarget[] = []
   db.transaction(() => {
-    const rows = db.prepare(`SELECT c.lead_id AS id, l.company, l.source_url, c.job_id FROM hiring_feed_crawl c JOIN leads l ON l.id = c.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = c.tenant_id
-      WHERE c.tenant_id = ? AND (? IS NULL OR c.job_id = ?) AND ${RETRYABLE}`).all(tenant, where.jobId ?? null, where.jobId ?? null, now, READING_STALE_S) as Omit<CrawlTarget, 'claim'>[]
+    const rows = db.prepare(`SELECT c.lead_id AS id, l.company, l.source_url, c.job_id, l.company_domain, c.company_key AS crawl_key FROM hiring_feed_crawl c JOIN leads l ON l.id = c.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = c.tenant_id
+      WHERE c.tenant_id = ? AND (? IS NULL OR c.job_id = ?) AND ${RETRYABLE}`).all(tenant, where.jobId ?? null, where.jobId ?? null, now, READING_STALE_S) as (Omit<CrawlTarget, 'claim'> & Parameters<typeof savedCompanyKey>[0])[]
     for (const r of rows) {
-      if (where.keys && !where.keys.has(companyKey(r.company))) continue
+      if (where.keys && !seenCompany(where.keys, savedCompanyKey(r))) continue
       const claim = randomBytes(8).toString('hex')
       const u = db.prepare(`UPDATE hiring_feed_crawl AS c SET status = 'reading', started_at = ?, finished_at = NULL, claim = ? WHERE c.lead_id = ? AND c.tenant_id = ? AND ${RETRYABLE}`).run(now, claim, r.id, tenant, now, READING_STALE_S)
       if (u.changes === 1) claimed.push({ ...r, claim })
