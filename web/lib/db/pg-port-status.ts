@@ -5,7 +5,6 @@
 export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/campaigns/route.ts': 0,
   'app/api/crm/route.ts': 0,
-  'app/api/enrich/held/route.ts': 0,
   'app/api/gmail/callback/route.ts': 0,
   'app/api/gmail/connect/route.ts': 0,
   'app/api/gmail/disconnect/route.ts': 0,
