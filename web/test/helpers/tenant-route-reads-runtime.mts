@@ -144,6 +144,21 @@ test('tenant read route inventory: A and B each get their own content, never the
     if (r.name === 'GET /api/leads/export') assert.ok(!ct.includes(MA.co), `${r.name}: B with A's job exports no A row`)
     for (const m of AMARKS) assert.ok(!ct.includes(m), `${r.name}: cross call leaks A marker ${m}`)
   }
+  const latestFor = (id: string) => latestGET(get(`/api/scan/latest?job_id=${id}`))
+  setUser(A)
+  const ownedLatest = await latestFor(a.job)
+  assert.equal(ownedLatest.status, 200)
+  assert.equal((await ownedLatest.json()).query, MA.q)
+
+  setUser(B)
+  const foreignLatest = await latestFor(a.job)
+  const missingLatest = await latestFor(hex())
+  assert.equal(foreignLatest.status, 404)
+  assert.equal(missingLatest.status, 404)
+  assert.equal(foreignLatest.headers.get('content-type'), missingLatest.headers.get('content-type'))
+  assert.deepEqual(await foreignLatest.json(), { error: 'not_found' })
+  assert.deepEqual(await missingLatest.json(), { error: 'not_found' })
+
   assert.equal(snap(), before, 'GET cohort left every table byte-unchanged')
   // Unauthenticated: every route, enumerated.
   setUser(null)
