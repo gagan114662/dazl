@@ -78,3 +78,19 @@ test('SMTP sends only the authorized envelope and requires relay acceptance', as
   }), { message: 'SMTP delivery could not be confirmed' })
   assert.equal(closes, 2)
 })
+
+test('SMTP rechecks authority after resolving the endpoint and before opening a connection', async () => {
+  const { sendSmtpMessage } = await import('../lib/email/smtp-connect.ts')
+  const mailbox = { host: 'mail.example.net', port: 465, username: 'owner@example.net', password: 'fixture' }
+  const message = { envelope: { from: mailbox.username, to: 'buyer@example.org' }, raw: Buffer.from('fixture') }
+  let authorized = true
+  const revoked = new Error('suppressed while resolving')
+  await assert.rejects(sendSmtpMessage(mailbox, message, {
+    lookup: async () => {
+      authorized = false
+      return [{ address: '8.8.8.8', family: 4 }]
+    },
+    assertAuthorized: () => { if (!authorized) throw revoked },
+    connect: () => assert.fail('revoked authority must not reach the transport'),
+  }), error => error === revoked)
+})
