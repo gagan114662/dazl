@@ -33,7 +33,7 @@ try {
     const domain = `${id}.example`
     insert.run(id, job, company, domain, `https://${domain}/news`, dated ? day : null, dated ? 'page_bound' : null, now)
     const add = (kind: string, value: string) => addEnrichment(db, tenant, id, {
-      kind, value, connector: 'discover', label: null, confidence: null,
+      kind, value, connector: 'discover', label: kind === 'email' && id === 'work-email' ? 'published on a public page' : null, confidence: null,
       source_url: `https://${domain}/team`, source_date: day, retrieved_at: now,
     })
     add('person', 'Lee Rivera, Owner')
