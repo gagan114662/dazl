@@ -66,3 +66,39 @@ test('an unrelated empty answer has zero records and no drop reasons', () => {
     raw: 0, accepted: 0, missing_company: 0, missing_signal: 0, invalid_source: 0, duplicate: 0,
   })
 })
+
+test('#1726 scan report distinguishes observed source URLs from search attempts and accepted leads', async () => {
+  const db = new Database(':memory:')
+  try {
+    const master = randomBytes(32)
+    migrateAllSqlite(db)
+    saveKey(db, 'workspace', 'anthropic', 'synthetic-key', master)
+    const page = { url: 'https://example.test/news', title: null, page_age: null, text: null }
+    for (const [passes, count] of [
+      [[[], []], 0],
+      [[[page], [page, { ...page, url: page.url + '/?utm_source=fixture#section' }, { ...page, url: page.url + '?id=2' }]], 2],
+    ] as const) {
+      const id = createQueryJob(db, 'workspace', {
+        query: 'Independent venues opening a new location in Lyon',
+        runBudget: JSON.stringify({ max_usd: 0.3 }),
+      })
+      const job = claimKeyedJob(db, id)
+      assert.ok(job)
+      let pass = 0
+      assert.equal(await runJob(db, job, {
+        master, discover: true, enrichImpl: null,
+        fetchImpl: async () => new Response('', { status: 403 }),
+        discoverImpl: async () => ({
+          ...parseLeads('{"leads":[]}', 10), stop: 'end_turn', model: 'offline', seen: [...passes[pass++]],
+          usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.04 },
+        }),
+      }), 'done')
+      const row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ?').get(id) as { report: string }
+      const { discover } = JSON.parse(row.report)
+      assert.deepEqual([discover.passes, discover.searches, discover.returned, discover.source_urls], [2, 6, 0, count])
+      assert.ok(!JSON.stringify(discover).includes('https://example.test/'))
+    }
+  } finally {
+    db.close()
+  }
+})
