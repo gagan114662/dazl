@@ -54,16 +54,17 @@ test('the buyer\'s own printed address is on the lead after the scan, labelled w
   }
 })
 
-test('nothing for an address in another person\'s card, for a first-name address printed away from the person, or outside the US (no address kept at rest)', async () => {
+test('nothing for an address in another person\'s card, for a first-name address printed away from the person, while a published buyer address remains attached outside the US', async () => {
   for (const team of [`${c3('Maya Thornton', '', OWNER)}${c3('Maya Ortiz', 'maya@bluebonnetrealty.com', AGENT)}`, `${c3('Maya Thornton', '', OWNER)}<p>Maya Ortiz - maya@bluebonnetrealty.com</p>`]) {
     const { emails } = await scan({}, team)
     assert.ok(!emails.some(e => e.value === 'maya@bluebonnetrealty.com'), team.slice(0, 80))
   }
   const ca = await scan({}, TEAM, ['Toronto, ON'], `<html><body>${PROSE}<p>Bluebonnet Realty, 100 Example Ave, Toronto, ON M5V 2T6, Canada</p><a href="/team">Our Team</a><a href="/contact">Contact</a></body></html>`)
-  assert.ok(!ca.emails.some(e => e.value === 'maya@bluebonnetrealty.com'), 'a non-US site keeps no personal address, so none is shown')
+  assert.deepEqual(ca.emails.filter(e => e.value === 'maya@bluebonnetrealty.com').map(e => [e.connector, e.source_url]),
+    [['sitecrawl', 'https://bluebonnetrealty.com/team']])
 })
 
-test('strict Toronto and UK crawls record a visibly co-published name/email solely in the display table', async () => {
+test('Toronto and UK crawls preserve provenance for a co-published buyer email in both stores', async () => {
   const { qaClaudeOnlyBudget } = await import('../lib/scan/qa-provider-policy.ts')
   const { workEmailPageRead } = await import('../lib/people/work-email.ts')
   for (const [location, address] of [
@@ -92,8 +93,11 @@ test('strict Toronto and UK crawls record a visibly co-published name/email sole
         assert.equal(view()[0]?.address, 'maya@bluebonnetrealty.com')
       }
       await run(); verify()
-      assert.equal((enrichmentsForLeads(db, 'T', [lead])[lead] ?? []).some(e => e.kind === 'email' && e.value === 'maya@bluebonnetrealty.com'), false)
-      assert.deepEqual(db.prepare('SELECT address FROM email_candidates WHERE lead_id=?').all(lead), [])
+      const published = (enrichmentsForLeads(db, 'T', [lead])[lead] ?? [])
+        .filter(e => e.kind === 'email' && e.value === 'maya@bluebonnetrealty.com')
+      assert.deepEqual(published.map(e => [e.connector, e.source_url]), [['sitecrawl', 'https://bluebonnetrealty.com/team']])
+      assert.deepEqual(db.prepare('SELECT address, tier, source_url FROM email_candidates WHERE lead_id=?').all(lead),
+        [{ address: 'maya@bluebonnetrealty.com', tier: 'published', source_url: 'https://bluebonnetrealty.com/team' }])
       const teamPage = pages['/team'], homePage = pages['/']
       pages['/team'] = teamPage.replace('maya@bluebonnetrealty.com', '(maya@bluebonnetrealty.com)')
       await run(); verify()

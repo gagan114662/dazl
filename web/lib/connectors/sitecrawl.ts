@@ -24,7 +24,7 @@ import { detectTech, observability, type Observability, type TechHit } from './t
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
-import { personalAddresses, publishedCandidateFor, recordEmailGuesses, usEvidence, type AddressContext } from '../people/email-pattern.ts'
+import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { decodeEntities } from '../verifier/text.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
@@ -2281,8 +2281,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             await recordCompanyFirstPublishedDisplay(db, tenantId, l.id, jobId, ownedJob.attempts, { domain: site,
               person: buyer.person, address: buyer.email, source_url: buyer.source, role_quote: buyer.quote, observed_at: buyer.at })
           }
-          // Leave the independent pre-existing sender eligibility unchanged.
-          if (buyer.email && usEvidence(r.homeText, where).us) {
+          // Exact own-site published addresses do not require US geography evidence.
+          if (buyer.email) {
             addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: buyer.email,
               label: contextLabel({ excerpt: buyer.name + ' | ' + buyer.email, source_url: buyer.source }), confidence: null, ...dated }); n++
           }

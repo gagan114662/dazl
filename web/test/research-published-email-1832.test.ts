@@ -42,9 +42,12 @@ test('#1832 Research will not promote an unsupported address or show an unsafe l
 test('#1832 a sourced email stays hidden if the Research hold puts the company in doubt', async () => {
   const { ResearchPublishedEmail } = await fields()
   const sourced = { ...lead, name: 'Sample Buyer', source_kind: 'discover',
-    enrichments: [{ connector: 'discover', kind: 'email', value: 'sample.buyer@company.example', source_url: source, label: null }] }
+    enrichments: [{ connector: 'discover', kind: 'email', value: 'sample.buyer@company.example', source_url: source, label: 'published on a public page' }] }
   const render = (review_reason: string) =>
     renderToStaticMarkup(createElement(ResearchPublishedEmail, { lead: { ...sourced, review_reason } }))
   assert.match(render('research_unverified'), /href="https:\/\/company\.example\/contact"/)
   assert.equal(render('location_mismatch'), '')
+  const unlabeled = { ...sourced, review_reason: 'research_unverified',
+    enrichments: sourced.enrichments.map(row => ({ ...row, label: null })) }
+  assert.equal(renderToStaticMarkup(createElement(ResearchPublishedEmail, { lead: unlabeled })), '')
 })

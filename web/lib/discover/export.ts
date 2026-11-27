@@ -12,11 +12,11 @@ export async function discoverExportFields(db: Db, tenantId: string, rows: Row[]
   const out = new Map<string, DiscoverExportFields>()
   const leads = rows.filter(r => isDiscoverLead({ source_kind: typeof r.source_kind === 'string' ? r.source_kind : null }))
   if (leads.length === 0 || !(await db.get('SELECT 1 AS x FROM lead_enrichments LIMIT 0').then(() => true, () => false))) return out
-  const byLead = new Map<string, { kind: string; connector: string; value: string; source_url: string | null }[]>()
+  const byLead = new Map<string, { kind: string; connector: string; value: string; label: string | null; source_url: string | null }[]>()
   for (let i = 0; i < leads.length; i += CHUNK) {
     const ids = leads.slice(i, i + CHUNK).map(r => r.lead_id)
-    const enr = await db.all<{ lead_id: string; kind: string; connector: string; value: string; source_url: string | null }>(
-      `SELECT e.lead_id, e.kind, e.connector, e.value, e.source_url FROM lead_enrichments e
+    const enr = await db.all<{ lead_id: string; kind: string; connector: string; value: string; label: string | null; source_url: string | null }>(
+      `SELECT e.lead_id, e.kind, e.connector, e.value, e.label, e.source_url FROM lead_enrichments e
        JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE e.tenant_id = ? AND j.user_id = ? AND l.quarantined_at IS NULL AND e.connector = 'discover'
          AND e.kind IN ('person', 'email', 'linkedin') AND e.lead_id IN (${ids.map(() => '?').join(', ')})

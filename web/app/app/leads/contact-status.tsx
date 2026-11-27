@@ -12,3 +12,7 @@ export function ContactStatusLine({ status }: { status: { confirmed: boolean; te
     ? <div className="text-xs mt-1"><Pill tone="mint">Source confirmed</Pill><InfoTip label="Where the contact was published"><span data-testid="contact-status">{status.text}</span></InfoTip></div>
     : <div data-testid="contact-status" className={`text-xs ${status.confirmed ? 'text-[var(--ink-2)] mt-0.5' : 'text-[#111] font-medium border-l-2 border-black pl-2 mt-0.5'}`}>{status.text}</div>
 }
+
+export function EmailSourceLink({ url }: { url: string }) {
+  return <a className="underline" href={url} target="_blank" rel="noopener noreferrer nofollow">Email source</a>
+}
