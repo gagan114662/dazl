@@ -291,30 +291,34 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
 //    and is not computed here (0).
 // next: the Campaigns card's own nextAction where it needs no outreach read (see below); otherwise "Open its campaign". A scan id that is not this tenant's own non-test search is left out (its card keeps its record).
 export type HistoryCampaign = Pick<Campaign, 'id' | 'query' | 'status' | 'error' | 'created_at' | 'qualification' | 'next'> & { discovery: { leads: number } }
-export async function historyCampaigns(db: Database.Database, adb: Db, tenantId: string, jobIds: string[], now: Date = new Date()): Promise<HistoryCampaign[]> {
+export async function historyCampaigns(_raw: Database.Database, db: Db, tenantId: string, jobIds: string[], now: Date = new Date()): Promise<HistoryCampaign[]> {
+  return historyCampaignsDb(db, tenantId, jobIds, now)
+}
+
+export async function historyCampaignsDb(db: Db, tenantId: string, jobIds: string[], now: Date = new Date()): Promise<HistoryCampaign[]> {
   const ids = [...new Set(jobIds)].slice(0, 20)
   if (!ids.length) return []
   const qs = ids.map(() => '?').join(',')
-  const jobs = db.prepare(`SELECT id, query, status, error, created_at, run_budget, enrich_started_at, enrich_finished_at FROM scan_jobs
+  const jobs = await db.all<{ id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null; enrich_started_at: number | null; enrich_finished_at: number | null }>(`SELECT id, query, status, error, created_at, run_budget, enrich_started_at, enrich_finished_at FROM scan_jobs
     WHERE user_id = ? AND id IN (${qs}) AND query IS NOT NULL AND query <> '' AND NOT (industry = 'test only' AND location = 'test only')
-    ORDER BY created_at DESC, insert_seq DESC`).all(tenantId, ...ids) as { id: string; query: string; status: string; error: string | null; created_at: number; run_budget: string | null; enrich_started_at: number | null; enrich_finished_at: number | null }[]
+    ORDER BY created_at DESC, insert_seq DESC`, [tenantId, ...ids])
   if (!jobs.length) return []
-  const shown = await companyFirstShown(db, tenantId, jobs, now)
+  const shown = await companyFirstShownDb(db, tenantId, jobs, now)
   type Row = { id: string; scan_job_id: string; contact: string | null; evidence_excerpt: string | null; confidence: number | null; human_confirmed_at: number | null; review_reason: string | null; human_confirmed_from: string | null; quarantined_at: number | null; event_date: string | null; query: string | null; icp: string | null; run_budget: string | null; name: string | null; company_domain: string | null; fit: number | null; intent: number | null; source_kind: string | null }
   const jq = jobs.map(() => '?').join(',')
-  const rows = db.prepare(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, j.query, j.icp, j.run_budget, ${DISCOVER_LEAD_COLUMNS}
-    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${jq})`).all(tenantId, ...jobs.map(j => j.id)) as Row[]
+  const rows = await db.all<Row>(`SELECT l.id, l.scan_job_id, l.contact, l.evidence_excerpt, l.confidence, l.human_confirmed_at, l.review_reason, l.human_confirmed_from, l.quarantined_at, j.query, j.icp, j.run_budget, ${DISCOVER_LEAD_COLUMNS}
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${jq})`, [tenantId, ...jobs.map(j => j.id)])
   // the required-check verdict per listed scan (requiredGateHeldForJob: the campaign page's own reader, 3 reads per scan whatever its lead count)
   const gate = new Set<string>()
-  for (const id of new Set(rows.map(r => r.scan_job_id))) for (const l of await requiredGateHeldForJob(adb, tenantId, id)) gate.add(l)
+  for (const id of new Set(rows.map(r => r.scan_job_id))) for (const l of await requiredGateHeldForJob(db, tenantId, id)) gate.add(l)
   // #1037: the leads no review can give a buyer (lib/people/buyer-reach.ts, Home's own answer), one batched read
-  const noBuyer = await buyerUnreachable(adb, tenantId, jobs.map(j => j.id), rows.filter(r => r.review_reason))
+  const noBuyer = await buyerUnreachable(db, tenantId, jobs.map(j => j.id), rows.filter(r => r.review_reason))
   // which listed scans have any email at all (one grouped read; test sends included, so "none" is certain)
-  const mailed = new Set((db.prepare(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`).all(tenantId, tenantId, ...jobs.map(j => j.id)) as { id: string }[]).map(r => r.id))
+  const mailed = new Set((await db.all<{ id: string }>(`SELECT DISTINCT l.scan_job_id AS id FROM outreach_messages m JOIN leads l ON l.id = m.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE m.tenant_id = ? AND l.scan_job_id IN (${jq})`, [tenantId, tenantId, ...jobs.map(j => j.id)])).map(r => r.id))
   const byJob = new Map<string, Row[]>()
   for (const r of rows) { const a = byJob.get(r.scan_job_id) ?? []; a.push(r); byJob.set(r.scan_job_id, a) }
   // #1238: the new engine's leads, each by its ONE state (one more read, and only when a listed scan has such a lead); the older rules below never see them
-  const dAll = await discoverStatesOfDb(adb, tenantId, rows)
+  const dAll = await discoverStatesOfDb(db, tenantId, rows)
   return jobs.map(j => {
     const found = byJob.get(j.id) ?? []
     const dStates = dAll.get(j.id), dc = dStates ? discoverCounts(dStates.values()) : null
