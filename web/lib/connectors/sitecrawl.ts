@@ -1739,16 +1739,20 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
-    // Did the request name a place at all? The ICP's where, or (a legacy scan with no ICP) its stored location. Unknown counts as yes.
+    // Use the stored request location only for absent or request-derived profiles.
     let placeRequested = true
     try {
-      const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
+      const j = db.prepare('SELECT * FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp?: string | null; icp_inferred?: number | null; location?: string | null; query?: string | null } | undefined
       const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null
-      if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string')
-      if (where.some(x => x.trim())) placeRequested = true
-      else if (j?.icp) placeRequested = false
-      else {   // legacy scan without an ICP: its stored location is the request's place (a schema without the column: unknown = requested)
-        try { placeRequested = !!(db.prepare('SELECT location FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { location?: string | null } | undefined)?.location?.trim() } catch { placeRequested = true }
+      const usablePlace = (x: string) => !!x.trim() && x.trim() !== '-'
+      if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string' && usablePlace(x))
+      if (!where.length) {
+        if (j?.icp && j.icp_inferred !== 2) placeRequested = false
+        else if (j && j.location !== undefined) {
+          const location = j.location?.trim() ?? ''
+          placeRequested = usablePlace(location)
+          if (placeRequested && j.query?.trim()) where = [location]
+        }
       }
     } catch { /* no ICP: evidence places only */ }
     // The display-only importer is optional. A missing policy must not erase ordinary crawl geography.
