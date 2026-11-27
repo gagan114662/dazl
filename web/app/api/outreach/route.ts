@@ -1,6 +1,8 @@
 import { autopilotAvailable } from '@/lib/outreach/autopilot'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
+import { readBusinessName } from '@/lib/auth-db'
+import { getDb } from '@/lib/db/client'
 import { createDraft, listMessages, OutreachError } from '@/lib/outreach/service'
 import { draftFailure } from '@/lib/outreach/draft-error'
 import { captureError } from '@/lib/ops/errors'
@@ -11,7 +13,7 @@ import { denied } from '@/lib/workspace-access'
 
 const MSG: Record<string, [number, string]> = {
   domain_unconfirmed: [409, 'Check that this website is the right company on Leads ("This website is the right company") before drafting. That check is not need, consent or a send approval.'],
-  seller_context_required: [422, 'Add your company name in Business before creating a draft.'],
+  seller_context_required: [422, 'Add your name or company name in Business before creating a draft.'],
   offer_unreadable: [503, 'What this play sells could not be read just now, so nothing was drafted. Try again in a moment.'],
   offer_conflict: [409, 'This play\'s request names a different offer than the one it was created with. Choose what this play sells on its campaign page (or Home) before drafting.'],
   seller_offer_required: [422, 'Add a short description of what you offer (Memory or onboarding) before creating a draft. dazl will not invent one.'],
@@ -51,7 +53,17 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (typeof body?.lead_id !== 'string' || !/^[a-f0-9]{24}$/.test(body.lead_id)) return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   try {
-    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, user.business_name, { manual: true })
+    let businessName = user.business_name.trim()
+    if (!businessName) {
+      const db = await getDb()
+      businessName = (await readBusinessName(db, user.tenantId)).trim()
+      // A personal workspace can introduce the solo seller by name. A team
+      // member's account name cannot stand in for the workspace's identity.
+      if (!businessName && user.actorId === user.tenantId) {
+        businessName = (await db.get<{ name: string | null }>('SELECT name FROM users WHERE id = ?', [user.actorId]))?.name ?? ''
+      }
+    }
+    const id = createDraft(getScanDb(), user.tenantId, body.lead_id, businessName, { manual: true })
     // Drafts are template-only here: an LLM rewrite bills the tenant's provider key,
     // so it happens only via an explicit click on POST /api/outreach/polish.
     return NextResponse.json({ id }, { status: 201 })
