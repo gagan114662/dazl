@@ -20,6 +20,7 @@ import { companyFirstShown, gateHoldReason, heldByChecksOf } from '@/lib/outreac
 import { discoverContact, emailOnCompanySite, isDiscoverLead } from '@/lib/discover/card'
 import { leadPerson } from '@/lib/people/lead-person'
 import { identityOf } from '@/lib/scan/opportunity'
+import { recordedDeliverability } from '@/lib/outreach/contact-route'
 import { publishedEmail } from '@/lib/outreach/published-email'
 import { leadContactContext, contactPurposeRestricted } from '@/lib/outreach/contact-purpose-db'
 import { isSuppressed, recipientAllowed } from '@/lib/outreach/service'
@@ -42,20 +43,6 @@ interface ReadyLeadDetails {
   // #1833: the address exists but its recorded deliverability verdict is rejected / no_mx — the row says so
   // instead of showing the address as usable (approval and drafting already refuse it).
   email_undeliverable?: boolean
-}
-
-// The recorded deliverability format is lib/outreach/contact-route.ts's: a lead_enrichments row of kind
-// 'deliverability', value '<email>|<verdict>' (a '@<domain>' row speaks for the domain's verdicts only). The latest
-// applicable check wins; only 'rejected' and 'no_mx' mean the address cannot receive email.
-const DELIVERABILITY_VERDICTS = ['no_mx', 'mx_found', 'catch_all', 'accepted', 'rejected']
-const DOMAIN_VERDICTS = new Set(['no_mx', 'mx_found', 'catch_all'])
-function deliverabilityRefused(rows: { kind: string; value: string; retrieved_at?: number | null }[], email: string): boolean {
-  const e = email.toLowerCase(), domain = e.split('@')[1] ?? ''
-  const latest = rows.filter(r => r.kind === 'deliverability')
-    .map(r => { const [addr, verdict] = (r.value ?? '').toLowerCase().split('|'); return { addr, verdict, at: r.retrieved_at ?? 0 } })
-    .filter(r => DELIVERABILITY_VERDICTS.includes(r.verdict) && (r.addr === e || (r.addr === `@${domain}` && DOMAIN_VERDICTS.has(r.verdict))))
-    .sort((a, b) => b.at - a.at)[0]
-  return latest?.verdict === 'rejected' || latest?.verdict === 'no_mx'
 }
 
 function buyerRolesOf(raw: string | null): string {
@@ -81,7 +68,8 @@ function detailsOf(
     const address = discover
       ? published && emailOnCompanySite(published.address, published.source, lead.company_domain) ? published.address : null
       : publishedEmail({ ...lead, contact_context: leadContactContext(db, tenantId, lead.id) })
-    if (address && deliverabilityRefused(rows, address)) emailUndeliverable = true   // #1833: recorded rejected / no_mx
+    const verdict = address ? recordedDeliverability(address, rows)?.verdict : undefined
+    if (verdict === 'rejected' || verdict === 'no_mx') emailUndeliverable = true
     else if (address && recipientAllowed(db, tenantId, address) && !isSuppressed(db, tenantId, address)
       && !contactPurposeRestricted(db, tenantId, lead.id, address)) email = address
   } catch { /* Keep the ready details available if the address cannot be checked. */ }

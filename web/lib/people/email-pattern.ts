@@ -5,7 +5,8 @@
 // and fails closed: only an explicit "deliverable" answer from a real check makes a candidate verified; catch-all,
 // unknown, refused, errors and a check that never finished stay non-verified and are surfaced as such.
 // Nothing here is shown, stored as a contact, or sent: candidates live in their own tables (email_patterns,
-// email_candidates), which no page and no outreach path reads. The one wired verifier is ZeroBounce's FREE tier (#899 decision,
+// email_candidates). Readiness can use a recorded mailbox outcome for an independently published address.
+// The one wired verifier is ZeroBounce's FREE tier (#899 decision,
 // lib/people/zerobounce.ts), used only when ZEROBOUNCE_API_KEY is set and capped at its free monthly allowance. Off unless
 // EMAIL_GUESS_ENABLED=1.
 // #1036 / #1250: the crawl (recordEmailGuesses) now records only addresses the company PRINTS on its own site (tier 'published');
@@ -410,6 +411,23 @@ export type CandidateLabel = 'published' | 'guessed' | 'guessed, verified' | 'gu
 // verification state, is never returned. The person is matched by the same name split the crawl used. Missing table
 // (flag never on) = nothing published, never an error. Kept in this module so it stays the only reader of the table.
 export interface PublishedCandidateRow { person: string; address: string; source_url: string }
+type CheckedMailbox = { lead_id: string; address: string; verification: 'undeliverable' | 'verified'; checked_at: number }
+
+// These are verification facts. A caller must match the address to a contact published independently.
+export function checkedMailboxesForLeads(db: Database.Database, tenantId: string, leadIds: string[]): CheckedMailbox[] {
+  if (!leadIds.length) return []
+  try {
+    return db.prepare(`SELECT lead_id, address, verification, checked_at FROM email_candidates
+      WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')})
+      AND verification IN ('undeliverable', 'verified') AND checked_at IS NOT NULL`)
+      .all(tenantId, ...leadIds) as CheckedMailbox[]
+  } catch (error) {
+    // Older stores have no candidate verifier history.
+    if (!(error instanceof Error) || !/^no such (?:table: email_candidates|column: (?:verification|checked_at))$/.test(error.message)) throw error
+    return []
+  }
+}
+
 export function publishedCandidateRowsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, PublishedCandidateRow[]> {
   const out: Record<string, PublishedCandidateRow[]> = {}
   if (!leadIds.length) return out
