@@ -70,14 +70,14 @@ function emailClass(l: LeadRow, e: Enrichment[], published: ReturnType<typeof pu
 }
 
 // A short keyword ("eu", "uk", "usa") matches only as a whole word: "eu" is not in "Reuters" or "Deutsche" (#2106). A longer keyword keeps
-// the plain substring match. A word edge is any character that is not a letter or a digit, so case and punctuation do not matter.
+// the plain substring match. A plural "s" still counts as the word ("RFPs", "CIOs", #2048). A word edge is any character that is not a letter or a digit, so case and punctuation do not matter.
 const SHORT_KEYWORD = 4
 export function keywordIn(text: string, keyword: string): boolean {
   const k = keyword.toLowerCase().trim()
   if (!k) return false
   if (k.length > SHORT_KEYWORD) return text.includes(k)
   const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u').test(text)
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}s?(?![\\p{L}\\p{N}])`, 'u').test(text)
 }
 // The address with its host's last label removed ("https://tenders.example.eu/n/1" -> "tenders.example/n/1"); anything that is not a URL or a bare host stays as it is.
 export function withoutSuffix(address: string): string {
