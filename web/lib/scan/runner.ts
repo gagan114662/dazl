@@ -1556,7 +1556,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const shown = live.filter(isShown), unconfirmed = live.filter(l => !isShown(l))
   const out: VerifyOutcome = {
     leads: shown.map(l => discoveredLead(l, now)),
-    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
+    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required',
+      ...(l.proof_check ? { timing_note: l.proof_check === 'spend_cap' ? 'Proof not checked (spend cap).' : 'Proof could not be checked.' } : {}),
+    })),
     dropped: gone.length ? { page_not_found: gone.length } : {},   // the Leads page's words for it: "page no longer exists"
   }
   // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran

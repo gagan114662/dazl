@@ -14,7 +14,7 @@ import { atsDate, careersAtsDate } from './ats-dates.ts'
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
 // date_source distinguishes a date taken from an opened source from the search index's day for the page itself.
 // date_on_page records whether the exact calendar day was found in the proof page's text.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; date_proof?: 'ats_structured' | null; date_record_url?: string | null; signal_by?: 'claude' }
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; date_proof?: 'ats_structured' | null; date_record_url?: string | null; signal_by?: 'claude'; proof_check?: 'spend_cap' | 'unavailable' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
 //   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
@@ -76,9 +76,13 @@ export function signalWordsIn(signal: string, company: string, textToSearch: str
 // ("Opening a second clinic at 14 Main Street, open Monday to Friday" on address-and-hours text); judging only a first statement let a
 // place stand in for it ("... clinic Toronto Ontario, opening a second clinic." on the same text). A line that says more than its proof
 // does goes to the user's review, with the words its proof lacks (claim_lacks).
+// Polarity and cessation cues make word overlap inconclusive. Only the entailment judge can
+// decide whether a quoted statement with one of these cues actually supports the signal.
+const POLARITY_CUE = /(?:^| )(?:not|no|never|without|stopped|ceased|ended|paused|halted|pas|jamais|nunca|sin|nao|nicht)(?= |$)/
 export function statesSignal(signal: string, company: string, textToSearch: string): boolean {
   const { want, missing } = signalWordsIn(signal, company, textToSearch)
-  return want > 0 && missing.length === 0
+  return want > 0 && missing.length === 0 &&
+    !POLARITY_CUE.test(fold(textToSearch)) && !/n['’]t\b/i.test(textToSearch)
 }
 // When the quoted evidence IS on a read page and its statements do not carry every word of the signal line, the words cannot settle
 // it either way. Measured on staging, 2026-11-23 (commit 96111ddd, two real searches, 15 leads): the every-word rule alone showed 1
@@ -87,7 +91,7 @@ export function statesSignal(signal: string, company: string, textToSearch: stri
 // words cannot tell those from a sentence of address and opening hours quoted for an "opening" claim (both share 4 or more). So that
 // one question is put to Claude (lib/discover/entail.ts): does this quoted text state the claim's event? Without an asker (tests,
 // the replay script) the every-word rule decides alone, as before.
-export type AskSignal = (signal: string, company: string, statements: string[]) => Promise<boolean>
+export type AskSignal = (signal: string, company: string, statements: string[], page?: string) => Promise<boolean | 'spend_cap' | 'unavailable'>
 // The page's own statements: a line or block, cut again where a full stop, question mark, exclamation mark or semicolon ends one.
 const statements = (page: string): string[] => page.split(/\n+|(?<=[.!?…;])\s+/).map(s => s.trim()).filter(Boolean)
 // The quoted evidence must be contiguous after formatting normalization, even if its edges clip a word. An explicit ellipsis can omit
@@ -249,12 +253,15 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
     quote_on_page: said.length > 0, signal_seen: named && citedStatements.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }
 
-// The quote is on the page, the page names the company, and the words alone did not settle it: Claude says whether the quoted text states
-// the claim. signal_by records who decided. An asker that fails leaves the lead as the words left it (not shown; the user's review).
+// For metered Discovery, the judge decides whether the cited text supports the claim. A refusal or unavailable judge leaves it held.
 async function settle(c: CheckedLead, body: string, ask?: AskSignal): Promise<CheckedLead> {
-  if (!ask || c.proof !== 'confirmed' || !c.quote_on_page || c.signal_seen) return c
+  if (!ask || c.proof !== 'confirmed' || !c.quote_on_page) return c
   const said = quoteStatements(c.evidence_quote, body).slice(0, 4).map(s => s.slice(0, 600))
-  try { return (await ask(c.signal, c.company, said)) ? { ...c, signal_seen: true, signal_by: 'claude' } : { ...c, signal_by: 'claude' } } catch { return c }
+  try {
+    const decision = await ask(c.signal, c.company, said, pageKey(c.evidence_url))
+    if (typeof decision !== 'boolean') return { ...c, signal_seen: false, proof_check: decision }
+    return { ...c, signal_seen: decision, signal_by: 'claude' }
+  } catch { return { ...c, signal_seen: false, proof_check: 'unavailable' } }
 }
 // The day a page states in its own structured data: a job posting's datePosted, else an article's datePublished (JSON-LD or a meta
 // tag). Job boards print "Posted 4d ago" or nothing in the visible text and carry the real day here. Not dateModified (a template edit
@@ -473,7 +480,7 @@ async function readLead(lead: DiscoveredLead, seen: SeenPage[], fetchImpl: typeo
   const base = { ...lead, ...indexDate(hit?.page_age ?? null, now), proof_read_by: null, quote_on_page: false, date_on_page: false, page_age: hit?.page_age ?? null }
   // An unread search result supports the signal when its own title states the signal line.
   const listed = !!hit && companyOnPage(lead.company, hit.title ?? ''), title = listed ? hit!.title ?? '' : ''
-  return { ...base, proof: listed ? 'listed' : 'unseen', signal_seen: listed && statesSignal(lead.signal, lead.company, title), claim_lacks: signalWordsIn(lead.signal, lead.company, title).missing }
+  return { ...base, proof: listed ? 'listed' : 'unseen', signal_seen: false, claim_lacks: signalWordsIn(lead.signal, lead.company, title).missing }
 }
 
 export async function checkLeads(leads: DiscoveredLead[], seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, concurrency = 4, ask?: AskSignal): Promise<CheckedLead[]> {
