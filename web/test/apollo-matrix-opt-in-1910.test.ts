@@ -49,7 +49,7 @@ test('#1910 matrix dry mode reports the bounded call count from an evidence snap
     const input = join(dir, 'scan.json')
     const evidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
       dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' }
-    writeFileSync(input, JSON.stringify({ tenantId: 'tenant', scanId: 'scan', scanLimit: 1, candidates: [
+    writeFileSync(input, JSON.stringify({ complete: true, tenantId: 'tenant', scanId: 'scan', scanLimit: 1, candidates: [
       { leadId: 'eligible', evidence },
       { leadId: 'eligible', evidence },
       { leadId: 'held', evidence: { ...evidence, otherwiseReady: false } },
@@ -57,6 +57,13 @@ test('#1910 matrix dry mode reports the bounded call count from an evidence snap
     const result = dry('--contacts', '--apollo-budget', '2', '--apollo-plan-db', dbPath, '--apollo-plan-input', input)
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /Apollo calls planned: 1/)
+    writeFileSync(input, JSON.stringify({ tenantId: 'tenant', scanId: 'scan', scanLimit: 1, candidates: [] }))
+    const incomplete = dry('--contacts', '--apollo-budget', '2', '--apollo-plan-db', dbPath, '--apollo-plan-input', input)
+    assert.equal(incomplete.status, 2)
+    writeFileSync(input, JSON.stringify({ complete: true, tenantId: 'tenant', scanId: 'scan', scanLimit: 1, candidates: [] }))
+    const empty = dry('--contacts', '--apollo-budget', '2', '--apollo-plan-db', dbPath, '--apollo-plan-input', input)
+    assert.equal(empty.status, 0, empty.stderr)
+    assert.match(empty.stdout, /Apollo calls planned: 0/)
     const db = new Database(dbPath, { readonly: true })
     try {
       assert.equal(db.prepare('SELECT COUNT(*) FROM apollo_credit_ledger').pluck().get(), 0)

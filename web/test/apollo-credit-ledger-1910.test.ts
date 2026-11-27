@@ -1,3 +1,4 @@
+import { runWithScanSpend } from '../lib/scan/spend-cap.ts'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -55,6 +56,7 @@ test('#1910 only an otherwise Ready buyer after a completed empty crawl reaches 
     await match('already-found', { ...buyer, ownSiteRead: 'address_found' })
     assert.deepEqual(calls, [])
     await match('eligible')
+    assert.equal(db.prepare("SELECT COUNT(*) FROM tenant_spend_pools WHERE period LIKE 'ch:%'").pluck().get(), 0)
     await match('eligible', buyer, '2')
     await match('at-cap', buyer, '1', 'b', 'scan-b')
     await match('same-scan', buyer, '2')
@@ -65,6 +67,29 @@ test('#1910 only an otherwise Ready buyer after a completed empty crawl reaches 
   } finally {
     db.close()
   }
+})
+
+test('#1910 an unsent scan-spend refusal frees the pilot slot and workspace hold', async () => {
+  const db = new Database(':memory:')
+  try {
+    migrateAllSqlite(db)
+    const buyer: ApolloBuyerEvidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
+      dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' }
+    let calls = 0
+    const lookup = () => matchReadyApolloBuyer(db, 'tenant', 'lead', buyer, {
+      key: 'test-only', scanId: 'scan', scanLimit: 1,
+      env: { DAZL_ENV: 'staging', APOLLO_CREDIT_CAP: '1' },
+      fetchImpl: async () => { calls++; return Response.json({ person: null }) },
+    })
+    await assert.rejects(runWithScanSpend({
+      db, jobId: 'scan', tenantId: 'tenant', attempt: 1, cap: { ok: false, reason: 'cap_config_invalid' }, accountLimits: null,
+    }, lookup), /spend_refused:cap_config_invalid/)
+    assert.equal(calls, 0)
+    assert.equal(db.prepare('SELECT COUNT(*) FROM apollo_credit_ledger').pluck().get(), 0)
+    assert.equal(db.prepare("SELECT COUNT(*) FROM tenant_spend_pools WHERE period LIKE 'ch:%'").pluck().get(), 0)
+    await lookup()
+    assert.equal(calls, 1)
+  } finally { db.close() }
 })
 
 test('#1910 dry plan counts eligible new requests within both caps without reserving', async () => {
