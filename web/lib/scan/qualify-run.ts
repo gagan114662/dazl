@@ -2,6 +2,7 @@
 // it needs an approval bound to the exact prompt hash, vendor, model, estimate and limits. One claim row per
 // (tenant, lead, prompt hash) means a repeat click, a retry or a race can never make a second paid request.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { ownerGuarded, spendRefused } from '../llm/owner-guard.ts'
 import type { Provider } from '@/lib/llm/provider'
 import { qualifyLead, DEFAULT_LIMITS, type PaidApproval, type Qualification } from './lead-qualify.ts'
@@ -21,13 +22,21 @@ export function migrateQualify(db: Database.Database): void {
 
 export interface StoredQualification { prompt_sha256: string; status: 'running' | 'done' | 'failed'; vendor: string | null; model: string | null; qualification: Qualification | null; usage: unknown; error: string | null; created_at: number; evidence: unknown }
 
+type QualificationRow = { prompt_sha256: string; status: StoredQualification['status']; vendor: string | null; model: string | null; result: string | null; usage: string | null; error: string | null; created_at: number | string; evidence: string | null }
+const STORED_QUALIFICATIONS_SQL = `SELECT q.prompt_sha256, q.status, q.vendor, q.model, q.result, q.usage, q.error, q.created_at, q.evidence
+    FROM lead_qualifications q JOIN leads l ON l.id = q.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
+    WHERE q.lead_id = ? AND q.tenant_id = ? AND j.user_id = ? ORDER BY q.created_at DESC`
+function decodeQualification(r: QualificationRow): StoredQualification {
+  return { prompt_sha256: r.prompt_sha256, status: r.status, vendor: r.vendor, model: r.model, qualification: r.result ? JSON.parse(r.result) as Qualification : null, usage: r.usage ? JSON.parse(r.usage) : null, error: r.error, created_at: Number(r.created_at), evidence: r.evidence ? JSON.parse(r.evidence) : null }
+}
+
 export function storedQualifications(db: Database.Database, userId: string, leadId: string): StoredQualification[] {
   migrateQualify(db)
-  const rows = db.prepare(`SELECT q.prompt_sha256, q.status, q.vendor, q.model, q.result, q.usage, q.error, q.created_at, q.evidence
-    FROM lead_qualifications q JOIN leads l ON l.id = q.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
-    WHERE q.lead_id = ? AND q.tenant_id = ? AND j.user_id = ? ORDER BY q.created_at DESC`).all(leadId, userId, userId) as
-    { prompt_sha256: string; status: StoredQualification['status']; vendor: string | null; model: string | null; result: string | null; usage: string | null; error: string | null; created_at: number; evidence: string | null }[]
-  return rows.map(r => ({ prompt_sha256: r.prompt_sha256, status: r.status, vendor: r.vendor, model: r.model, qualification: r.result ? JSON.parse(r.result) as Qualification : null, usage: r.usage ? JSON.parse(r.usage) : null, error: r.error, created_at: r.created_at, evidence: r.evidence ? JSON.parse(r.evidence) : null }))
+  return (db.prepare(STORED_QUALIFICATIONS_SQL).all(leadId, userId, userId) as QualificationRow[]).map(decodeQualification)
+}
+
+export async function readStoredQualifications(db: Db, userId: string, leadId: string): Promise<StoredQualification[]> {
+  return (await db.all<QualificationRow>(STORED_QUALIFICATIONS_SQL, [leadId, userId, userId])).map(decodeQualification)
 }
 
 export type RunResult =

@@ -1,13 +1,13 @@
 // Free, read-only preview of what a saved-lead qualification would send. No model call, no spend.
 // It reads the lead's own source page and, when the company site is confirmed, its home page,
 // through the same guarded fetch the rest of the app uses.
-import type Database from 'better-sqlite3'
+import { asDb, type Db, type DbLike } from '../db/client.ts'
 import { fetchPageDetailed, isFail, type FetchFail, type Page } from './fetch-page.ts'
 import { preparePrompt, estimateCost, DEFAULT_LIMITS, FIELD_CAPS, type ContextField, type QualifyInput, type EvidenceScope } from './lead-qualify.ts'
 import { packRequest, type RequestPacking } from './qualification-packing.ts'
 import { effectiveOffer } from './play-offer-text.ts'
 import { readPlayOffer } from './play-offer.ts'
-import { domainConfirmed } from '../signals/domain-basis.ts'
+import { domainConfirmedDb } from '../signals/domain-basis.ts'
 import { runWithTenantSpend } from './spend-cap.ts'
 
 export type PageFetcher = (url: string) => Promise<Page | FetchFail>
@@ -21,13 +21,12 @@ export interface QualifyPreview {
 export type QualifyPreviewFull = QualifyPreview & { input: QualifyInput | null }
 
 // #1167: its priced steps are counted on the tenant's account windows (lib/scan/spend-cap.ts runWithTenantSpend)
-export async function qualifyPreview(db: Database.Database, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
-  return runWithTenantSpend(db, userId, () => qualifyPreviewCounted(db, userId, leadId, sellerText, fetchPage, vendor, model))
+export async function qualifyPreview(db: DbLike, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
+  return runWithTenantSpend(db, userId, () => qualifyPreviewCounted(asDb(db), userId, leadId, sellerText, fetchPage, vendor, model))
 }
-async function qualifyPreviewCounted(db: Database.Database, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
-  const lead = db.prepare(`SELECT l.id, l.scan_job_id, l.company, l.signal, l.source_url, l.company_domain, j.icp, j.query, j.offer, j.seller
-    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`).get(leadId, userId) as
-    { id: string; scan_job_id: string; company: string; signal: string; source_url: string; company_domain: string | null; icp: string | null; query: string | null; offer: string | null; seller: string | null } | undefined
+async function qualifyPreviewCounted(db: Db, userId: string, leadId: string, sellerText: string, fetchPage: PageFetcher = fetchPageDetailed, vendor: string | null = null, model: string | null = null): Promise<QualifyPreviewFull | null> {
+  const lead = await db.get<{ id: string; scan_job_id: string; company: string; signal: string; source_url: string; company_domain: string | null; icp: string | null; query: string | null; offer: string | null; seller: string | null }>(`SELECT l.id, l.scan_job_id, l.company, l.signal, l.source_url, l.company_domain, j.icp, j.query, j.offer, j.seller
+    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`, [leadId, userId])
   if (!lead) return null
   const packing = packRequest(lead.query ?? '', lead.icp, FIELD_CAPS.seller_icp)
   const resolved = await readPlayOffer(db, userId, lead.scan_job_id)
@@ -41,25 +40,25 @@ async function qualifyPreviewCounted(db: Database.Database, userId: string, lead
   if (/^https:\/\//.test(lead.source_url)) targets.push({ url: lead.source_url, role: 'posting' })
   // The company home page is evidence only for a CONFIRMED site (#912): own-domain evidence, a current identity review or a passed homepage
   // check (signals/domain-basis.ts). A populated company_domain alone (a legacy or name-guessed domain) is not fetched or used.
-  const identity = () => {
-    const l = db.prepare('SELECT l.company, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?').get(lead.id, userId) as { company: string; company_domain: string | null } | undefined
+  const identity = async () => {
+    const l = await db.get<{ company: string; company_domain: string | null }>('SELECT l.company, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?', [lead.id, userId])
     const domain = l?.company_domain && /^[a-z0-9.-]+$/i.test(l.company_domain) ? l.company_domain : null
-    return JSON.stringify([l?.company ?? null, l?.company_domain ?? null, !!domain && domainConfirmed(db, userId, lead.id, domain)])
+    return JSON.stringify([l?.company ?? null, l?.company_domain ?? null, !!domain && await domainConfirmedDb(db, userId, lead.id, domain)])
   }
-  const before = identity()
-  const confirmedSite = lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain) && domainConfirmed(db, userId, lead.id, lead.company_domain) ? lead.company_domain : null
+  const before = await identity()
+  const confirmedSite = lead.company_domain && /^[a-z0-9.-]+$/i.test(lead.company_domain) && await domainConfirmedDb(db, userId, lead.id, lead.company_domain) ? lead.company_domain : null
   if (confirmedSite) targets.push({ url: `https://${confirmedSite}/`, role: 'company_home' })
   else if (lead.company_domain) notes.push(`The company site ${lead.company_domain} is not confirmed for this lead (no own-domain evidence, review or homepage check), so its home page is not used; only the posting page can be used as evidence.`)
   else notes.push('No confirmed company site on this lead, so only the posting page can be used as evidence.')
   const got = await Promise.all(targets.map(async t => ({ t, r: await fetchPage(t.url).catch(() => ({ fail: 'error' }) as FetchFail) })))
   // Page reads await external state. Never price/approve the old offer after a concurrent choice.
-  const current = db.prepare('SELECT offer, seller, query, icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(lead.scan_job_id, userId) as { offer: string | null; seller: string | null; query: string | null; icp: string | null } | undefined
+  const current = await db.get<{ offer: string | null; seller: string | null; query: string | null; icp: string | null }>('SELECT offer, seller, query, icp FROM scan_jobs WHERE id = ? AND user_id = ?', [lead.scan_job_id, userId])
   const latest = current ? await readPlayOffer(db, userId, lead.scan_job_id) : null
   const currentOffer = latest?.source === 'none' && current ? effectiveOffer(current, sellerText) : latest
   if (!currentOffer || JSON.stringify(currentOffer) !== JSON.stringify(offer)) return blocked('The play offer changed while reading sources. Reload the preview before approving any check.')
   if (!current || current.query !== lead.query || current.icp !== lead.icp) return blocked('The saved request or profile changed while reading sources. Reload the preview before approving any check.')
   // The lead's company, domain and its confirmation are rechecked after the reads too: a change or a lost confirmation rebuilds the preview.
-  if (identity() !== before) return blocked('The lead\'s company or confirmed site changed while reading sources. Reload the preview before approving any check.')
+  if (await identity() !== before) return blocked('The lead\'s company or confirmed site changed while reading sources. Reload the preview before approving any check.')
   // Provenance: the posting page is only evidence about this company if it names the company. The company home
   // page is used only when the lead already has a confirmed site. Anything else is fetched for display but not used.
   const nameOk = (t: string) => { const c = lead.company.toLowerCase().replace(/\s+/g, ' ').trim(); return c.length >= 2 && t.toLowerCase().replace(/\s+/g, ' ').includes(c) }

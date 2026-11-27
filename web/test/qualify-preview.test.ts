@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { qualifyPreview } from '../lib/scan/qualify-preview.ts'
@@ -50,4 +53,32 @@ test('another tenant gets nothing, and a failed fetch is reported not hidden', a
   assert.equal(await qualifyPreview(db, 'u1', 'c'.repeat(24), 'x', fetcher), null)
   const p = await qualifyPreview(db, 'u2', 'c'.repeat(24), 'x', async () => ({ fail: 'blocked' as const }))
   assert.ok(p); assert.deepEqual(p.pages.map(x => x.status), ['failed', 'failed']); assert.equal(p.ready, false); assert.equal(p.cost, null)
+})
+
+test('Postgres preview reads only the owner’s lead and rejects a changed request after fetching', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    const company = 'Example Services'
+    const source = 'https://source.test/job'
+    const lead = 'a'.repeat(24)
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, query, offer) VALUES ('job', 'owner', 'Seller', 'Services', 'Region', 'running', 'Companies hiring technicians', 'Scheduling software')")
+    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, 'job', ?, 'Hiring technicians', ?)", [lead, company, source])
+    const page = { title: 'Careers', text: company + ' is hiring technicians.', retrievedAt: 1 }
+    let reads = 0
+    const read = async (url: string) => { assert.equal(url, source); reads++; return page }
+    assert.equal(await qualifyPreview(db, 'neighbor', lead, '', read), null)
+    assert.equal(reads, 0)
+    const owned = await qualifyPreview(db, 'owner', lead, '', read)
+    assert.equal(owned?.company, company)
+    assert.equal(owned?.pages[0]?.used, true)
+    assert.equal(reads, 1)
+    const changed = await qualifyPreview(db, 'owner', lead, '', async url => {
+      await db.run("UPDATE scan_jobs SET query = 'Companies hiring accountants' WHERE id = 'job'")
+      return read(url)
+    })
+    assert.equal(changed?.ready, false)
+    assert.ok(changed?.notes.some(note => note.includes('saved request or profile changed')))
+  } finally { await db.close(); await drop() }
 })
