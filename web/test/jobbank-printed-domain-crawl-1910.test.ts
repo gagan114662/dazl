@@ -2,10 +2,12 @@ import assert from 'node:assert/strict'
 import test, { type TestContext } from 'node:test'
 import Database from 'better-sqlite3'
 import { crawlJob } from '../lib/connectors/sitecrawl.ts'
-import { addEnrichment, migrateConnectors } from '../lib/connectors/store.ts'
+import { addEnrichment } from '../lib/connectors/store.ts'
 import { sqliteDb } from '../lib/db/client.ts'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import { PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
 import { discoverStatesForDb } from '../lib/discover/state-db.ts'
-import { createJob, listLeads, migrateScan } from '../lib/scan/store.ts'
+import { createJob, listLeads } from '../lib/scan/store.ts'
 
 const company = 'Aspen Dental'
 const site = 'https://cedarfield.example/'
@@ -14,8 +16,7 @@ const posting = 'https://www.jobbank.gc.ca/jobsearch/jobposting/50715766'
 async function crawl(t: TestContext, source: string, finalUrl: string, city: string, website: string, replay = false) {
   const db = new Database(':memory:')
   t.after(() => db.close())
-  migrateScan(db)
-  migrateConnectors(db)
+  migrateAllSqlite(db)
   const job = createJob(db, 'T', { business_name: 'Seller', industry: 'supplies', location: 'Toronto, ON' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?")
     .run(JSON.stringify({ where: ['Toronto, ON'] }), job)
@@ -28,7 +29,7 @@ async function crawl(t: TestContext, source: string, finalUrl: string, city: str
       confidence, score, event_date, fit, intent, source_kind) VALUES ('ready', ?, 'Existing Buyer', 'buyer.example',
       'Hiring', 'https://buyer.example/careers', 90, 89, ?, 4, 4, 'discover')`).run(job, day)
     for (const [kind, value] of [['person', 'Casey Olsen, Owner'], ['email', 'casey.olsen@buyer.example']]) {
-      addEnrichment(db, 'T', 'ready', { connector: 'discover', kind, value, label: 'fixture',
+      addEnrichment(db, 'T', 'ready', { connector: 'discover', kind, value, label: kind === 'email' ? PAGE_PROVEN_EMAIL_LABEL : 'fixture',
         source_url: 'https://buyer.example/team', source_date: day, retrieved_at: Date.parse(day) / 1000, confidence: null })
     }
   }
