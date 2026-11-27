@@ -6,17 +6,19 @@ import { googleAppVerified } from '@/lib/auth-google-explainer'
 import { getSettings, OutreachError, saveSettings, sendCapToday, sentLast24h } from '@/lib/outreach/service'
 import { sameOriginJson } from '@/lib/same-origin'
 import { accountSendCount } from '@/lib/outreach/send-budget'
+import { readAccountZone } from '@/lib/account-zone'
+import { getDb } from '@/lib/db/client'
 import { audit } from '@/lib/audit-route'
 import { denied } from '@/lib/workspace-access'
 
 // account_sent_24h is the whole rolling budget the daily cap is checked against (first touches, follow-ups, sequence steps,
 // re-opens); sent_24h is first touches only. #1618: daily_cap is this account's cap for a person's own sends (by its age) and
-// sent_today is everything sent since midnight in Toronto, which is what that cap is checked against. Read-only.
+// sent_today is everything sent since midnight in the account's own zone (#2054), which is what that cap is checked against. Read-only.
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
   const db = getScanDb()
-  const today = sendCapToday(db, user.tenantId)
+  const today = sendCapToday(db, user.tenantId, undefined, await readAccountZone(await getDb(), user.tenantId))
   return NextResponse.json({ autopilot_available: autopilotAvailable(), google_app_verified: googleAppVerified(), gmail: gmailStatus(db, user.tenantId), sender: getSettings(db, user.tenantId) ?? null, daily_cap: today.cap, sent_today: today.sent_today, sent_24h: sentLast24h(db, user.tenantId), account_sent_24h: accountSendCount(db, user.tenantId, Math.floor(Date.now() / 1000)) })
 }
 

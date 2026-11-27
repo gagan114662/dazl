@@ -236,7 +236,7 @@ test('a discovery lead with a published address counts as a lead with a contact;
   mail('B', 'd-none')              // a row carrying another workspace
   finish(db, 'jd')
   const c = listCampaigns(db, 'A').find(x => x.id === 'jd')!
-  // #1238: "with a contact" means the lead is ready by email or on LinkedIn (lib/discover/card.ts discoverState), as the Leads card decides it.
+  // #1238: "with a contact" means the lead is ready by email (lib/discover/card.ts discoverState), as the Leads card decides it.
   // With no date and no website its Approve is off, so the card counted "1 with a contact" beside a lead no action was offered for.
   assert.equal(c.contact.withContact, 0, 'an address stored on a lead its proof still holds is not a contact yet')
   assert.equal(c.contact.readyWithContact, 0, 'with no confirmed date it is timing-held, as a lead with a stored contact is: a contact, not a ready one')
@@ -247,8 +247,8 @@ test('a discovery lead with a published address counts as a lead with a contact;
   assert.equal(ready.contact.readyWithContact, 1)
 })
 
-// Owner decision 2026-11-23: a named person with their own LinkedIn profile is a contact when no personal email is published.
-test('a discovery lead whose named person has a LinkedIn profile counts as a lead with a contact; a company page or a profile with no person does not', () => {
+// A profile alone does not count as a Ready email contact.
+test('discovery leads with only a personal or company LinkedIn profile do not count as Ready', () => {
   const db = setup()
   job(db, 'A', 'jl', 'dental clinics in Toronto')
   lead(db, 'jl', 'l-profile'); lead(db, 'jl', 'l-company'); lead(db, 'jl', 'l-noperson')
@@ -258,5 +258,5 @@ test('a discovery lead whose named person has a LinkedIn profile counts as a lea
   row('l-company', 'person', 'Sam Patel, Owner'); row('l-company', 'linkedin', 'https://www.linkedin.com/company/co/')
   row('l-noperson', 'linkedin', 'https://www.linkedin.com/in/someone/')
   finish(db, 'jl')
-  assert.equal(listCampaigns(db, 'A').find(x => x.id === 'jl')!.contact.withContact, 1)
+  assert.equal(listCampaigns(db, 'A').find(x => x.id === 'jl')!.contact.withContact, 0)
 })

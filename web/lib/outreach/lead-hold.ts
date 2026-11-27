@@ -7,16 +7,21 @@ import { requiredGateHeld } from '../scan/held-state.ts'
 import { eventDayVerified, surfaceStoredIntent, TIMING_REQUESTED } from '../scan/scoreboard.ts'
 import { jobWindowDays } from '../scan/window.ts'
 import { heldReason, type PreviewLead } from '../journey.ts'
+import { isUnconfirmedTimingResearch } from '../lead-state.ts'
+import { discoverRecipientRefusal } from './service.ts'
 
 export interface TimingOpts { windowDays: number | null; timingRequired: boolean }
-export const timingOptsFor = (job: { query: string | null; icp: string | null }): TimingOpts => {
-  const windowDays = jobWindowDays(job as never)
+export const timingOptsFor = (job: Parameters<typeof jobWindowDays>[0]): TimingOpts => {
+  const windowDays = jobWindowDays(job)
   return { windowDays, timingRequired: windowDays != null || TIMING_REQUESTED.test(job.query ?? '') }
 }
 
 // null = ready; otherwise the first failing check's own words.
 export function leadHoldReason(db: Database.Database, tenantId: string, lead: Record<string, unknown> & { id: string }, enrichments: unknown[], timing: TimingOpts, at: Date): string | null {
-  const row = { ...lead, stored_intent: lead.intent ?? null, intent: surfaceStoredIntent(lead as never, timing).intent, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
+  const surfaced = surfaceStoredIntent(lead as never, timing)
+  const recipientRefused = lead.source_kind === 'discover' ? discoverRecipientRefusal(db, tenantId, lead.id) : null
+  const row = { ...lead, recipient_refused: recipientRefused, stored_intent: lead.intent ?? null, ...surfaced, enrichments, day_verified: eventDayVerified(lead as never, { now: at }),   // #1176: a proven day counts
     window_held: leadWindowHeld(db, tenantId, lead.id, at), currentness_held: currentnessHeld(db, tenantId, lead.id, at), gate_held: requiredGateHeld(db, tenantId, lead.id) !== null }
-  return heldReason(row as unknown as PreviewLead)
+  const preview = row as unknown as PreviewLead
+  return heldReason(preview) ?? (isUnconfirmedTimingResearch({ ...preview, timing: surfaced.timing }) ? 'event timing unknown' : null)
 }

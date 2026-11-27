@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { dayStartOfInstant, zoneOrFallback } from '../account-zone.ts'
 
 // One rolling 24-hour budget across manual first touches, warm follow-ups and cold
 // sequence steps. In-flight/unknown sends reserve a slot too. Claims are synchronous
@@ -34,11 +35,11 @@ export function manualSendCap(db: Database.Database, tenant: string, now: number
   const ceiling = Number(env.OUTREACH_DAILY_CAP)
   return env.OUTREACH_DAILY_CAP && Number.isFinite(ceiling) && ceiling >= 0 ? Math.min(cap, Math.floor(ceiling)) : cap
 }
-// The sending day is the Toronto calendar day (#1618, as the trial allowance #1621): the count starts again at midnight there.
-const torontoClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
-export function sendDayStart(now: number): number {
-  const p = Object.fromEntries(torontoClock.formatToParts(new Date(now * 1000)).map(x => [x.type, Number(x.value)]))
-  return now - (p.hour * 3600 + p.minute * 60 + p.second) // exact but for the two clock-change days a year, when it is an hour out
+// The sending day is the account's own calendar day (#2054, lib/account-zone.ts; #1618 before it, when the day
+// was Toronto's for every account): the count starts again at midnight in the account's zone, saved at signup.
+// A caller that does not pass the account's zone gets the UTC fallback day until it does.
+export function sendDayStart(now: number, zone?: string | null): number {
+  return dayStartOfInstant(now, zoneOrFallback(zone))
 }
 // `since`: the start of the window counted. The default is the rolling 24 hours the automated senders use; a person's own
 // sends are counted from sendDayStart(now).

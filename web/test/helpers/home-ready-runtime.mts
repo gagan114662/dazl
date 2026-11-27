@@ -244,3 +244,129 @@ test('#1620 an older-engine poor-fit lead stays out of Home\'s play card, as bef
   const rows = [{ id: 'a', fit: 1, source_kind: null }, { id: 'b', fit: null, source_kind: null }, { id: 'c', fit: 3, source_kind: null }, { id: 'd', fit: 0, source_kind: 'discover' }] as unknown as PreviewLead[]
   assert.deepEqual(playLeads(rows).map(l => l.id), ['b', 'c', 'd'])
 })
+
+test('#1831 Home and header do not count the unconfirmed-timing row in Leads Research', async () => {
+  const { db, job, lead, done } = seed()
+  const id = 'd'.repeat(24)
+  job(id, 'A', 'Dental practices', NOW - 2 * DAY)
+  for (const key of ['ungraded', 'graded']) {
+    const domain = `${key}.example`
+    lead(key, id, { machine: true, date: recent, domain, source: 'discover', buyer: false })
+    for (const [kind, value] of [['person', 'Dana Ruiz, Owner'], ['email', `dana.ruiz@${domain}`]]) {
+      addEnrichment(db, 'A', key, { connector: 'discover', kind, value, label: 'published on a public page', source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW })
+    }
+  }
+  db.prepare("UPDATE leads SET intent = 4 WHERE id = 'graded'").run()
+  done(id)
+
+  const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(res.status, 200)
+  const { leads } = await res.json() as { leads: (PreviewLead & { timing: string })[] }
+  const research = leads.filter(row => row.timing === 'unconfirmed' && !row.review_reason && !row.quarantined_at && row.human_confirmed_at == null)
+  assert.deepEqual(research.map(row => row.id), ['ungraded'])
+  const home = await readyGET()
+  assert.equal(home.status, 200)
+  const result = await home.json() as { ready: number }
+  assert.equal(result.ready, leads.length - research.length)
+  db.close()
+})
+
+test('#2012 a LinkedIn-only buyer is held on Home, Leads, the header and the scan count', async t => {
+  const { db, job, lead, done } = seed()
+  t.after(() => db.close())
+  const id = 'e'.repeat(24)
+  job(id, 'A', 'Dental practices', NOW - 2 * DAY)
+  for (const key of ['profile-only', 'refused-email', 'verified-email']) {
+    const domain = `${key}.example`
+    lead(key, id, { machine: true, date: recent, domain, source: 'discover', buyer: false })
+    db.prepare('UPDATE leads SET intent = 4 WHERE id = ?').run(key)
+    const rows = [
+      ['person', key === 'profile-only' ? 'Dana Ruiz, Owner' : 'Rosa Chen, Operations Director'],
+      key === 'profile-only' ? ['linkedin', 'https://www.linkedin.com/in/dana-ruiz/'] : ['email', `rosa.chen@${domain}`],
+    ]
+    for (const [kind, value] of rows) {
+      addEnrichment(db, 'A', key, { connector: 'discover', kind, value, label: 'published on a public page', source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW })
+    }
+    if (key !== 'profile-only') {
+      const verdict = key === 'verified-email' ? 'accepted' : 'rejected'
+      addEnrichment(db, 'A', key, { connector: 'deliverability', kind: 'deliverability', value: `rosa.chen@${domain}|${verdict}`, label: verdict, source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW })
+    }
+  }
+  done(id)
+  const verifiedAddress = 'rosa.chen@verified-email.example'
+  const suppress = db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, 'manual')")
+  suppress.run('another-workspace', verifiedAddress)
+  const res = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(res.status, 200)
+  const payload = await res.json() as { leads: (PreviewLead & { discover_state: string })[]; discover_counts: { ready: number } }
+  const { discoverJobCounts } = await import('../../lib/discover/state-db.ts')
+  const { sqliteDb } = await import('../../lib/db/client.ts')
+  const scan = await discoverJobCounts(sqliteDb(db), 'A', id)
+  const home = await readyGET()
+  assert.equal(home.status, 200)
+  assert.deepEqual({
+    home: (await home.json() as { ready: number }).ready,
+    header: payload.discover_counts.ready,
+    scan: scan?.ready,
+    leads: Object.fromEntries(payload.leads.map(row => [row.id, row.discover_state])),
+    reason: heldReason(payload.leads.find(row => row.id === 'profile-only')!),
+  }, {
+    home: 1,
+    header: 1,
+    scan: 1,
+    leads: { 'profile-only': 'no_contact', 'refused-email': 'no_contact', 'verified-email': 'ready_email' },
+    reason: 'no contact found yet',
+  })
+
+  suppress.run('A', verifiedAddress)
+  const suppressedResponse = await leadsGET(new NextRequest("http://test/api/leads?job_id=" + id))
+  assert.equal(suppressedResponse.status, 200)
+  const suppressed = await suppressedResponse.json() as typeof payload
+  const suppressedHome = await readyGET()
+  assert.equal(suppressedHome.status, 200)
+  assert.deepEqual({
+    home: (await suppressedHome.json() as { ready: number }).ready,
+    header: suppressed.discover_counts.ready,
+    scan: (await discoverJobCounts(sqliteDb(db), 'A', id))?.ready,
+    lead: suppressed.leads.find(row => row.id === 'verified-email')?.discover_state,
+  }, { home: 0, header: 0, scan: 0, lead: 'no_contact' })
+})
+
+test('#2012 Home and the company-first Leads route count the same email-ready leads', async t => {
+  const { db, job, lead } = seed()
+  t.after(() => db.close())
+  const { markCompanyFirstBudget } = await import('../../lib/company-first/product-discovery.ts')
+  const id = 'e'.repeat(24)
+  job(id, 'A', 'Businesses opening another site', NOW - DAY)
+  for (const key of ['missing-email', 'confirmed-email']) {
+    const domain = `${key}.example`
+    lead(key, id, { machine: true, date: recent, domain, source: 'discover', buyer: false })
+    db.prepare('UPDATE leads SET intent = 4 WHERE id = ?').run(key)
+    const proof = { connector: 'discover', label: 'published on a public page',
+      source_url: `https://${domain}/team`, confidence: null, source_date: recent, retrieved_at: NOW }
+    addEnrichment(db, 'A', key, { ...proof, kind: 'person', value: 'Lee Rivera, Owner' })
+    if (key === 'confirmed-email') addEnrichment(db, 'A', key, { ...proof, kind: 'email', value: `lee.rivera@${domain}` })
+  }
+  db.prepare("UPDATE scan_jobs SET status = 'done', enrich_finished_at = ?, run_budget = ? WHERE id = ?")
+    .run(NOW - DAY, markCompanyFirstBudget(null), id)
+
+  const home = await readyGET()
+  const leads = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(home.status, 200)
+  assert.equal(leads.status, 200)
+  const homeReady = await home.json() as { ready: number; companies: { lead_id: string; ready: boolean }[] }
+  const run = await leads.json() as {
+    company_first: boolean
+    company_first_counts: { ready: number }
+    discover_counts: { ready: number }
+    leads: { id: string; discover_state: string; currentness_held: boolean }[]
+  }
+  assert.equal(run.company_first, true)
+  assert.equal(homeReady.ready, 1)
+  assert.deepEqual(homeReady.companies.filter(row => row.ready).map(row => row.lead_id), ['confirmed-email'])
+  assert.deepEqual(Object.fromEntries(run.leads.map(row => [row.id, row.discover_state])),
+    { 'confirmed-email': 'ready_email', 'missing-email': 'no_contact' })
+  assert.equal(run.discover_counts.ready, homeReady.ready)
+  assert.equal(run.company_first_counts.ready, homeReady.ready)
+  assert.equal(run.leads.find(row => row.id === 'missing-email')?.currentness_held, false)
+})
