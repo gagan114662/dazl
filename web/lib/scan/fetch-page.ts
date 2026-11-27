@@ -67,7 +67,6 @@ export const RENDER_TIMEOUT_MS = 35_000
 export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; location?: string; type: string; body: string }> {
   if (signal?.aborted) return Promise.reject(new Error('aborted'))   // cancelled before it started: no connection is made
   return new Promise((resolveRaw, rejectRaw) => {
-    let hard: NodeJS.Timeout | undefined
     const onAbort = () => { req.destroy(new Error('aborted')); reject(new Error('aborted')) }   // a cancelled / timed-out caller destroys the socket: nothing keeps running behind it
     const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); resolveRaw(v) }
     const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
@@ -101,7 +100,7 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
       },
     )
     req.on('timeout', () => req.destroy(new Error('timeout')))
-    hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
+    const hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
     req.on('error', reject)
     if (signal?.aborted) return onAbort()
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -278,7 +277,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         continue
       }
       let thin: 'blocked' | 'js_required' | null = null
-      let html = r.body
+      const html = r.body
       if (r.status === 401 || r.status === 403 || r.status === 429) thin = 'blocked'
       else if (r.status === 404 || r.status === 410) return { fail: 'not_found' }
       else if (r.status < 200 || r.status >= 300) return { fail: 'error' }
