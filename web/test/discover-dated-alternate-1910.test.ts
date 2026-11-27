@@ -14,8 +14,9 @@ const careers = 'https://ferndental.example/careers/receptionist'
 const ats = 'https://job-boards.greenhouse.io/ferndental/jobs/123'
 const record = 'https://boards-api.greenhouse.io/v1/boards/ferndental/jobs/123'
 
-async function scan({ source, status, alternate = careers, page, apiDay, seen = true, onSecondPass = false, returnedAlternate = true }: {
-  source: string; status: number; alternate?: string; page: string; apiDay?: string; seen?: boolean; onSecondPass?: boolean; returnedAlternate?: boolean
+async function scan({ source, status, alternate = careers, page, apiDay, seen = true, onSecondPass = false, returnedAlternate = true, extraPages = [] }: {
+  source: string; status: number; alternate?: string; page: string; apiDay?: string; seen?: boolean; onSecondPass?: boolean; returnedAlternate?: boolean;
+  extraPages?: DiscoverResult['seen']
 }) {
   const lead: DiscoveredLead = {
     company: 'Fern Dental', domain: 'ferndental.example', signal: quote, signal_date: indexDay,
@@ -26,7 +27,7 @@ async function scan({ source, status, alternate = careers, page, apiDay, seen = 
   const found: DiscoverResult = {
     leads: [lead],
     seen: [{ url: source, title: quote, page_age: '2 days ago', text: null },
-      ...(seen ? [{ url: alternate, title: quote, page_age: '1 day ago', text: null }] : [])],
+      ...(seen ? [{ url: alternate, title: quote, page_age: '1 day ago', text: null }] : []), ...extraPages],
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 },
     stop: 'end_turn', model: 'claude-opus-5-5', note: null,
   }
@@ -84,6 +85,20 @@ test('an unrelated ATS owner or a URL absent from the search trace is never used
 test('the run can follow a single employer posting already found by the search without an explicit alternate', async () => {
   const { lead } = await scan({ source: indeed, status: 401, page: `<p>${quote}.</p><p>Posted ${posted}.</p>`, returnedAlternate: false })
   assert.deepEqual([lead.evidence_url, lead.date, lead.date_on_page], [careers, posted, true])
+})
+
+test('multiple employer postings use a unique posting whose read text matches the cited opening', async () => {
+  const opening = 'https://ferndental.example/jobs/front-desk'
+  const result = await scan({ source: indeed, status: 403, returnedAlternate: false, page: 'Unrelated opening',
+    extraPages: [{ url: opening, title: quote, page_age: null, text: `${quote}. Posted on ${posted}.` }] })
+  assert.deepEqual([result.lead.evidence_url, result.lead.date, isShown(result.lead)], [opening, posted, true])
+})
+
+test('multiple employer postings without a matching read stay held', async () => {
+  const { lead } = await scan({ source: indeed, status: 403, returnedAlternate: false, page: 'Unrelated opening',
+    extraPages: [{ url: 'https://ferndental.example/jobs/bookkeeper', title: quote, page_age: null,
+      text: `Fern Dental is hiring a bookkeeper in Toronto. Posted on ${posted}.` }] })
+  assert.deepEqual([lead.evidence_url, lead.date, isShown(lead)], [indeed, null, false])
 })
 
 test('a date in unrelated JobPosting markup does not date an employer careers listing', async () => {
