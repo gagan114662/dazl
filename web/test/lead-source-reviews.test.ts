@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
+import { leadContactContext } from '../lib/outreach/contact-purpose-db.ts'
+import { sourceCheckForLead } from '../lib/scan/source-review.ts'
 import { latestLeadSourceReviews } from '../lib/db/lead-source-reviews.ts'
 
-bothEngines('source review batch uses one latest, deterministic tenant-owned review for each lead', async ({ db }) => {
+bothEngines('source review batch uses one latest, deterministic tenant-owned review for each lead', async ({ db, raw }) => {
   for (const [job, tenant] of [['owned', 'owner'], ['other', 'foreign']]) {
     await db.run(`INSERT INTO scan_jobs (id,user_id,business_name,industry,location,status,candidates,created_at)
       VALUES (?,?,'Fixture','services','-','running',3,1)`, [job, tenant])
@@ -37,10 +39,23 @@ bothEngines('source review batch uses one latest, deterministic tenant-owned rev
     check: { fetch_status: 'ok', quote_match: true, company_named: true, contact_match: true, checked_at: 20 },
     contactContext: { excerpt: 'tie-z', source_url: source },
   }
-  for (const ids of [['reviewed'], ['foreign-lead', 'unreviewed', 'reviewed', 'reviewed']]) {
+  const pageIds = Array.from({ length: 198 }, (_, index) => `page-${index}`)
+  for (const id of pageIds) {
+    await db.run(`INSERT INTO leads (id, scan_job_id, company, signal, source_url)
+      VALUES (?, 'owned', 'Fixture', 'Expansion', ?)`, [id, source])
+  }
+  for (const ids of [
+    ['reviewed'],
+    ['foreign-lead', 'unreviewed', 'reviewed', 'reviewed'],
+    ['reviewed', 'unreviewed', ...pageIds],
+  ]) {
     reads = 0
     assert.deepEqual(await latestLeadSourceReviews(measured, 'owner', 'owned', ids), new Map([['reviewed', expected]]))
     assert.equal(reads, 1)
+  }
+  if (raw) {
+    assert.deepEqual(sourceCheckForLead(raw, 'owner', 'reviewed'), expected.check)
+    assert.deepEqual(leadContactContext(raw, 'owner', 'reviewed'), expected.contactContext)
   }
   assert.deepEqual(await latestLeadSourceReviews(db, 'owner', 'other', ['foreign-lead']), new Map())
   assert.equal((await latestLeadSourceReviews(db, 'foreign', 'other', ['foreign-lead'])).get('foreign-lead')?.check.checked_at, 60)
