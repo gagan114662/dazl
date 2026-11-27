@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { dedupKey } from './evidence.ts'
 import type { Candidate } from './evidence.ts'
 import { writeSourceStats, type SourceStats } from '../search/trace.ts'
@@ -30,6 +31,39 @@ export function migrateSourceRuns(db: Database.Database): void {
       PRIMARY KEY (lead_id, collector, attempt)
     );
   `)
+}
+
+const UPSERT_SOURCE_RUN_SQL = `INSERT INTO scan_source_runs
+  (job_id, attempt, collector, status, evidence_count, candidate_count, verified_count, review_count, inserted_count)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (job_id, attempt, collector) DO UPDATE SET status = excluded.status,
+    evidence_count = excluded.evidence_count, candidate_count = excluded.candidate_count,
+    verified_count = excluded.verified_count, review_count = excluded.review_count, inserted_count = excluded.inserted_count`
+const LINK_LEAD_SOURCE_SQL = `INSERT INTO lead_sources (lead_id, collector, attempt) VALUES (?, ?, ?)
+  ON CONFLICT (lead_id, collector, attempt) DO NOTHING`
+
+type LiveSourceRun = {
+  jobId: string
+  tenantId: string
+  attempt: number
+  collector: string
+  status: string
+  evidence: number | null
+  candidates: number | null
+}
+
+// Keep the running-state check and progress write together so finish or reclaim cannot race an older write.
+export async function writeLiveSourceRun(db: Db, run: LiveSourceRun): Promise<boolean> {
+  try {
+    return await db.tx(function* (tx) {
+      const lock = tx.kind === 'pg' ? ' FOR SHARE' : ''
+      const own = yield* tx.get("SELECT id FROM scan_jobs WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?" + lock,
+        [run.jobId, run.tenantId, run.attempt])
+      if (!own) return false
+      yield* tx.run(UPSERT_SOURCE_RUN_SQL, [run.jobId, run.attempt, run.collector, run.status, run.evidence, run.candidates, null, null, 0])
+      return true
+    })
+  } catch { return false /* progress never affects the scan */ }
 }
 
 // Match the actual surviving evidence, not merely a company that another source found.
@@ -80,8 +114,8 @@ export class SourceRunLedger {
     try {
       migrateSourceRuns(l.db)
       if (!l.db.prepare("SELECT 1 FROM scan_jobs WHERE id = ? AND status = 'running' AND attempts = ?").get(l.jobId, l.attempt)) return
-      l.db.prepare('INSERT OR REPLACE INTO scan_source_runs (job_id,attempt,collector,status,evidence_count,candidate_count,verified_count,review_count,inserted_count) VALUES (?,?,?,?,?,?,NULL,NULL,0)')
-        .run(l.jobId, l.attempt, collector, run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null)
+      l.db.prepare(UPSERT_SOURCE_RUN_SQL)
+        .run(l.jobId, l.attempt, collector, run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null, null, null, 0)
     } catch { /* live progress never affects the scan */ }
   }
   has(collector: string): boolean { return this.runs.has(collector) }
@@ -119,7 +153,7 @@ export class SourceRunLedger {
     const verifiedKeys = new Set(verified?.map(evidenceKey))
     const reviewKeys = new Set(review?.map(evidenceKey))
     const stored = db.prepare('SELECT id, company, name, signal, source_url, dedup_key FROM leads WHERE scan_job_id = ?').all(jobId) as (Candidate & { id: string; dedup_key: string })[]
-    const ins = db.prepare('INSERT OR REPLACE INTO scan_source_runs (job_id,attempt,collector,status,evidence_count,candidate_count,verified_count,review_count,inserted_count) VALUES (?,?,?,?,?,?,?,?,?)')
+    const ins = db.prepare(UPSERT_SOURCE_RUN_SQL)
     for (const [collector, run] of this.runs) {
       const count = (keys: Set<string>) => [...run.candidates].filter(k => keys.has(k)).length
       ins.run(jobId, attempt, collector, run.status === 'started' ? 'error' : run.status, run.evidence, run.observed || run.evidence === 0 ? run.candidates.size : null, verified && (run.observed || run.evidence === 0) ? count(verifiedKeys) : null, review && (run.observed || run.evidence === 0) ? count(reviewKeys) : null, [...run.candidates].filter(k => insertedKeys.has(k)).length)
@@ -130,7 +164,7 @@ export class SourceRunLedger {
     const source_skips = [...this.runs].flatMap(([source, run]) => { const reason = skipNote(run.status); return reason ? [{ source, status: run.status, reason }] : [] })
     this.parts = { ...this.parts, model: this.modelSummary(), source_skips }
     writeRunReport(db, jobId, attempt, buildRunReport(this.parts, verified ? verified.map(r => ({ key: evidenceKey(r) })) : null, review ? review.map(r => ({ key: evidenceKey(r), review_reason: (r as { review_reason?: string }).review_reason })) : null, attempt)) // never throws
-    const link = db.prepare('INSERT OR IGNORE INTO lead_sources (lead_id,collector,attempt) VALUES (?,?,?)')
+    const link = db.prepare(LINK_LEAD_SOURCE_SQL)
     for (const l of stored) for (const collector of this.credits.get(evidenceKey(l)) ?? []) link.run(l.id, collector, attempt)
   }
 }
