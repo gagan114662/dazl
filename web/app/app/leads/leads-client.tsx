@@ -36,7 +36,7 @@ import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
 import { publishedEmail, publishedContact, displayedEmailSource, emailsInText, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainUnresolvedText } from '@/lib/connectors/domain-unresolved'
-import { domainReviewFor } from '@/lib/outreach/domain-review'
+import { domainReviewFor } from '@/lib/outreach/domain-review-view'
 import SourceReview from './source-review'
 import PlayResearch from './play-research'
 import ResearchReview, { asResearchBlock } from '../research-review'

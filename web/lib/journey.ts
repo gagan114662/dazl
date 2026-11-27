@@ -4,7 +4,7 @@
 // review). Everything else is counted separately as "needs review / research" and never adds to the opportunity count.
 import { discoverNotReady, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
-import { domainReviewFor } from './outreach/domain-review.ts'
+import { domainReviewFor } from './outreach/domain-review-view.ts'
 import { publishedEmail } from './outreach/published-email.ts'
 import { scanOutcome, type ScanOutcomeKind } from './scan/scan-outcome.ts'
 import type { CardLead } from './scan/opportunity.ts'

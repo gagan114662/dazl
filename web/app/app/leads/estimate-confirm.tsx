@@ -1,5 +1,5 @@
 'use client'
-import { capLine, customerView, estimatePayerLine, searchAllowanceLine, type RunEstimate } from '@/lib/scan/price-estimate'
+import { capLine, customerView, estimatePayerLine, searchAllowanceLine, type RunEstimate } from '@/lib/scan/price-estimate-view'
 import TrialRefusalNotice from '../trial-refusal-notice'
 
 const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
