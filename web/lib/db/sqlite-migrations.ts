@@ -85,7 +85,7 @@ export function migrateAllSqlite(db: Database.Database): void {
       // Older ledgers may have lost tenant receipts. An unknown total refuses all admission.
       const legacy = yield* tx.get('PRAGMA table_info(apollo_credit_ledger)')
       yield* tx.run(APOLLO_CREDIT_TOTAL_SCHEMA)
-      yield* tx.run('INSERT INTO apollo_credit_total (singleton, used) VALUES (1, ?)', [legacy ? null : 0])
+      if (legacy) yield* tx.run('INSERT INTO apollo_credit_total (singleton, used) VALUES (1, NULL)')
     }
     yield* tx.run(APOLLO_CREDIT_LEDGER_SCHEMA)
   })

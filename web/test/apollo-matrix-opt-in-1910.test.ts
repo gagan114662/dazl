@@ -60,7 +60,7 @@ test('#1910 matrix dry mode reports the bounded call count from an evidence snap
     const db = new Database(dbPath, { readonly: true })
     try {
       assert.equal(db.prepare('SELECT COUNT(*) FROM apollo_credit_ledger').pluck().get(), 0)
-      assert.equal(db.prepare('SELECT used FROM apollo_credit_total').pluck().get(), 0)
+      assert.equal(db.prepare('SELECT COUNT(*) FROM apollo_credit_total').pluck().get(), 0)
     } finally { db.close() }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

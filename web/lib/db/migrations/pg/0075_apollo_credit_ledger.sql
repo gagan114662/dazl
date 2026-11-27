@@ -5,7 +5,7 @@ CREATE TABLE apollo_credit_total (
 
 -- A legacy ledger may have lost tenant receipts, so exhaust the entire pilot budget.
 INSERT INTO apollo_credit_total (singleton, used)
-VALUES (1, CASE WHEN to_regclass('apollo_credit_ledger') IS NULL THEN 0 ELSE NULL END);
+SELECT 1, NULL WHERE to_regclass('apollo_credit_ledger') IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS apollo_credit_ledger (
   tenant_id TEXT NOT NULL,

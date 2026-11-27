@@ -45,11 +45,15 @@ export async function reserveApolloLead(
       // SQLite's write transaction serializes reservations. Lock across tenants in Postgres too.
       if (tx.kind === 'pg') yield* tx.get("SELECT pg_advisory_xact_lock(hashtext('apollo-credit-ledger')) AS locked")
       const result = yield* tx.run(`INSERT INTO apollo_credit_ledger (tenant_id, lead_id, scan_id)
-        SELECT ?, ?, ? WHERE (SELECT used FROM apollo_credit_total WHERE singleton = 1) < ?
+        SELECT ?, ?, ? WHERE NOT EXISTS (
+          SELECT 1 FROM apollo_credit_total WHERE singleton = 1 AND (used IS NULL OR used >= ?)
+        )
         AND (SELECT COUNT(*) FROM apollo_credit_ledger WHERE tenant_id = ? AND scan_id = ?) < ?
         ON CONFLICT (tenant_id, lead_id) DO NOTHING`, [tenantId, leadId, scan.id, cap, tenantId, scan.id, scan.limit])
       if (result.changes !== 1) return false
-      const tally = yield* tx.run('UPDATE apollo_credit_total SET used = used + 1 WHERE singleton = 1 AND used < ?', [cap])
+      const tally = yield* tx.run(`INSERT INTO apollo_credit_total (singleton, used) VALUES (1, 1)
+        ON CONFLICT (singleton) DO UPDATE SET used = apollo_credit_total.used + 1
+        WHERE apollo_credit_total.used < ?`, [cap])
       if (tally.changes !== 1) throw new Error('Apollo lifetime reservation was not recorded')
       return true
     })
@@ -75,8 +79,10 @@ export async function planApolloReservations(
   if (!cap || !tenantId || !validScan(scan) || !leadIds.length) return []
   let rows: { used: number | string | null; lead_id: string | null; scan_id: string | null }[]
   try {
-    rows = await asDb(store).all(`SELECT t.used, l.lead_id, l.scan_id FROM apollo_credit_total t
-      LEFT JOIN apollo_credit_ledger l ON l.tenant_id = ? WHERE t.singleton = 1`, [tenantId])
+    rows = await asDb(store).all(`SELECT CASE WHEN t.singleton IS NULL THEN 0 ELSE t.used END AS used, l.lead_id, l.scan_id
+      FROM (SELECT 1 AS singleton) pilot
+      LEFT JOIN apollo_credit_total t ON t.singleton = pilot.singleton
+      LEFT JOIN apollo_credit_ledger l ON l.tenant_id = ?`, [tenantId])
   } catch (error) {
     const e = error as { code?: string; message?: string }
     if (e.code === '42P01' || /^no such table: apollo_credit_(ledger|total)$/i.test(e.message ?? '')) return []
