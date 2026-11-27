@@ -72,7 +72,7 @@ import SourceProgressList from './source-progress'
 import type { SourceProgress } from '@/lib/scan/progress'
 import { lastActivityNote } from '@/lib/scan/progress'
 import { statedOffer } from '@/lib/scan/play-offer-text'
-import { canQuoteWebsiteDraft, requestConfirmationProfile, reviewOffer, websiteReviewOffer } from './website-review-offer'
+import { canQuoteWebsiteDraft, preSubmitOfferWarning, requestConfirmationProfile, reviewOffer, websiteReviewOffer } from './website-review-offer'
 import { fpTypeLabel } from '@/lib/signals/first-party-labels'
 import { runNewLabel } from '@/lib/run-new-label'
 import PlanViewCard from './plan-view'
@@ -644,6 +644,8 @@ export default function LeadsClient() {
   const [advPick, setAdvPick] = useState<string[]>([])
   useEffect(() => { void fetch('/api/settings/advanced').then(r => r.ok ? r.json() : null).then(j => { if (j && Array.isArray(j.platforms)) setAdvanced(j); if (j?.available) setAdvReady(j.platforms.filter((p: { allowed?: boolean; consent: boolean; connected: boolean; enabled: boolean; operator_index?: boolean }) => p.allowed !== false && p.consent && ((p.connected && p.enabled) || p.operator_index)).map((p: { platform: string }) => p.platform)) }).catch(() => {}) }, [])
 
+  // #349: the saved profile's offer, filled by the same mount read that loads the plays (no second fetch).
+  const [savedProfile, setSavedProfile] = useState<{ offer: string | null; business: string; seller: string } | null>(null)
   // What THIS play sells (#349; lib/scan/play-offer.ts). It starts from the request when the request names an offer, else
   // from what a new play starts from (the business profile's offer, else the Memory positioning: the same base POST
   // /api/scan checks a direct run against); when the two differ the user chooses before the scan runs. Stored with the
@@ -984,7 +986,7 @@ export default function LeadsClient() {
   // The saved business buyer profile (Home > Build, reviewed there): carried whole - with its research decisions,
   // rejections and holds - into a first scan, so the first run never re-infers what the person already reviewed.
   const [savedBuyer, setSavedBuyer] = useState<Icp | null>(null)
-  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => { setPlays(playSuggestions(p)); const b = p && typeof p === 'object' ? (p as { buyer?: unknown }).buyer : null; if (b && typeof b === 'object' && typeof (b as { summary?: unknown }).summary === 'string') setSavedBuyer(b as Icp) }) }, [])
+  useEffect(() => { void fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null).then(p => { setPlays(playSuggestions(p)); const o = p && typeof p === 'object' ? (p as { new_play_offer?: unknown; business_name?: unknown; sells?: unknown }) : null; if (o && (o.new_play_offer === null || typeof o.new_play_offer === 'string')) setSavedProfile({ offer: o.new_play_offer as string | null, business: typeof o.business_name === 'string' ? o.business_name : '', seller: typeof o.sells === 'string' ? o.sells : '' }); const b = p && typeof p === 'object' ? (p as { buyer?: unknown }).buyer : null; if (b && typeof b === 'object' && typeof (b as { summary?: unknown }).summary === 'string') setSavedBuyer(b as Icp) }) }, [])
 
   const core = coreSources(serverSrc, keyState)
 
@@ -1018,6 +1020,12 @@ export default function LeadsClient() {
   const directChoice = offerConflict?.direct && offerConflict.requested === query ? offerConflict : null
   const reviewChoice = offerConflict && !offerConflict.direct ? offerConflict : null
   const openWebsiteDraft = draft ? websiteDraft.current : null
+  // #349: warn before submit when the request names an offer other than the saved one. Hidden once the submit-time
+  // chooser is up, during a scan, or while a website draft is open (it carries its own offer).
+  const offerWarning = useMemo(
+    () => savedProfile && !offerConflict && !scanActive && !openWebsiteDraft ? preSubmitOfferWarning(query, savedProfile) : null,
+    [savedProfile, query, offerConflict, scanActive, openWebsiteDraft],
+  )
   const websiteDraftChanged = !canQuoteWebsiteDraft(openWebsiteDraft, query, true)
   function invalidateWebsiteDraft(newQuery: string) {
     if (websiteDraft.current && query !== newQuery) websiteDraft.current.invalidated = true
@@ -1113,6 +1121,9 @@ export default function LeadsClient() {
           {scanActive && !otherActiveJobId && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
+        {offerWarning && <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm mt-3" role="alert" data-testid="offer-conflict-warning">
+          This request describes a different offer than your saved profile sells. It asks for <strong>{offerWarning.stated}</strong>, but the saved profile sells <strong>{offerWarning.saved}</strong>. Find leads will ask you to confirm which offer this play sells before it runs; the saved profile is not changed. To rebuild the profile from this request instead, use Review profile first.
+        </div>}
         {requestProfile && !openWebsiteDraft && !scanActive && !offerConflict?.direct && <p className="text-xs text-[#555] mt-2" data-testid="request-target">Search target: {query}</p>}
         {!requestProfile && businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
           {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Use Review profile first to build a new one from your sentence.

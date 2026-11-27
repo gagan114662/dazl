@@ -14,6 +14,16 @@ export function reviewOffer(query: string, current: Current) {
   return {offer:statedOffer(query) ?? chosen.offer ?? '',conflict:null}
 }
 
+// #349: the pre-submit warning. When the typed request names an offer that differs from the saved profile, say so in
+// the form before Find leads runs, not only after the server refuses the direct run (Quest's prod live check, 2a148c60,
+// found no warning before submit). Only a request that actually states a different offer warns: an ambiguous or
+// incomplete request has no second offer to name, and the submit-time chooser already asks for it.
+export function preSubmitOfferWarning(query: string, current: Current): { stated: string; saved: string } | null {
+  const c = reviewOffer(query, current).conflict
+  if (!c || !c.stated || !c.recorded) return null
+  return { stated: c.stated, saved: c.recorded }
+}
+
 export function websiteReviewOffer(query: string, current: Current, fromSite: string) {
   const review = reviewOffer(query,current)
   if (review.conflict) return review
