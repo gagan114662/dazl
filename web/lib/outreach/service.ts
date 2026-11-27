@@ -330,11 +330,14 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
 // The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
 // One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
-const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null) =>
-  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; label: string | null; source_url: string }[] })?.email ?? null
+const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null, companyDomain: string | null) =>
+  discoverContact({ source_kind: 'discover', name, company_domain: companyDomain, enrichments: db.prepare("SELECT kind, connector, value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; label: string | null; source_url: string }[] })?.email ?? null
 export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
   try {
-    const to = norm(discoverOwnEmail(db, tenantId, leadId, (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '')?.address ?? '')
+    const lead = db.prepare('SELECT l.name, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?')
+      .get(leadId, tenantId) as { name: string | null; company_domain: string | null } | undefined
+    if (!lead) return null
+    const to = norm(discoverOwnEmail(db, tenantId, leadId, lead.name, lead.company_domain)?.address ?? '')
     if (!EMAIL_RE.test(to)) return null
     return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
   } catch (e) {
@@ -350,7 +353,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // #1250: a shared inbox (info@, sales@, reception@ ...) is not a contact and is never drafted to; the first address that is not one is used
   // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
-  const mine = discoverOwnEmail(db, tenantId, leadId, lead.name)
+  const mine = discoverOwnEmail(db, tenantId, leadId, lead.name, state?.company_domain ?? null)
   const row = mine ? { value: mine.address, source_url: mine.source } : undefined
   // a press, support or privacy inbox keeps its own refusal, as before
   if (!mine && (db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email'").all(tenantId, leadId) as { value: string }[]).some(r => classifyPurpose(norm(r.value)).purpose === 'non-sales')) throw new OutreachError('not_sales_contact')
