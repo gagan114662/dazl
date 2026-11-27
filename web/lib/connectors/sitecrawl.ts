@@ -1739,23 +1739,20 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     const leads = (supplied ?? (() => { try { return pick('id, company, source_url, review_reason, signal, evidence_excerpt') } catch { return pick('id, company, source_url') } })()) as { id: string; company: string; source_url: string; review_reason?: string | null; signal?: string | null; evidence_excerpt?: string | null }[]
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
-    let legacyRequestedPlace: string | undefined
     // Use the stored request location only for absent or request-derived profiles.
     let placeRequested = true
     try {
-      const j = db.prepare('SELECT icp, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null; icp_inferred: number | null } | undefined
+      const j = db.prepare('SELECT * FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp?: string | null; icp_inferred?: number | null; location?: string | null; query?: string | null } | undefined
       const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null
       const usablePlace = (x: string) => !!x.trim() && x.trim() !== '-'
       if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string' && usablePlace(x))
-      if (where.some(usablePlace)) placeRequested = true
-      else if (j?.icp && j.icp_inferred !== 2) placeRequested = false
-      else {
-        try {
-          const location = (db.prepare('SELECT location FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { location?: string | null } | undefined)?.location?.trim()
-          legacyRequestedPlace = location && usablePlace(location) ? location : undefined
-          placeRequested = !!legacyRequestedPlace
-          if (legacyRequestedPlace) where = [legacyRequestedPlace]
-        } catch { placeRequested = true }
+      if (!where.length) {
+        if (j?.icp && j.icp_inferred !== 2) placeRequested = false
+        else if (j && j.location !== undefined) {
+          const location = j.location?.trim() ?? ''
+          placeRequested = usablePlace(location)
+          if (placeRequested && j.query?.trim()) where = [location]
+        }
       }
     } catch { /* no ICP: evidence places only */ }
     // The display-only importer is optional. A missing policy must not erase ordinary crawl geography.
