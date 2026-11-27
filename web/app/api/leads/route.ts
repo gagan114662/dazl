@@ -2,7 +2,7 @@ import { companyFirstResults } from '@/lib/scan/company-first-results'
 import { discoverRecipientRefusal } from '@/lib/outreach/service'
 import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
 import { latestLeadSourceReviews } from '@/lib/db/lead-source-reviews'
-import {currentnessHeld, leadWindowHeld} from '@/lib/outreach/currentness'
+import { currentnessHeldFromRow, currentnessRowsForJob, windowHeld } from '@/lib/outreach/currentness'
 import {requiredGateHeld, requiredGateHeldForJob} from '@/lib/scan/held-state'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
@@ -14,7 +14,7 @@ import { learnedPreference, listFeedback, sourceYield, type Learned, type Source
 import { gdeltAttribution } from '@/lib/search/news-attribution'
 import { readyRepeats, savedGradeWhy } from '@/lib/scan/leads-view'
 import { fitRationale } from '@/lib/scan/score'
-import { timingProofGap } from '@/lib/scan/timing-proof'
+import { timingProofGap, timingProofGapsDb } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
 import { currentBuyingNeedsForLeads } from '@/lib/scan/need-evidence'
@@ -54,19 +54,27 @@ export async function GET(req: NextRequest) {
   // Only once the job's final visibility checks have run, as the SAME snapshot that computed visibleIds says (results.final): before that
   // every row would look held. A separate read of the job could describe another enrichment attempt (Qodo on #1466).
   // The final check that keeps a verified (review_reason-free) candidate off the page, named - the same checks currentnessHeld runs, in its order.
+  const heldRows = companyFirst && results?.final ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null; quarantined_at?: number | null }[])
+    .filter(l => !results.visibleIds.has(l.id) && l.quarantined_at == null) : []
+  const timingIds = [...leads.map(l => l.id), ...heldRows.filter(l => l.review_reason == null).map(l => l.id)]
+  const now = new Date()
+  const timingRows = currentnessRowsForJob(scanDb, user.tenantId, job.id, timingIds)
+  const timingGaps = await timingProofGapsDb(sqliteDb(scanDb), user.tenantId, job.id, timingIds, now)
+    .catch(() => null)
+  const proofGap = (id: string) => timingGaps ? (timingGaps.get(id) ?? null) : timingProofGap(scanDb, user.tenantId, id, now)
+  const heldByWindow = (id: string) => {
+    const row = timingRows.get(id)
+    return !!row && windowHeld(row, now)
+  }
   const finalCheckReason = (id: string, eventDate: string | null): string => {
-    const now = new Date()
     try {
-      if (leadWindowHeld(scanDb, user.tenantId, id, now)) return eventDate ? 'outside_requested_window' : 'event_date_unproven'
+      if (heldByWindow(id)) return eventDate ? 'outside_requested_window' : 'event_date_unproven'
       if (gateHeld(id)) return 'required_gate_failed'
-      const gap = timingProofGap(scanDb, user.tenantId, id, now)
+      const gap = proofGap(id)
       return gap ? (FINAL_GAP_REASON[gap] ?? gap) : 'held_by_final_checks'
     } catch { return 'held_by_final_checks' }
   }
-  const held = companyFirst && results?.final ? ((await db.listLeads(user.tenantId, job.id, 2000, true)) as { id: string; company: string; source_url: string; signal?: string | null; event_date: string | null; review_reason?: string | null; quarantined_at?: number | null }[])
-    // a lead the user rejected (quarantined) is counted as rejected everywhere, never as held
-    .filter(l => !results?.visibleIds.has(l.id) && l.quarantined_at == null)
-    .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? finalCheckReason(l.id, l.event_date) })) : []
+  const held = heldRows.map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? finalCheckReason(l.id, l.event_date) }))
   const sequences = await db.sequenceStatusByLead(user.tenantId)
   const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
   const evts = await db.eventsForLeads(user.tenantId, leads)
@@ -84,9 +92,9 @@ export async function GET(req: NextRequest) {
     return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
-    fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
+    fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:proofGap(l.id),
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
-    currentness_held:currentnessHeld(scanDb,user.tenantId,l.id,undefined,() => gateHeld(l.id)), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:gateHeld(l.id), recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
+    currentness_held:currentnessHeldFromRow(timingRows.get(l.id), now, () => gateHeld(l.id), () => proofGap(l.id) !== null), window_held:heldByWindow(l.id), gate_held:gateHeld(l.id), recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
     lookalike_fit:la && la !== 'unreadable' && !la.exclusionsOnly ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
   // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.
