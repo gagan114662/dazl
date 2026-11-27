@@ -7,6 +7,7 @@ test('a verified date is acknowledged while the rest of the source proof awaits 
     source_kind: 'discover',
     event_date: new Date(Date.now() - 86_400_000).toISOString().slice(0, 10),
     date_status: 'verified',
+    event_date_proof: 'page_bound',
     review_reason: 'source_review_required',
     company_domain: 'orchard.example',
     enrichments: [
@@ -24,7 +25,14 @@ test('a verified date is acknowledged while the rest of the source proof awaits 
   assert.deepEqual(discoverApprove(complete), { ok: true })
   assert.equal(discoverState(complete), 'ready_email')
 
-  const unverified = { ...lead, date_status: 'unverified' }
+  const pageDateOnly = { ...lead, event_date_proof: null }
+  assert.equal(discoverState(pageDateOnly), 'review')
+  assert.deepEqual(discoverApprove(pageDateOnly), {
+    ok: false,
+    reason: "dazl could not confirm this lead's proof page. Check the source under Needs your review first.",
+  })
+
+  const unverified = { ...pageDateOnly, date_status: 'unverified' }
   const refusal = discoverApprove(unverified)
   assert.equal(refusal.ok, false)
   if (!refusal.ok) assert.doesNotMatch(refusal.reason, /date is verified/)
