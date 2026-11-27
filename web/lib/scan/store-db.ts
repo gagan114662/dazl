@@ -10,6 +10,7 @@
 // The status-transition and running-job triggers stay in the schema on both engines; nothing here bypasses them.
 import { isCarryStub } from './carry-exclusions.ts'
 import { placeTerms } from '../connectors/sitecrawl.ts'
+import { queryProfileOrigin } from './request-target.ts'
 import { randomBytes } from 'node:crypto'
 import type { Db, Param, Tx, TxBody } from '../db/client.ts'
 import { CANCEL_HOLD_S, MAX_ATTEMPTS, REAP_STAGING_CHECKS_SQL, STAGING_CHECK_DEAD_S, STALE_RUNNING_S, type QueryInput, type ScanInput, type CancelResult, type JobSummary } from './store.ts'
@@ -38,7 +39,7 @@ function requestedQueryPlace(icp: string | null | undefined, query: string): str
 
 const queryJobParams = (id: string, userId: string, input: QueryInput, now: number): Param[] => {
   const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
-  return [id, userId, input.query.slice(0, 150) || '-', requestedQueryPlace(input.icp, input.query), input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? now : null, input.watchId ?? null, input.runBudget ?? null, now]
+  return [id, userId, input.query.slice(0, 150) || '-', requestedQueryPlace(input.icp, input.query), input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? queryProfileOrigin(input) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? now : null, input.watchId ?? null, input.runBudget ?? null, now]
 }
 export async function createQueryJob(db: Db, userId: string, input: QueryInput, now = nowS()): Promise<string> {
   const id = randomBytes(12).toString('hex')

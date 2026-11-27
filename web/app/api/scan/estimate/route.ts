@@ -18,7 +18,7 @@ import { tenantAllowanceLeft } from '@/lib/search/tinyfish'
 import { readSellerLine } from '@/lib/auth-db'
 import { budgetedIcp, MAX_QUERY, normalizeIcp } from '@/lib/scan/icp'
 import { cleanText } from '@/lib/validate'
-import { carriedWorkspaceOfferConflict, completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
+import { completeOffer, confirmedPlayOffer, effectiveOffer } from '@/lib/scan/play-offer'
 import { captureError } from '@/lib/ops/errors'
 import { requestIdOf } from '@/lib/ops/request-log'
 
@@ -55,9 +55,9 @@ export async function POST(req: NextRequest) {
       const confirmed = await confirmedPlayOffer(getScanDb(), user.tenantId, query, seller)
       if (confirmed?.offer === null) return NextResponse.json({ error: 'offer_conflict', stated: null, saved: '', incomplete: true }, { status: 409 })
       if (!confirmed) {
-        const result = effectiveOffer({ seller, query }, readTenantOffer(getScanDb(), user.tenantId))
-        const conflict = result.conflict ?? (body?.icp && body.reviewed === false
-          ? carriedWorkspaceOfferConflict(query, user.business_name, seller, result.offer) : null)
+        const result = effectiveOffer({ seller, query }, readTenantOffer(getScanDb(), user.tenantId), { newPlay: true })
+        const conflict = result.conflict ?? (!result.offer || result.source === 'request'
+          ? { stated: result.offer, recorded: '', incomplete: true as const } : null)
         if (conflict) return NextResponse.json({ error: 'offer_conflict', stated: conflict.stated,
           saved: conflict.recorded, ...(conflict.ambiguous ? { ambiguous: true } : {}), ...(conflict.incomplete ? { incomplete: true } : {}), ...(conflict.freshTarget ? { fresh_target: true } : {}),
           ...(conflict.withdrawn ? { withdrawn: conflict.withdrawn } : {}) }, { status: 409 })

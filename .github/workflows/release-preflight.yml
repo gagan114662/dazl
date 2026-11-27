@@ -1,11 +1,10 @@
 name: release-preflight
 on:
   pull_request:
-    paths: ['web/**', 'ops/**', 'session-worker/**', '.github/workflows/web-ci.yml', '.github/workflows/release-gate.yml', '.github/workflows/release-preflight.yml', '.github/workflows/session-worker-ci.yml']
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
-    paths: ['web/**', 'ops/**', 'session-worker/**', '.github/workflows/web-ci.yml', '.github/workflows/release-gate.yml', '.github/workflows/release-preflight.yml', '.github/workflows/session-worker-ci.yml']
-  # Same exact-SHA coverage as web-ci: dispatchable at any ref.
+  # Manual runs on main can validate the selected commit.
   workflow_dispatch:
   merge_group:
     types: [checks_requested]
@@ -15,31 +14,44 @@ concurrency:
   # PRs: one group per PR. Pushes to main (#1504): one shared group; a newer main push cancels the older run.
   group: ${{ github.event_name == 'push' && 'release-preflight-main' || format('release-preflight-{0}', github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+env:
+  FULL_CI: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
 jobs:
   fail-closed:
     runs-on: ubuntu-latest
     steps:
+      - name: Explain deferred full suite
+        if: env.FULL_CI != 'true'
+        working-directory: .
+        run: echo "full suite deferred until ready-to-merge" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: env.FULL_CI == 'true'
       # #901: the discovery guard runs on its own, BEFORE discovery and independent of any discovery pattern, so changing a
       # pattern below can never switch the guard off. It fails if any ops/**/test*.py file is outside the discovery steps.
       - name: Ops test discovery guard
+        if: env.FULL_CI == 'true'
         run: python3 ops/test_ci_discovery.py
       - name: Ops tests (ops/test_*.py)
+        if: env.FULL_CI == 'true'
         run: python3 -m unittest discover -s ops -p 'test_*.py'
       # ops/staging has no __init__.py, so discovery over ops never reaches it (#907/#908 tests): its own step.
       - name: Ops staging tests (ops/staging/test_*.py)
+        if: env.FULL_CI == 'true'
         run: python3 -m unittest discover -s ops/staging -p 'test_*.py'
       # Ops browser checks and the worker use Node 22, just like release-gate.
       - uses: actions/setup-node@v4
+        if: env.FULL_CI == 'true'
         with:
           node-version: 22
       # ops/prod (the production deploy from a prebuilt build, #907) has no __init__.py either: its own step.
       # Playwright's Chromium download is cached per version (it took up to 7.5 min uncached); --with-deps still installs the OS libraries every run
       - uses: actions/cache@v4
+        if: env.FULL_CI == 'true'
         with:
           path: ${{ runner.temp }}/dazl-preflight-browser
           key: playwright-preflight-shell-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
       - name: Ops prod tests (ops/prod/test_*.py)
+        if: env.FULL_CI == 'true'
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/dazl-preflight-browser
         run: |
@@ -50,10 +62,12 @@ jobs:
           HYDRATION_CHECK_BROWSER="$browser" python3 -m unittest discover -s ops/prod -p 'test_*.py'
       # ops/session-worker (the session worker's unit and install script, #1037) has no __init__.py either: its own step.
       - name: Ops session-worker tests (ops/session-worker/test_*.py)
+        if: env.FULL_CI == 'true'
         run: python3 -m unittest discover -s ops/session-worker -p 'test_*.py'
       # ops/inbound-mail (the AWS-only inbound mail receiver, #1111) is not a package either: its own step. aiosmtpd is
       # the one dependency, installed from the same Ubuntu package the box runs, so the SMTP-level tests are not skipped.
       - name: Inbound mail receiver tests (ops/inbound-mail/test_*.py)
+        if: env.FULL_CI == 'true'
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends python3-aiosmtpd
           /usr/bin/python3 -c 'import aiosmtpd'

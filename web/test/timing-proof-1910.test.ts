@@ -26,7 +26,7 @@ async function readiness(postingDate: string | null, otherMarkup = '') {
     fit: 4, intent: 4, review_reason: null,
     enrichments: [
       { connector: 'discover', kind: 'person', value: 'Dana Rivera, Owner', source_url: `https://${site}/team` },
-      { connector: 'discover', kind: 'email', value: `dana@${site}`, source_url: `https://${site}/contact` },
+      { connector: 'discover', kind: 'email', value: `dana@${site}`, label: 'published on a public page', source_url: `https://${site}/contact` },
     ],
   }
   assert.equal(checked.signal_seen, true, 'the hiring claim itself has independent proof')
@@ -92,6 +92,19 @@ test('#1910 dates in a URL or a relative publication or update label are not pos
     const checked = await checkLead({ ...lead, evidence_url: `${url}/${day}` }, [],
       htmlResponse(`<p>${opening}</p><p>${annotation}</p>`), undefined, now)
     assert.equal(checked.date, null, annotation || 'URL date')
+  }
+})
+
+test('#1910 hourly posting ages use the UTC day of the posting', async () => {
+  const readAt = new Date('2026-11-26T01:00:00Z')
+  for (const [label, expected] of [
+    ['Posted 2 hours ago', '2026-11-25'],
+    ['Posted 30 minutes ago', null],
+    ['Posted 1 hour ago', '2026-11-26'],
+    ['Posted 26 hours ago', '2026-11-24'],
+  ] as const) {
+    const checked = await checkLead(lead, [], htmlResponse(`<p>${opening}</p><p>${label}</p>`), undefined, readAt)
+    assert.equal(checked.date, expected, label)
   }
 })
 

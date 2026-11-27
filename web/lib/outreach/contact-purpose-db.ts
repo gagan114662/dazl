@@ -4,7 +4,7 @@ import {readContextLabel,type ContactContext} from './contact-context.ts'
 import {tableExists} from './send-budget.ts'
 export function leadContactContext(db:Database.Database,tenant:string,lead:string):ContactContext|null {
  if(!tableExists(db,'source_reviews'))return null
- const r=db.prepare('SELECT r.input_json FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id AND j.id=r.job_id WHERE r.tenant_id=? AND r.lead_id=? AND j.user_id=? ORDER BY r.checked_at DESC LIMIT 1').get(tenant,lead,tenant) as {input_json:string}|undefined
+ const r=db.prepare('SELECT r.input_json FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id AND j.id=r.job_id WHERE r.tenant_id=? AND r.lead_id=? AND j.user_id=? ORDER BY r.checked_at DESC, r.id DESC LIMIT 1').get(tenant,lead,tenant) as {input_json:string}|undefined
  try {const c=JSON.parse(r?.input_json??'{}').contact_context;return c&&typeof c.excerpt==='string'&&typeof c.source_url==='string'?c:null}catch{return null}
 }
 export function contactPurposeRestricted(db:Database.Database,tenant:string,lead:string,email:string):boolean {

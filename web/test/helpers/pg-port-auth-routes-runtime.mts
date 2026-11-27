@@ -52,6 +52,7 @@ const signup = await import('../../app/api/auth/signup/route.ts')
 const verify = await import('../../app/api/auth/verify/route.ts')
 const resetRequest = await import('../../app/api/auth/reset/request/route.ts')
 const reset = await import('../../app/api/auth/reset/route.ts')
+const policy = await import('../../app/api/onboarding/policy/route.ts')
 const signin = await import('../../app/api/auth/signin/route.ts')
 const googleStart = await import('../../app/api/auth/google/route.ts')
 const googleCallback = await import('../../app/api/auth/callback/google/route.ts')
@@ -136,6 +137,20 @@ async function scenario(db: Db): Promise<{ out: Out[]; rows: Record<string, unkn
   const jar = new Map<string, string>()
   out.push(await call('signin dee', withJar(jar, () => signin.POST(post('/api/auth/signin', { email: 'dee@example.test', password: strong(4) })))))
   out.push({ name: 'signin dee cookie', status: 0, body: /^[a-f0-9]{64}$/.test(jar.get('dazl_session') ?? '') })
+  const policyPath = '/api/onboarding/policy'
+  const doPolicy = (action: string) => withJar(jar, () => policy.POST(post(policyPath, { action })))
+  const getPolicy = () => withJar(jar, () => policy.GET())
+  const original = await db.get('SELECT opted_in_by, withdrawn_at FROM onboarding_policies WHERE tenant_id = ?', [T])
+  assert.deepEqual(await (await getPolicy()).json(), { policy: null }, 'another tenant’s policy is invisible')
+  assert.equal((await doPolicy('opt_in')).status, 200)
+  const active = await (await getPolicy()).json()
+  assert.equal(active.policy?.opted_in_by, 'userD_fixture')
+  assert.deepEqual(await (await doPolicy('withdraw')).json(), { ok: true, changed: true })
+  assert.deepEqual(await (await doPolicy('withdraw')).json(), { ok: true, changed: false })
+  assert.deepEqual(await (await getPolicy()).json(), { policy: null })
+  assert.deepEqual(await db.get('SELECT opted_in_by, withdrawn_at FROM onboarding_policies WHERE tenant_id = ?', [T]), original,
+    'the unrelated tenant stays opted in')
+
   // 4. a new Google account is a verified conversion at creation.
   const s = await googleStart.GET(get('https://staging.dazl.ai/api/auth/google'))
   const cookie = /dazl_oauth=([^;]+)/.exec(s.headers.get('set-cookie') ?? '')?.[1]

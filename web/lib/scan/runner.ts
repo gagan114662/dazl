@@ -2,6 +2,7 @@ import { runClaudeWebSearch, ClaudeSearchError, CLAUDE_SEARCH_MODEL, CLAUDE_COMP
 import { applyCarriedExclusions } from './carry-exclusions.ts'
 import { reserveNativeSearch } from './native-search-reserve.ts'
 import { discoverLeads, discoverProfileCarried } from '../discover/agent.ts'
+import { PAGE_PROVEN_EMAIL_LABEL } from '../discover/card.ts'
 import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads, samePerson } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
@@ -27,6 +28,8 @@ import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
 import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
+import { readAccountMarket } from '../settings/search-market-store.ts'
+import { MARKET_NOTICE, resolveSearchMarket, tinyfishMarket, type SearchMarket } from './search-market.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { failCrashedJob } from './crash.ts'
 import { slotAvailable, acquireSlot, releaseSlot } from './run-slots.ts'
@@ -37,6 +40,7 @@ import { atsPublisherRef, atsPostingRef, heldCopyBoard, signalNamesBoardPosting 
 import { companyKey, dedupKey, hasPhrase, MIN_CONFIDENCE, norm, pageHeadingNames, supportedEvidenceWindow, verifyEvidence, type Candidate, type JudgeAttribution } from './evidence.ts'
 import { budgetedIcp, fallbackIcp, flatProfile, icpPrompt, inferIcp, keepStatedFundingStage, MAX_QUERY, normalizeIcp, parseIcp, type Icp } from './icp.ts'
 import { isCountryOrRegion } from './countries.ts'
+import { collectApolloScanEvidence } from '../enrich/apollo-scan-evidence.ts'
 import { resolveSearchProfile } from './profile-match.ts'
 import { isMissingSchema, draftOffer, cleanOffer } from './play-offer-text.ts'
 import { readTenantOffer } from '../outreach/play-memory.ts'
@@ -1125,7 +1129,7 @@ export function isMonitorRun(db: Database.Database, job: Pick<Job, 'id' | 'user_
 }
 interface AdaptiveRound { queries: string[]; skipUrls: ReadonlySet<string> }
 
-async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound, caps?: { searches: number; fetches: number }): Promise<LeadDraft[] | null> {
+async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, market: SearchMarket, provider: Provider, key: string, fetchImpl?: typeof fetch, diag?: { trace: SearchTrace; info: Partial<SourceStats>; hitUrls: string[]; tfTextUrls?: string[]; newsUrls?: string[]; held?: HeldText; urls?: UrlRecord[]; recordFetch?: typeof fetch; tfFlags?: { attempted: boolean; failed: boolean } }, newsHttp?: SafeGet, round?: AdaptiveRound, caps?: { searches: number; fetches: number }): Promise<LeadDraft[] | null> {
   migrateTinyfish(db)
   const complete = provider.complete!
   // caps (#1037 first-play fallback): a HARD per-run limit below the ordinary per-scan counts, applied by starting the per-scan counters
@@ -1170,8 +1174,7 @@ async function tinyfishLeads(db: Database.Database, job: Job, icp: Icp, provider
   }
   const after = windowAfter(icp.window_days) // the user's window when set (never wider), else 365 days
   const hits: Awaited<ReturnType<typeof tfSearch>> extends infer R ? (R extends { ok: true; hits: infer H } ? H : never) : never = []
-  // Without location/language TinyFish searches as US/English; the profile's country and language target the buyer's market.
-  const geo = { ...(icp.country ? { location: icp.country } : {}), ...(icp.language ? { language: icp.language } : {}) }
+  const geo = tinyfishMarket(market)
   for (const query of q) { const r = await tfSearch(db, job.user_id, query, { afterDate: after, ...geo }, spent, { ...(diag ? { trace: diag.trace } : {}), ...(diag?.recordFetch ? { fetchImpl: diag.recordFetch } : {}), charge: trialCharges.get(job) }); if (diag?.tfFlags && (r.ok || (r.reason !== 'cap' && r.reason !== 'disabled'))) { diag.tfFlags.attempted = true; if (!r.ok) diag.tfFlags.failed = true } if (!r.ok) { if (hits.length === 0) return null; break } hits.push(...r.hits) }
   // An adaptive round reads only pages round one never saw: a page already read cannot change the result, and is not paid for twice.
   if (round) { const seen = new Set([...round.skipUrls].map(u => canonicalUrl(u) ?? u)); for (let i = hits.length - 1; i >= 0; i--) if (seen.has(canonicalUrl(hits[i].url) ?? hits[i].url)) hits.splice(i, 1) }
@@ -1344,6 +1347,7 @@ export interface RunDeps {
   // The Claude discovery lane (runDiscoverLane). Default: on, unless DAZL_DISCOVER_LANE=0 (the fenced test harness sets that, so no test
   // reaches the live API by accident). true forces it on whatever the environment says; false forces it off.
   discover?: boolean
+  onApolloEvidence?: (rows: Awaited<ReturnType<typeof collectApolloScanEvidence>>) => void
   discoverImpl?: typeof discoverLeads   // the loop itself, replaceable in tests
   enrichImpl?: typeof enrichLeads | null   // its second pass for people and websites; null switches it off
   // newsHttp: the free news search's own HTTP (lib/search/news.ts), separate from the per-scan sources' sourceHttp.
@@ -1446,15 +1450,23 @@ export function laneSwitchedOn(job: Pick<Job, 'query' | 'csv_domain'>, deps: Pic
   return deps.discover === true || (deps.discover !== false && env.DAZL_DISCOVER_LANE !== '0')
 }
 const DISCOVER_SCORE = { high: 85, medium: 65, low: 45 } as const
-function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
-  const dated = !!l.date, printed = l.date_source === 'page'
+export function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
+  // #2004: a day the proof page states in its own typed markup is on the page, but it is not PRINTED on it - the two are different
+  // proofs, and only the printed one may be called page_bound.
+  const dated = !!l.date, printed = l.date_source === 'page' && !l.date_on_page_field
+  // #2096: a careers page that embeds its board's record names the posting's day without printing it. That day is the board's own
+  // structured date for that posting (ats_structured, hiring only), cited by the record's URL - never page_bound, because the page text
+  // does not carry it.
+  const record = l.date_proof === 'ats_structured' && !!l.date_record_url && l.proof === 'confirmed'
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
     score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
-    event_date: l.date, event_date_proof: printed && l.date_on_page && l.proof === 'confirmed' ? 'page_bound' : null,
-    event_date_proof_note: printed && l.date_on_page ? 'the date is printed on the proof page' : null,
-    timing_note: l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
-    date_status: dated ? (printed && l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
+    event_date: l.date,
+    event_date_proof: record ? 'ats_structured' : l.date_on_page && l.proof === 'confirmed' ? (printed ? 'page_bound' : 'page_structured') : null,
+    event_date_proof_note: record ? `the day comes from the posting's own board record ${l.date_record_url}`.slice(0, 200)
+      : !l.date_on_page ? null : printed ? 'the date is printed on the proof page' : `the proof page's own typed ${l.date_on_page_field} states the day`,
+    timing_note: record ? `event date ${l.date}: read from the posting's own board record ${l.date_record_url}`.slice(0, 200) : l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
+    date_status: dated ? (record || l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
@@ -1464,7 +1476,7 @@ function isJobBankPosting(raw: string): boolean {
     /^\/jobsearch\/jobposting\/\d+\/?$/.test(url.pathname)
 }
 
-async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
+async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch, onApolloEvidence }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch' | 'onApolloEvidence'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
   // The lane returns before legacy query inference; persist a general request-only profile for null-ICP queries.
@@ -1527,11 +1539,12 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     providerDispatchStarted = true
     return (fetchImpl ?? fetch)(input, init)
   }
+  const market = resolveSearchMarket(job.query!, profile, await readAccountMarket(process.env.DATABASE_URL ? await getDb() : sqliteDb(db), job.user_id))
   const hold = spendGuards.length ? await reserveNativeSearch(spendGuards, reserveUsd, () => assertOwned(db, job)) : await reserveScanSpend('llm.anthropic.web_search', () => reserveUsd)
   let run: DiscoveryRun
   try {
     // The run may spend what was reserved, less a margin for the people pass; a full run is held to the owner's US$1 a request.
-    run = await runDiscovery({ query: job.query!, offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
+    run = await runDiscovery({ query: job.query!, ...(market.country || market.language ? { market } : {}), offer: sells?.offer ?? sells?.seller ?? null, ...(profile ? { profile, profileCarried } : {}), ...(known.length ? { exclude: known } : {}) },
       { maxUsd: Math.min(DISCOVER_MAX_USD, reserveUsd * 0.8), ...(small ? (room < DISCOVER_SMALL_MIN_USD ? DISCOVER_TINY_BUDGET : DISCOVER_TRIAL_BUDGET) : {}) },
       { apiKey: key, fetch: fetchImpl, providerFetch, discover, enrich })
   } catch (e) {
@@ -1553,12 +1566,14 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   const shown = live.filter(isShown), unconfirmed = live.filter(l => !isShown(l))
   const out: VerifyOutcome = {
     leads: shown.map(l => discoveredLead(l, now)),
-    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required' })),
+    review: unconfirmed.map(l => ({ ...discoveredLead(l, now), review_reason: 'source_review_required',
+      ...(l.proof_check ? { timing_note: l.proof_check === 'spend_cap' ? 'Proof not checked (spend cap).' : 'Proof could not be checked.' } : {}),
+    })),
     dropped: gone.length ? { page_not_found: gone.length } : {},   // the Leads page's words for it: "page no longer exists"
   }
   // #1579: the lane's own account goes into the saved run report, so a search that returns nothing says why (which budget it ran
   // with, how it stopped, and the engine's one-sentence note) instead of only "0 candidates".
-  ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, requests: run.requests, passes: run.passes, returned: run.leads.length, shown: shown.length, usd: run.accountingUncertain ? null : run.usd } })
+  ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, requests: run.requests, passes: run.passes, returned: run.leads.length, shown: shown.length, ...(run.parse_counts ? { parse_counts: run.parse_counts } : {}), usd: run.accountingUncertain ? null : run.usd, ...(run.emailDropped ? { email_dropped: 'not_on_source', emails_dropped: run.emailDropped } : {}) } })
   ledger.record(source, 'ok')
   // #1579 (production, 2026-11-23): a request accepted as company-first and answered here is the lane's scan. Left marked, every page, the
   // leads API and the spreadsheet hold its leads for the older rollout's final checks, which this lane never runs: 7 and 5 paid leads, none shown.
@@ -1583,15 +1598,25 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
       }
     }
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
+    if (!isShown(l) && l.quote_on_page && l.claim_lacks.length > 0) {
+      const missingWords = l.claim_lacks.join(', ')
+      const preview = missingWords.slice(0, 253)
+      const boundary = preview.lastIndexOf(', ')
+      const value = missingWords.length <= 254 ? missingWords : `${boundary > 0 ? preview.slice(0, boundary) : preview}…`
+      addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'claim_lacks',
+        value, label: 'Words missing from the cited evidence', confidence: null,
+        source_url: l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+    }
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
-    if (l.email && l.email_source_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'email', value: l.email.slice(0, 254), label: 'published on a public page', confidence: null,
+    if (l.email && l.email_source_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'email', value: l.email.slice(0, 254), label: PAGE_PROVEN_EMAIL_LABEL, confidence: null,
       source_url: l.email_source_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
     if (l.linkedin_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'linkedin', value: l.linkedin_url.slice(0, 254), label: 'linked from a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
   }
   if (needsContactCrawl.length && sitecrawlEnabled()) {
     beginEnrichment(db, job.id, job.attempts)
+    const completedCrawlIds: string[] = []
     try {
       const signal = AbortSignal.timeout(postFinishBudgetMs())
       const findSite = jobBankDomainLookups.size
@@ -1602,6 +1627,7 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
         textSites: siteHints,
         companyFirstContacts: true,
         signal,
+        ...(onApolloEvidence ? { onContactReadComplete: (id: string) => completedCrawlIds.push(id) } : {}),
         ...(findSite ? {
           findSites: async (company, where, id) => {
             if (!jobBankDomainLookups.has(id) || !postFinishAliveStrict(db, job)) return []
@@ -1628,10 +1654,16 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
             addEnrichment(db, job.user_id, id, { ...addresses[0], connector: 'discover', label: 'published on a public page' })
           }
         }
+        if (onApolloEvidence) {
+          try { onApolloEvidence(await collectApolloScanEvidence(sqliteDb(db), job.user_id, job.id, completedCrawlIds, new Date(now * 1000))) }
+          catch { /* evidence observation never changes the scan result */ }
+        }
       }
     } finally {
       endEnrichment(db, job.id, job.attempts)
     }
+  } else if (!needsContactCrawl.length && onApolloEvidence) {
+    try { onApolloEvidence([]) } catch { /* evidence observation never changes the scan result */ }
   }
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
@@ -1791,12 +1823,14 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
     const diag = { trace: new SearchTrace(), info: {} as Partial<SourceStats>, hitUrls: [] as string[], tfTextUrls: [] as string[], newsUrls: [] as string[], held: undefined as HeldText | undefined, urls: undefined as UrlRecord[] | undefined, recordFetch: deps.trace ? deps.fetchImpl : undefined, tfFlags: { attempted: false, failed: false } }
     // The TinyFish lead search. An ordinary scan runs it first; a first play (first5) runs it only as the capped fallback below,
     // after the free news search could not serve the play (#1037).
+    let market: SearchMarket | undefined
     const runTinyfishStage = async (caps?: { searches: number; fetches: number }) => {
       try {
         ledger.record('search:tinyfish', 'started')
         assertOwned(db, job)
         // The capped first-play fallback does not repeat the news search the play already ran (or had switched off).
-        leads = await tinyfishLeads(db, job, icpForSources!, providers_[vendor], key, deps.fetchImpl, diag, newsOn && !caps ? deps.newsHttp ?? safeGet : undefined, undefined, caps)
+        market ??= resolveSearchMarket(job.query!, icpForSources, await readAccountMarket(process.env.DATABASE_URL ? await getDb() : sqliteDb(db), job.user_id))
+        leads = await tinyfishLeads(db, job, icpForSources!, market, providers_[vendor], key, deps.fetchImpl, diag, newsOn && !caps ? deps.newsHttp ?? safeGet : undefined, undefined, caps)
         if (leads?.length) partial.candidates = leads
         tfCandidates = leads?.length ?? 0
         // Provenance: a search request that was SENT and failed is this source's error (never 'skipped'); a refusal before any send (budget hold / daily cap) is skipped_hold; zero hits from searches that ran stays 'unavailable' (not proof of failure).
@@ -1823,6 +1857,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         leads = null
       }
       if (leads && leads.length === 0) leads = null
+      if (market && !market.country && summarizeTrace(diag.trace).searches_attempted > 0) ledger.report({ market_notice: MARKET_NOTICE })
       if (diag.trace.events.length > 0 || diag.info.query_source) ledger.stats('search:tinyfish', { ...summarizeTrace(diag.trace), ...diag.info })
     }
     if (claudeOnly && tinyfishEnabled()) ledger.record('search:tinyfish', 'skipped_hold')
@@ -2502,7 +2537,7 @@ async function runJobCapped(db: Database.Database, job: Job, deps: RunDeps): Pro
         try {
           ledger.record('search:adaptive', 'started')
           assertOwned(db, job)
-          const more = await tinyfishLeads(db, job, icpForSources, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
+          const more = await tinyfishLeads(db, job, icpForSources, market!, providers_[vendor], key, deps.fetchImpl, diag2, undefined, { queries: plan.queries, skipUrls: new Set(diag.hitUrls) })
           const st = summarizeTrace(diag2.trace)
           ledger.stats('search:adaptive', { ...st, ...diag2.info })
           capacityUnits.searches += st.searches_not_attempted?.capacity ?? 0; capacityUnits.fetches += st.fetch_capacity_trimmed ?? 0

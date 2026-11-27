@@ -10,7 +10,7 @@ const lead = (mailbox: string) => ({
   company_domain: 'cedar.example',
   enrichments: [
     { kind: 'person', connector: 'discover', value: 'Dana Ruiz, Dentist', source_url: source },
-    { kind: 'email', connector: 'discover', value: `${mailbox}@cedar.example`, source_url: source, label: 'email verified on source' },
+    { kind: 'email', connector: 'discover', value: `${mailbox}@cedar.example`, source_url: source, label: 'published on a public page' },
   ],
 })
 

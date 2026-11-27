@@ -160,13 +160,30 @@ type Ops = { all: Db['all']; get: Db['get']; run: Db['run'] }
 
 // ---- SQLite ----
 
-export function sqliteDb(handle: Database.Database): Db {
-  const exec = (o: TxOp): unknown => {
-    const st = handle.prepare(o.sql)
-    const p = checkParams(o.params)
-    return o.op === 'all' ? st.all(...p) : o.op === 'get' ? st.get(...p) : { changes: st.run(...p).changes }
-  }
+function executeSqlite(handle: Database.Database, o: TxOp): unknown {
+  const st = handle.prepare(o.sql)
+  const p = checkParams(o.params)
+  return o.op === 'all' ? st.all(...p) : o.op === 'get' ? st.get(...p) : { changes: st.run(...p).changes }
+}
+
+// Startup migrations use the same transaction interpreter before the async Db is published.
+export function sqliteTransaction<T>(handle: Database.Database, body: (t: Tx) => TxBody<T>): T {
   const t = txBuilder('sqlite')
+  return handle.transaction(() => {
+    const g = body(t)
+    let step = g.next()
+    while (!step.done) {
+      const o = asOp(step.value)
+      let v: unknown
+      try { v = executeSqlite(handle, o) } catch (e) { throw new StatementFailedInTx(e) }
+      step = g.next(v)
+    }
+    return step.value
+  }).immediate()
+}
+
+export function sqliteDb(handle: Database.Database): Db {
+  const exec = (o: TxOp) => executeSqlite(handle, o)
   const ops: Ops = {
     all: async <T>(sql: string, params: Param[] = []) => exec({ op: 'all', sql, params }) as T[],
     get: async <T>(sql: string, params: Param[] = []) => exec({ op: 'get', sql, params }) as T | undefined,
@@ -179,20 +196,7 @@ export function sqliteDb(handle: Database.Database): Db {
       const { readBoundCompanyFirstResults } = await import('../scan/company-first-results.ts')
       return readBoundCompanyFirstResults(handle, db, tenantId, jobId, now)
     },
-    async tx(body) {
-      // Synchronous from BEGIN to COMMIT: the generator only ever waits on statements, which run immediately here.
-      return handle.transaction(() => {
-        const g = body(t)
-        let step = g.next()
-        while (!step.done) {
-          const o = asOp(step.value)
-          let v: unknown
-          try { v = exec(o) } catch (e) { throw new StatementFailedInTx(e) }
-          step = g.next(v)
-        }
-        return step.value
-      }).immediate()
-    },
+    async tx(body) { return sqliteTransaction(handle, body) },
     close: async () => { handle.close() },
   }
   return db

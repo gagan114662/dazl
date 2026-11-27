@@ -129,3 +129,24 @@ test('eventsForLeads: same observation re-keyed under lead and domain counts onc
   // Source independence preserved: the press report is not merged into the SEC one.
   assert.ok(out.l1.some(e => e.source_url === 'https://news.example/acme-series-a'))
 })
+
+test('eventsForLeads batches distinct keys while keeping scope and the per-key cap', t => {
+  const db = setup()
+  t.after(() => db.close())
+  for (let i = 0; i < 203; i++) {
+    recordCompanyEvent(db, 'T1', ev({ sourceUrl: `https://evidence.example/${i}`, retrievedAt: NOW + i }))
+  }
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:first', leadId: 'first', sourceUrl: 'https://evidence.example/202' }))
+  recordCompanyEvent(db, 'T1', ev({ companyKey: 'lead:first', leadId: 'first', sourceUrl: 'https://evidence.example/lead-only' }))
+  recordCompanyEvent(db, 'T2', ev({ sourceUrl: 'https://evidence.example/foreign' }))
+  const prepare = t.mock.method(db, 'prepare')
+  const leads = [{ id: 'first', company_domain: 'acme.example' }, { id: 'second', company_domain: 'acme.example' }]
+  const out = eventsForLeads(db, 'T1', leads, { now: NOW + 203 })
+  assert.equal(prepare.mock.calls.length, 1)
+  assert.equal(out.first.length, 201)
+  assert.equal(out.second.length, 200)
+  assert.equal(out.first[0].company_key, 'acme.example')
+  assert.equal(out.first[0].source_url, 'https://evidence.example/202')
+  assert.ok(out.first.some(e => e.source_url.endsWith('/lead-only')))
+  for (const e of [...out.first, ...out.second]) assert.doesNotMatch(e.source_url, /\/(?:foreign|0|1|2)$/)
+})

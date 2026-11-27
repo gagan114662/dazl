@@ -16,14 +16,11 @@ name: release-gate
 # throwaway databases and generated test-mode values, so nothing is scanned, sent, billed or fetched.
 on:
   pull_request:
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
-    paths: ["web/**", "ops/**", "session-worker/**", ".github/workflows/web-ci.yml", ".github/workflows/release-gate.yml", ".github/workflows/release-preflight.yml", ".github/workflows/session-worker-ci.yml"]
-  # Manual run at an exact ref: a merged commit whose diff touched no gated path (for example a docs-only STATUS
-  # update) must still get the full gate on the exact SHA Instinct deploys (checked_launch REQUIRED_CI binds browser
-  # and migrations to the commit). A dispatched run checks out github.sha, so its check runs and its release-<sha>
-  # artifact carry that commit; the migrations base falls back to the commit's first parent. No check is skipped.
+  # Manual runs on main can validate and package the selected commit. The migrations base falls back
+  # to its first parent.
   workflow_dispatch:
   merge_group:
     types: [checks_requested]
@@ -34,6 +31,8 @@ concurrency:
   # and GitHub replaces older pending runs with the newest one.
   group: ${{ github.event_name == 'push' && 'release-gate-main' || format('release-gate-{0}', github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  FULL_CI: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
 jobs:
   browser:
     runs-on: ${{ github.event_name == 'pull_request' && vars.PR_RUNNER || 'ubuntu-latest' }}
@@ -42,81 +41,93 @@ jobs:
       run:
         working-directory: web
     steps:
+      - name: Explain deferred full suite
+        if: env.FULL_CI != 'true'
+        working-directory: .
+        run: echo "full suite deferred until ready-to-merge" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: env.FULL_CI == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
+        if: env.FULL_CI == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+        if: env.FULL_CI == 'true'
       - run: npm run build
+        if: env.FULL_CI == 'true'
       - name: Release manifest
+        if: env.FULL_CI == 'true'
         run: node ../ops/release-manifest.mjs write . release.json && cat release.json
       # Playwright is not an app dependency: installed for this job only, the lockfile untouched
       # Playwright's Chromium download is cached per version (it took up to 7.5 min uncached); --with-deps still installs the OS libraries every run
       - uses: actions/cache@v4
+        if: env.FULL_CI == 'true'
         with:
           path: ~/.cache/ms-playwright
           key: playwright-browser-full-v1-1.63.0-${{ runner.os }}-${{ runner.arch }}
       - run: npm install --no-save playwright@1.63.0 esbuild@0.25.0 && npx playwright install --with-deps chromium
+        if: env.FULL_CI == 'true'
       # #1834: the phone menu's More toggle collapses again on navigation, and the summary's preventDefault
       # keeps details.open and aria-expanded in agreement (PR #1878). It must run, not skip.
       - name: Nav More toggle reset on navigation (#1834)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: |
           set -o pipefail
           node test/ui/nav-more-1834.ui.mjs | tee /tmp/nav-more.out
           ! grep -q '^NOT RUN' /tmp/nav-more.out
       - name: Every /app page loads (no page/console error, no missing asset)
+        if: env.FULL_CI == 'true'
         run: npm run test:smoke
       - name: Chunk-load recovery
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: npm run test:smoke:chunks
       - name: Sign-in gate on every /app page
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: npm run test:smoke:auth
       - name: Credential fallback and hydrated desktop and mobile sign-up
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: npm run test:smoke:authforms
       - name: Two tenants, no cross-tenant data on any route or page
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: npm run test:smoke:tenants
       - name: Inbox UI - filters, paging and the bounce_review badge
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: mkdir -p /tmp/inbox-shots && SHOTS=/tmp/inbox-shots node --experimental-strip-types test/ui/inbox.ui.mjs
       - name: Inbox UI screenshots
-        if: always()
+        if: env.FULL_CI == 'true' && (always())
         uses: actions/upload-artifact@v4
         with:
           name: inbox-ui-${{ github.event.pull_request.head.sha || github.sha }}
           path: /tmp/inbox-shots/*.png
           retention-days: 30
       - name: Saved-source recheck action and refusal states (fenced)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: node --experimental-strip-types test/smoke/evidence-recheck.smoke.mjs
       - name: Hiring provenance and lead cards (fenced)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: |
           mkdir -p preview/lead-cards
           SHOTS=preview/lead-cards node test/ui/lead-cards.ui.mjs
           SHOTS=preview/lead-cards node test/ui/work-email-review-lane.ui.mjs
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: env.FULL_CI == 'true' && (always())
         with:
           name: lead-cards-${{ github.event.pull_request.head.sha || github.sha }}
           path: web/preview/lead-cards/*.png
           retention-days: 14
       - name: Seller intelligence chain (fenced)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: node test/smoke/intelligence-chain.smoke.mjs
       - name: Signed website review, estimate, and confirmed submission
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: SHOTS=preview/leads-research-review node --experimental-strip-types test/ui/signed-website-review.ui.mjs
       - name: Upload seller intelligence UI pixels
-        if: always()
+        if: env.FULL_CI == 'true' && (always())
         uses: actions/upload-artifact@v4
         with:
           name: intelligence-ui-${{ github.event.pull_request.head.sha || github.sha }}
@@ -129,7 +140,7 @@ jobs:
       # states. The harness exits 0 on SKIP when esbuild/playwright are missing, so the grep makes the
       # gate fail-closed: a SKIP is a failed check here, never a silent pass.
       - name: Scan view provider-failure transparency and per-verification-pass cost UI (fenced fixture)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: |
           set -o pipefail
           npm install --no-save esbuild playwright@1.63.0
@@ -137,28 +148,28 @@ jobs:
             node test/ui/scan-transparency.ui.mjs 2>&1 | tee /tmp/scan-transparency-ui.log
           ! grep -q '^SKIP' /tmp/scan-transparency-ui.log
       - name: Upload scan transparency UI pixels
-        if: always()
+        if: env.FULL_CI == 'true' && (always())
         uses: actions/upload-artifact@v4
         with:
           name: scan-transparency-ui-${{ github.event.pull_request.head.sha || github.sha }}
           path: web/preview/scan-transparency
           if-no-files-found: error
       - name: Release identity and readiness
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: npm run test:smoke:release
       - name: Recovery drill with the app (synthetic backup, sending disabled)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: npm run test:smoke:recovery
       # issue #360: the whole host-loss path (encrypted off-host copy + secrets/config bundle -> fetch, decrypt with the
       # separately held identities and master key, the app on the restored copy: sign-in, scan, reads, sending off).
       # age is installed here for it; the smoke exits 2 (NOT RUN, a failure) when age or the build is missing.
       - name: Replacement-host restore drill (off-host copy, secrets/config, sign-in/decrypt/scan/read)
-        if: success() || failure()
+        if: env.FULL_CI == 'true' && (success() || failure())
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q age
           npm run test:smoke:replacement
       - uses: actions/upload-artifact@v4
-        if: success()
+        if: env.FULL_CI == 'true' && (success())
         with:
           name: release-${{ github.event.pull_request.head.sha || github.sha }}
           path: web/release.json
@@ -183,18 +194,28 @@ jobs:
       run:
         working-directory: web
     steps:
+      - name: Explain deferred full suite
+        if: env.FULL_CI != 'true'
+        working-directory: .
+        run: echo "full suite deferred until ready-to-merge" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: env.FULL_CI == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
+        if: env.FULL_CI == 'true'
         with:
           node-version: 22.23.3
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+        if: env.FULL_CI == 'true'
       - run: npm run build
+        if: env.FULL_CI == 'true'
       - run: node scripts/check-fixture-route-artifact.mjs production
+        if: env.FULL_CI == 'true'
       - id: pack
+        if: env.FULL_CI == 'true'
         name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
         run: |
           set -euo pipefail
@@ -216,6 +237,7 @@ jobs:
           json.dump({"commit": os.environ["JOB_SHA"], "files": entries, "file_count": len(entries)}, open("tarball-manifest.json", "w"), indent=1)
           PYSCAN
       - id: scans
+        if: env.FULL_CI == 'true'
         name: "Artifact scans: zero native, no key material, no env files"
         working-directory: web
         run: |
@@ -227,12 +249,14 @@ jobs:
           if find /tmp/artifact-scan -type f -exec sh -c 'head -c 4 "$1" | grep -q "^.ELF"' _ {} \; -print | grep .; then echo 'ELF binary in artifact'; exit 1; fi
           if grep -rIl 'BEGIN [A-Z ]*PRIVATE KEY' /tmp/artifact-scan | head -1 | grep .; then echo 'key material in artifact'; exit 1; fi
       - name: Clean exact checkout for the runtime-assembly smoke
+        if: env.FULL_CI == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: assembly
           clean: true
       - name: "Runtime-assembly smoke: artifact overlaid on the clean checkout boots and serves its release"
+        if: env.FULL_CI == 'true'
         working-directory: web
         run: |
           set -euo pipefail
@@ -264,7 +288,7 @@ jobs:
       # still uploads (the gates are proven by then), but a rejected payload is never published.
       - name: Upload runnable release artifact
         uses: actions/upload-artifact@v4
-        if: always() && steps.pack.outcome == 'success' && steps.scans.outcome == 'success'
+        if: env.FULL_CI == 'true' && (always() && steps.pack.outcome == 'success' && steps.scans.outcome == 'success')
         with:
           name: release-app-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
@@ -294,25 +318,36 @@ jobs:
       run:
         working-directory: web
     steps:
+      - name: Explain deferred full suite
+        if: env.FULL_CI != 'true'
+        working-directory: .
+        run: echo "full suite deferred until ready-to-merge" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: env.FULL_CI == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
+        if: env.FULL_CI == 'true'
         with:
           node-version: 22.23.3
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+        if: env.FULL_CI == 'true'
       - name: Checker self-test (production-shaped responses must fail every marker)
+        if: env.FULL_CI == 'true'
         working-directory: .
         run: node --test ops/staging-variant-check.test.mjs
       - name: Staging build (DAZL_ENV=staging, PUBLIC_BASE_URL at build time)
+        if: env.FULL_CI == 'true'
         run: npm run build
         env:
           DAZL_ENV: staging
           PUBLIC_BASE_URL: ${{ env.STAGING_PUBLIC_BASE }}
       - run: node scripts/check-fixture-route-artifact.mjs staging
+        if: env.FULL_CI == 'true'
       - id: pack
+        if: env.FULL_CI == 'true'
         name: Deterministic zero-native artifact (.next + .build-commit), sha256, per-file manifest
         run: |
           set -euo pipefail
@@ -332,6 +367,7 @@ jobs:
           json.dump({"commit": os.environ["JOB_SHA"], "variant": "staging", "files": entries, "file_count": len(entries)}, open("tarball-manifest-staging.json", "w"), indent=1)
           PYSCAN
       - id: scans
+        if: env.FULL_CI == 'true'
         name: "Artifact scans: zero native, no key material, no env files"
         run: |
           set -euo pipefail
@@ -342,12 +378,14 @@ jobs:
           if find /tmp/artifact-scan -type f -exec sh -c 'head -c 4 "$1" | grep -q "^.ELF"' _ {} \; -print | grep .; then echo 'ELF binary in artifact'; exit 1; fi
           if grep -rIl 'BEGIN [A-Z ]*PRIVATE KEY' /tmp/artifact-scan | head -1 | grep .; then echo 'key material in artifact'; exit 1; fi
       - name: Clean exact checkout for the runtime-assembly smoke
+        if: env.FULL_CI == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: assembly
           clean: true
       - name: "Runtime-assembly smoke: staging artifact boots, serves its release and proves every staging marker"
+        if: env.FULL_CI == 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/assembly/web"
@@ -371,7 +409,7 @@ jobs:
           node "$GITHUB_WORKSPACE/ops/staging-variant-check.mjs" "http://127.0.0.1:$PORT" "$STAGING_PUBLIC_BASE" "$JOB_SHA"
       - name: Upload staging runnable release artifact
         uses: actions/upload-artifact@v4
-        if: always() && steps.pack.outcome == 'success' && steps.scans.outcome == 'success'
+        if: env.FULL_CI == 'true' && (always() && steps.pack.outcome == 'success' && steps.scans.outcome == 'success')
         with:
           name: release-app-staging-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
@@ -386,18 +424,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Explain deferred full suite
+        if: env.FULL_CI != 'true'
+        working-directory: .
+        run: echo "full suite deferred until ready-to-merge" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: env.FULL_CI == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
+        if: env.FULL_CI == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+        if: env.FULL_CI == 'true'
         working-directory: web
       - name: Previous release checkout and production build
+        if: env.FULL_CI == 'true'
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: |
@@ -408,8 +454,10 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/prev" "$BASE"
           cd "$RUNNER_TEMP/prev/web" && npm ci --no-audit --no-fund && npm run build
       - name: Forward, re-run and rollback on a seeded database (every row and value, password, key decryption)
+        if: env.FULL_CI == 'true'
         working-directory: web
         run: node --experimental-strip-types --no-warnings scripts/migration-gate.mts "$RUNNER_TEMP/prev/web" --keep "$RUNNER_TEMP/gate"
       - name: The previous release's production build starts, signs in and reads its data on the migrated database
+        if: env.FULL_CI == 'true'
         working-directory: web
         run: node scripts/rollback-start-check.mjs "$RUNNER_TEMP/prev/web" "$RUNNER_TEMP/gate" "$PREV_SHA"

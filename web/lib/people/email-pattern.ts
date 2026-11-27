@@ -5,13 +5,15 @@
 // and fails closed: only an explicit "deliverable" answer from a real check makes a candidate verified; catch-all,
 // unknown, refused, errors and a check that never finished stay non-verified and are surfaced as such.
 // Nothing here is shown, stored as a contact, or sent: candidates live in their own tables (email_patterns,
-// email_candidates), which no page and no outreach path reads. The one wired verifier is ZeroBounce's FREE tier (#899 decision,
+// email_candidates). Readiness can use a recorded mailbox outcome for an independently published address.
+// The one wired verifier is ZeroBounce's FREE tier (#899 decision,
 // lib/people/zerobounce.ts), used only when ZEROBOUNCE_API_KEY is set and capped at its free monthly allowance. Off unless
 // EMAIL_GUESS_ENABLED=1.
 // #1036 / #1250: the crawl (recordEmailGuesses) now records only addresses the company PRINTS on its own site (tier 'published');
 // no format is learned and no address is built from a name, flag on or off. The verifier reads only guessed rows earlier releases
 // left at rest.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { ROLE, sameSite } from '../connectors/sitecrawl.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
 import { countriesIn } from '../scan/countries.ts'
@@ -409,6 +411,23 @@ export type CandidateLabel = 'published' | 'guessed' | 'guessed, verified' | 'gu
 // verification state, is never returned. The person is matched by the same name split the crawl used. Missing table
 // (flag never on) = nothing published, never an error. Kept in this module so it stays the only reader of the table.
 export interface PublishedCandidateRow { person: string; address: string; source_url: string }
+type CheckedMailbox = { lead_id: string; address: string; verification: 'undeliverable' | 'verified'; checked_at: number }
+
+// These are verification facts. A caller must match the address to a contact published independently.
+export function checkedMailboxesForLeads(db: Database.Database, tenantId: string, leadIds: string[]): CheckedMailbox[] {
+  if (!leadIds.length) return []
+  try {
+    return db.prepare(`SELECT lead_id, address, verification, checked_at FROM email_candidates
+      WHERE tenant_id = ? AND lead_id IN (${leadIds.map(() => '?').join(',')})
+      AND verification IN ('undeliverable', 'verified') AND checked_at IS NOT NULL`)
+      .all(tenantId, ...leadIds) as CheckedMailbox[]
+  } catch (error) {
+    // Older stores have no candidate verifier history.
+    if (!(error instanceof Error) || !/^no such (?:table: email_candidates|column: (?:verification|checked_at))$/.test(error.message)) throw error
+    return []
+  }
+}
+
 export function publishedCandidateRowsForLeads(db: Database.Database, tenantId: string, leadIds: string[]): Record<string, PublishedCandidateRow[]> {
   const out: Record<string, PublishedCandidateRow[]> = {}
   if (!leadIds.length) return out
@@ -437,6 +456,15 @@ export function publishedNameKey(fullName: string): string | null {
   const n = splitName(fullName)
   return n ? `${n.first}|${n.last}` : null
 }
+// An existing printed address rules out enrichment spend even if it is suppressed or ambiguous.
+export async function hasPublishedAddressForDb(db: Db, tenantId: string, leadId: string, fullName: string): Promise<boolean> {
+  const name = publishedNameKey(fullName)
+  if (!name) return false
+  const rows = await db.all<{ person: string }>(
+    "SELECT person FROM email_candidates WHERE tenant_id = ? AND lead_id = ? AND tier = 'published' AND source_url IS NOT NULL",
+    [tenantId, leadId])
+  return rows.some(row => publishedNameKey(row.person.split(',')[0] ?? '') === name)
+}
 export function selectPublishedCandidate(rows: PublishedCandidateRow[], fullName: string): { address: string; url: string } | null {
   const want = publishedNameKey(fullName)
   if (!want) return null
@@ -463,9 +491,7 @@ export function candidateLabel(r: { verification: string; checked_at: number | n
 // Called by the crawl for one lead and its confirmed site. people: "Name, Title" values from extractPeople. seen: personal
 // addresses printed on the site's own pages, whole, with the page URL (published tier + pattern evidence).
 // #1036 (decision 2026-11-12: "checked" = Apollo verified OR an address published on the company's confirmed site; pattern
-// guessing stays off): the PUBLISHED tier is recorded whatever the flag says (US evidence still required, as for every recorded
-// address); only pattern GUESSES also need EMAIL_GUESS_ENABLED. Before this, the flag being off (prod) also
-// dropped every printed address, so Find work email's free tier could never find one.
+// guessing stays off): store the published tier regardless of country or guess flags. Keep geography as provenance.
 // Ambiguity (2026-11-06 review): a printed address two named people could own is attributed to neither (counted in
 // `ambiguous`, not stored), and a guess is skipped when it collides with another person's guess or with an ambiguous
 // printed address, so no address is ever filed under the wrong person.
@@ -476,17 +502,17 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
   // #1208: the title the crawl recorded beside each person ("Name, Title"), the only text a team card may print between her heading and her mailto
   const titleOf = (person: string) => person.split(',').slice(1).join(',').trim() || undefined
   const pubAll = namesAll.map(x => ({ ...x, pub: publishedFor(x.name, seenAll, namesAll.map(n => n.name), titleOf(x.person)) })).filter((x): x is typeof x & { pub: { address: string; url: string } } => !!x.pub)
-  // The published tier first, flag on or off (one insert for both paths). US-only like every recorded address (DECISIONS 2026-10-26):
-  // a non-US site records nothing, so no non-US person's address is ever kept at rest.
+  // The US restriction in DECISIONS applies to guesses. Published rows keep the observed country basis or the reason it was unavailable.
   let pubWritten = 0
-  if (pubAll.length && us.us) {
+  if (pubAll.length) {
+    const countryBasis = us.us ? us.basis : us.reason.slice(0, 160)
     migrateEmailGuess(db)
     // A guess an earlier release stored for the same address becomes the published row once the site prints it (the key is
     // lead_id + address, so it would otherwise block the printed address for good); a published row is never overwritten.
     const ins = db.prepare(`INSERT INTO email_candidates (tenant_id, lead_id, person, address, format, country_basis, tier, source_url) VALUES (?, ?, ?, ?, 'published', ?, 'published', ?)
       ON CONFLICT (lead_id, address) DO UPDATE SET person = excluded.person, format = 'published', country_basis = excluded.country_basis, tier = 'published', source_url = excluded.source_url, confidence = NULL
       WHERE email_candidates.tier = 'guessed' AND email_candidates.tenant_id = excluded.tenant_id`)
-    for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, us.basis, x.pub.url.slice(0, 500)).changes
+    for (const x of pubAll) pubWritten += ins.run(tenantId, leadId, x.person.slice(0, 120), x.pub.address, countryBasis, x.pub.url.slice(0, 500)).changes
   }
   // #1036 / #1250: the buyer's email is only an address the company itself printed. No format is learned and no address is built
   // from a name, whatever EMAIL_GUESS_ENABLED says; addresses recorded by earlier releases stay at rest and are never shown.
@@ -496,7 +522,6 @@ export function recordEmailGuesses(db: Database.Database, tenantId: string, lead
     // gives a guess its basis back.
     try { db.prepare("UPDATE email_candidates SET country_basis = NULL WHERE tenant_id = ? AND lead_id = ? AND tier = 'guessed' AND verification = 'none'").run(tenantId, leadId) }
     catch (e) { if (!/no such table/i.test(String((e as Error)?.message))) throw e }
-    return null
   }
   if (!pubWritten && !pubAll.length) return null
   const ambiguousLocals = new Set([...locals, ...seenAll.map(s => s.address.split('@')[0])].filter(l => ownersOf(l, namesAll.map(x => x.name)).length > 1))
