@@ -55,7 +55,7 @@ const post = async (body: string, sig: string | null) => {
 const deliver = (body: string) => post(body, signature(body))
 const as = (id: string) => setUser({ id, business_name: 'Acme', email: `${id.slice(0, 6)}@example.test` } as never)
 const account = async (id: string) => { as(id); const u = await (await usage.GET(new NextRequest('https://staging.dazl.test/api/usage'))).json() as { plan: string; scan_limit: number | null; billing_status: string | null }; return { plan: u.plan, scan_limit: u.scan_limit, billing_status: u.billing_status } }
-const startScan = async (id: string) => { as(id); const r = await scan.POST(new NextRequest('https://staging.dazl.test/api/scan', { method: 'POST', body: JSON.stringify({ query: 'companies hiring sales reps in Toronto' }), headers: { 'content-type': 'application/json', host: 'staging.dazl.test', origin: 'https://staging.dazl.test' } })); return { status: r.status, ...(await r.json()) as { error?: string; job_id?: string } } }
+const startScan = async (id: string) => { as(id); const r = await scan.POST(new NextRequest('https://staging.dazl.test/api/scan', { method: 'POST', body: JSON.stringify({ query: 'companies hiring sales reps in Toronto', offer: 'Independent compliance consulting' }), headers: { 'content-type': 'application/json', host: 'staging.dazl.test', origin: 'https://staging.dazl.test' } })); return { status: r.status, ...(await r.json()) as { error?: string; job_id?: string } } }
 const FREE = { plan: 'free', scan_limit: PLAN_LIMITS.free.scansPerMonth, billing_status: null as string | null }
 const PRO = (s: string) => ({ plan: 'pro', scan_limit: null, billing_status: s })
 

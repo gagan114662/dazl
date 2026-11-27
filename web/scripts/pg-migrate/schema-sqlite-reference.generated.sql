@@ -8,6 +8,20 @@ CREATE TABLE advanced_consent (
     PRIMARY KEY (tenant_id, scope)
   );
 
+CREATE TABLE apollo_credit_ledger (
+  tenant_id TEXT NOT NULL,
+  lead_id TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  credit INTEGER NOT NULL DEFAULT 1,
+  result TEXT NOT NULL DEFAULT 'reserved',
+  PRIMARY KEY (tenant_id, lead_id)
+);
+
+CREATE TABLE apollo_credit_total (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  used INTEGER CHECK (used >= 0)
+);
+
 CREATE TABLE app_leases (
       name TEXT PRIMARY KEY,
       owner TEXT NOT NULL,
@@ -595,7 +609,7 @@ CREATE TABLE organizations (
     kind TEXT NOT NULL CHECK (kind IN ('personal', 'team')),
     created_by TEXT NOT NULL,
     created_at INTEGER NOT NULL
-  );
+  , search_market TEXT);
 
 CREATE TABLE outreach_llm_usage (
       id            INTEGER PRIMARY KEY,
@@ -1532,6 +1546,8 @@ CREATE TRIGGER tomb_adv_requests BEFORE INSERT ON adv_requests BEGIN SELECT NEW.
 
 CREATE TRIGGER tomb_advanced_consent BEFORE INSERT ON advanced_consent BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
 
+CREATE TRIGGER tomb_apollo_credit_ledger BEFORE INSERT ON apollo_credit_ledger BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
+
 CREATE TRIGGER tomb_audit_events BEFORE INSERT ON audit_events BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) AND NOT EXISTS (SELECT 1 FROM audit_closing_gate WHERE tenant = NEW.tenant_id); END;
 
 CREATE TRIGGER tomb_autopilot_audit BEFORE INSERT ON autopilot_audit BEGIN SELECT NEW.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id); END;
@@ -1747,6 +1763,8 @@ CREATE TRIGGER tomb_upd_adv_budget_lock BEFORE UPDATE OF tenant_id ON adv_budget
 CREATE TRIGGER tomb_upd_adv_requests BEFORE UPDATE OF tenant_id ON adv_requests BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_advanced_consent BEFORE UPDATE OF tenant_id ON advanced_consent BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
+
+CREATE TRIGGER tomb_upd_apollo_credit_ledger BEFORE UPDATE OF tenant_id ON apollo_credit_ledger BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 
 CREATE TRIGGER tomb_upd_audit_events BEFORE UPDATE OF tenant_id ON audit_events BEGIN SELECT NEW.tenant_id; SELECT OLD.tenant_id; SELECT RAISE(ABORT, 'tenant deleted') WHERE NEW.tenant_id IS NOT OLD.tenant_id AND ((EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = NEW.tenant_id)) OR (EXISTS (SELECT 1 FROM tenant_tombstones WHERE deleted_tenant = OLD.tenant_id))); END;
 

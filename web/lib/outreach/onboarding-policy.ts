@@ -79,8 +79,10 @@ export function migrateOnboardingPolicy(db: Database.Database): void {
 
 const norm = (email: string): string => email.trim().toLowerCase().slice(0, 200)
 
+const ONBOARDING_AUDIT_SQL = 'INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)'
+
 function auditOnboarding(db: Database.Database, tenantId: string, action: string, detail: string | null, now: number): void {
-  db.prepare('INSERT INTO onboarding_audit (id, tenant_id, action, detail, created_at) VALUES (?, ?, ?, ?, ?)')
+  db.prepare(ONBOARDING_AUDIT_SQL)
     .run(randomBytes(12).toString('hex'), tenantId, action, detail, now)
 }
 
@@ -143,10 +145,16 @@ export async function redactOnboardingAuditDetails(db: Db, o: { limit?: number; 
   })
 }
 
-export function activeOnboardingPolicy(db: Database.Database, tenantId: string): { policy_version: string; opted_in_by: string; opted_in_at: number } | null {
+type ActivePolicy = { policy_version: string; opted_in_by: string; opted_in_at: number }
+const READ_ACTIVE_POLICY_SQL = 'SELECT policy_version, opted_in_by, opted_in_at FROM onboarding_policies WHERE tenant_id = ? AND withdrawn_at IS NULL AND policy_version = ?'
+const OPT_IN_SQL = `INSERT INTO onboarding_policies (tenant_id, policy_version, opted_in_by, opted_in_at, withdrawn_at) VALUES (?, ?, ?, ?, NULL)
+      ON CONFLICT (tenant_id) DO UPDATE SET policy_version = excluded.policy_version, opted_in_by = excluded.opted_in_by, opted_in_at = excluded.opted_in_at, withdrawn_at = NULL`
+const WITHDRAW_SQL = 'UPDATE onboarding_policies SET withdrawn_at = ? WHERE tenant_id = ? AND withdrawn_at IS NULL'
+
+export function activeOnboardingPolicy(db: Database.Database, tenantId: string): ActivePolicy | null {
   migrateOnboardingPolicy(db)
   // Current version only: an opt-in under older terms is recorded but no longer active (reconsent, never grandfather).
-  const r = db.prepare('SELECT policy_version, opted_in_by, opted_in_at FROM onboarding_policies WHERE tenant_id = ? AND withdrawn_at IS NULL AND policy_version = ?').get(tenantId, ONBOARDING_POLICY_VERSION) as { policy_version: string; opted_in_by: string; opted_in_at: number } | undefined
+  const r = db.prepare(READ_ACTIVE_POLICY_SQL).get(tenantId, ONBOARDING_POLICY_VERSION) as ActivePolicy | undefined
   return r ?? null
 }
 
@@ -155,8 +163,7 @@ export function activeOnboardingPolicy(db: Database.Database, tenantId: string):
 export function optInOnboarding(db: Database.Database, tenantId: string, actorUserId: string, now = Math.floor(Date.now() / 1000)): void {
   migrateOnboardingPolicy(db)
   db.transaction(() => {
-    db.prepare(`INSERT INTO onboarding_policies (tenant_id, policy_version, opted_in_by, opted_in_at, withdrawn_at) VALUES (?, ?, ?, ?, NULL)
-      ON CONFLICT (tenant_id) DO UPDATE SET policy_version = excluded.policy_version, opted_in_by = excluded.opted_in_by, opted_in_at = excluded.opted_in_at, withdrawn_at = NULL`)
+    db.prepare(OPT_IN_SQL)
       .run(tenantId, ONBOARDING_POLICY_VERSION, actorUserId, now)
     auditOnboarding(db, tenantId, 'opted_in', `policy ${ONBOARDING_POLICY_VERSION}`, now)
   })()
@@ -166,10 +173,30 @@ export function withdrawOnboarding(db: Database.Database, tenantId: string, _act
   migrateOnboardingPolicy(db)
   let changed = 0
   db.transaction(() => {
-    changed = (db.prepare('UPDATE onboarding_policies SET withdrawn_at = ? WHERE tenant_id = ? AND withdrawn_at IS NULL').run(now, tenantId) as { changes: number }).changes
+    changed = (db.prepare(WITHDRAW_SQL).run(now, tenantId) as { changes: number }).changes
     if (changed) auditOnboarding(db, tenantId, 'withdrawn', null, now)
   })()
   return changed === 1
+}
+
+export async function readActiveOnboardingPolicy(db: Db, tenantId: string): Promise<ActivePolicy | null> {
+  const row = await db.get<ActivePolicy>(READ_ACTIVE_POLICY_SQL, [tenantId, ONBOARDING_POLICY_VERSION])
+  return row ? { ...row, opted_in_at: Number(row.opted_in_at) } : null
+}
+
+export async function writeOnboardingOptIn(db: Db, tenantId: string, actorId: string, now = Math.floor(Date.now() / 1000)): Promise<void> {
+  await db.tx(function* (t) {
+    yield* t.run(OPT_IN_SQL, [tenantId, ONBOARDING_POLICY_VERSION, actorId, now])
+    yield* t.run(ONBOARDING_AUDIT_SQL, [randomBytes(12).toString('hex'), tenantId, 'opted_in', `policy ${ONBOARDING_POLICY_VERSION}`, now])
+  })
+}
+
+export async function writeOnboardingWithdrawal(db: Db, tenantId: string, now = Math.floor(Date.now() / 1000)): Promise<boolean> {
+  return db.tx(function* (t) {
+    const { changes } = yield* t.run(WITHDRAW_SQL, [now, tenantId])
+    if (changes) yield* t.run(ONBOARDING_AUDIT_SQL, [randomBytes(12).toString('hex'), tenantId, 'withdrawn', null, now])
+    return changes === 1
+  })
 }
 
 export type EnrollOutcome = 'enrolled' | 'already' | 'no_policy' | 'not_customer'

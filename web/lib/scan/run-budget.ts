@@ -14,7 +14,7 @@
 // run is never silently widened into a full one.
 import type { RunBudget } from './runner.ts'
 import { icpPrompt, MAX_QUERY } from './icp.ts'
-import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../llm/spend-guard.ts'
+import { PRICES_USD_PER_M, INPUT_MARGIN_TOKENS } from '../llm/spend-pricing.ts'
 import { FIRST_PLAY_MAX, FIRST_PLAY_LEAD_SEARCHES_MAX, FIRST_PLAY_LEAD_FETCHES_MAX } from '../people/first-play-cap.ts'
 
 export const MAX_BUDGET_USD = 1000 // sanity bound on the number, not a claim about any invoice

@@ -32,6 +32,15 @@ test('matrix ready and held equal Home\'s on the same scan, with ready leads: ex
   // #1037: every lead's own site names its buyer (the rows the real crawl stores), so the buyer rule never decides a case here
   for (const { id, company_domain } of db.prepare('SELECT id, company_domain FROM leads WHERE scan_job_id = ?').all(J) as { id: string; company_domain: string | null }[])
     for (const r of ownSiteBuyerRows(company_domain ?? `${id}.example`)) addEnrichment(db, 'A', id, r)
+  for (const { id, company_domain } of db.prepare(
+    'SELECT id, company_domain FROM leads WHERE scan_job_id = ? AND human_confirmed_at IS NOT NULL AND quarantined_at IS NULL',
+  ).all(J) as { id: string; company_domain: string | null }[]) {
+    const domain = company_domain ?? `${id}.example`
+    addEnrichment(db, 'A', id, {
+      connector: 'sitecrawl', kind: 'email', value: `buyer@${domain}`, label: null,
+      source_url: `https://${domain}/contact`, confidence: null, source_date: recent, retrieved_at: NOW,
+    })
+  }
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(J)
   const order = (db.prepare('SELECT id FROM leads WHERE scan_job_id = ? ORDER BY (fit IS NULL), fit DESC').all(J) as { id: string }[]).map(r => r.id)
   assert.ok(order.indexOf('twinheld') < order.indexOf('twinready'), 'the held twin is met before its ready twin')

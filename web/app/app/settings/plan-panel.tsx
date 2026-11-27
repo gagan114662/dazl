@@ -5,7 +5,7 @@ import { trialSummary, unlimitedTrialDailyCap, type TrialBlock } from '@/lib/tri
 import { usageLine } from '@/lib/plan-usage-copy'
 import { BILLING_BETA_TEXT } from '@/lib/beta'
 
-type Usage = { plan: string; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
+type Usage = { finished_searches?: number; plan: string; scans_used: number; scan_limit: number | null; billing_status: string | null; trial: TrialBlock | null }
 
 // What the subscription's Stripe status means for the user (lib/billing/stripe.ts statusEffect decides the plan; this
 // only explains it). Statuses not listed need no note.
@@ -64,6 +64,11 @@ export default function PlanPanel({ billingAvailable = false }: { billingAvailab
           : 'No confirmed subscription yet. If you just finished checkout it can take a minute to show here; refresh this page. Your plan stays as shown until Stripe confirms it.'}</p>}
       {back === 'cancelled' && <p className="text-sm text-[#555] mb-2" data-testid="billing-return">{`Checkout was not completed. Your plan is still ${u.plan === 'pro' ? 'Pro' : 'Free'}.`}</p>}
       {note && <p className="text-sm mb-2" data-testid="billing-status">{note}</p>}
+      {typeof u.finished_searches === 'number' && (
+        <p className="text-[#555] text-sm mb-2" data-testid="finished-searches">
+          {u.finished_searches} finished {u.finished_searches === 1 ? 'search' : 'searches'}
+        </p>
+      )}
       {/* #1704: while a Free account is on its free searches its monthly quota (which leaves them out) is not shown beside
           them, so "0 of 50 used" never sits next to the free-search count. Pro keeps its unlimited line, without the trial aside. */}
       {(!u.trial || u.plan === 'pro') && <p className="text-[#555] text-sm mb-4" data-testid="plan-usage">{usageLine({ ...u, trial: null })}</p>}

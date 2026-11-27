@@ -24,6 +24,8 @@ const PAID = new Set(Object.keys(VENDOR))
 // lib/scan/commenter-import.ts): no reservation needed.
 const FREE = new Set(['apolloPeopleSearch'])
 // The only modules allowed to call them.
+const PILOT_CALLER = 'lib/enrich/apollo-ready-match.ts'
+const PILOT_LEDGER = 'lib/enrich/apollo-credit-ledger.ts'
 const CALLERS = ['lib/enrich/index.ts', 'lib/scan/commenter-import.ts'] // #1036 / #1250: Find work email calls no provider any more
 // The only modules allowed to hold a paid vendor's API origin.
 // lib/people/zerobounce.ts (#899): the free-tier mailbox verifier's adapter, wired through verifierFromEnv and reserved by
@@ -95,7 +97,11 @@ function providerUses(rel: string, text: string): { name: string; node: ts.Node 
   return [...ids, ...strings]
 }
 function unexpectedCallers(srcs: Src[]): string[] {
-  return srcs.filter(s => !VENDOR_MODULES.includes(s.rel) && !CALLERS.includes(s.rel) && providerUses(s.rel, s.text).length > 0).map(s => s.rel)
+  return srcs.filter(({ rel, text }) => {
+    if (rel !== PILOT_CALLER && rel !== PILOT_LEDGER && /\breserveApolloLead\b/.test(text)) return true
+    if (VENDOR_MODULES.includes(rel) || CALLERS.includes(rel)) return false
+    return providerUses(rel, text).some(({ name }) => rel !== PILOT_CALLER || name !== 'apolloPersonMatch')
+  }).map(s => s.rel)
 }
 
 // A hard-coded paid-vendor origin (`https://api.apollo.io`, `//api.zerobounce.net`, a subdomain of one) outside the
@@ -203,6 +209,23 @@ function checkedTruthy(v: string, target: ts.Node, top: ts.Block, after: number)
     if (a === top || ts.isFunctionLike(a)) return false
   }
 }
+function pilotGuard(fn: ts.FunctionLikeDeclaration, target: ts.Node, imports: Set<string>): ts.IfStatement | undefined {
+  for (let child = target, parent = child.parent; parent && parent !== fn; child = parent, parent = parent.parent) {
+    if (!ts.isBlock(parent)) continue
+    for (const statement of parent.statements) {
+      if (statement.getEnd() > child.getStart()) break
+      if (!ts.isIfStatement(statement) || statement.elseStatement || !exitsAlways(statement.thenStatement)) continue
+      const condition = bare(statement.expression)
+      if (!ts.isPrefixUnaryExpression(condition) || condition.operator !== ts.SyntaxKind.ExclamationToken) continue
+      const awaited = bare(condition.operand)
+      if (!ts.isAwaitExpression(awaited)) continue
+      const call = bare(awaited.expression)
+      if (ts.isCallExpression(call) && ts.isIdentifier(call.expression) && imports.has(call.expression.text) &&
+          loopsAround(target, fn).every(loop => within(call, loop))) return statement
+    }
+  }
+}
+
 function guards(fn: ts.FunctionLikeDeclaration, target: ts.Node, vendor: 'apollo' | 'pdl' | null, rs: Reservers): Guard[] {
   const isReserve = (n: ts.Node): n is ts.CallExpression => ts.isCallExpression(n) && ts.isIdentifier(n.expression) && (rs.reserve.has(n.expression.text) || rs.hold.has(n.expression.text))
   const out: Guard[] = []
@@ -250,6 +273,15 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
   const sf = parse(rel, text)
   const alias = importAliases(sf)
   const rs = reservers(sf, rel)
+  const pilotImports = new Set<string>()
+  if (rel === PILOT_CALLER) {
+    for (const spec of all(sf, ts.isImportSpecifier) as ts.ImportSpecifier[]) {
+      const declaration = spec.parent.parent.parent
+      if (!spec.isTypeOnly && !declaration.importClause?.isTypeOnly && ts.isStringLiteral(declaration.moduleSpecifier) &&
+          resolveSpec(rel, declaration.moduleSpecifier.text) === PILOT_LEDGER.slice(0, -3) &&
+          (spec.propertyName ?? spec.name).text === 'reserveApolloLead') pilotImports.add(spec.name.text)
+    }
+  }
   const paidName = (c: ts.CallExpression): string | null => { const n = calleeName(c); const o = n ? alias.get(n) ?? n : null; return o && PAID.has(o) ? o : null }
   const out: string[] = []
   // What each reservation (or each CreditHold parameter) is spent on: one paid call, or one call that hands the hold on.
@@ -260,6 +292,15 @@ function unreservedPaidCalls(rel: string, text: string): string[] {
     const vendor = VENDOR[name0]
     const fn = enclosingFn(call)
     if (!fn) { out.push(`${rel}:${lineOf(sf, call)} ${name0}`); continue }
+    if (rel === PILOT_CALLER && name0 === 'apolloPersonMatch') {
+      const hold = pilotGuard(fn, call, pilotImports)
+      const workspace = guards(fn, call, vendor, rs)
+      if (hold && workspace.length) {
+        spend(hold, call)
+        spend(nearest(workspace), call)
+      } else out.push(`${rel}:${lineOf(sf, call)} ${name0} (missing pilot or workspace reservation)`)
+      continue
+    }
     const own = guards(fn, call, vendor, rs)
     if (own.length > 0) { spend(nearest(own), call); continue }
     // The CreditHold-parameter shape (index.ts runPdl): every call of this function must pass, at the CreditHold
@@ -339,6 +380,22 @@ const verifierUsers = (srcs: Src[]) => srcs.filter(s => s.rel !== VERIFIER_MODUL
 
 test('#849 inventory: only the known enrichment entry points call the Apollo / People Data Labs functions', () => {
   assert.deepEqual(unexpectedCallers(SOURCES), [], 'a new caller of a paid enrichment function must reserve workspace credits first and be listed here')
+})
+
+test('#849 inventory: the operator pilot requires its own reservation before dispatch', () => {
+  const rel = PILOT_CALLER
+  const source = SOURCES.find(s => s.rel === rel)?.text
+  assert.ok(source)
+  assert.ok(providerUses(rel, source).some(({ name }) => name === 'apolloPersonMatch'))
+  assert.deepEqual(unreservedPaidCalls(rel, source), [])
+  const withoutRefusal = source.replace('if (!await reserveApolloLead', 'if (await reserveApolloLead')
+  assert.notEqual(withoutRefusal, source)
+  assert.equal(unreservedPaidCalls(rel, withoutRefusal).length, 1)
+  const withoutWorkspace = source.replace("workspaceHold = await reserveCredits", "workspaceHold = await untrackedReserve")
+  assert.notEqual(withoutWorkspace, source)
+  assert.equal(unreservedPaidCalls(rel, withoutWorkspace).length, 1)
+  const other = "import { reserveApolloLead as reserve } from './apollo-credit-ledger.ts'; await reserve(db, tenant, lead, env, scan)"
+  assert.deepEqual(unexpectedCallers([{ rel: 'lib/enrich/other.ts', text: other }]), ['lib/enrich/other.ts'])
 })
 
 test('#849 inventory: the scan covers lib/, app/, scripts/ and the root modules, in every source extension', () => {

@@ -100,7 +100,7 @@ test('DATES the list fails closed: no entry, no date, two days for one posting, 
   const { atsListDate } = await import('../lib/discover/ats-dates.ts')
   const index = 'https://brightloop.workable.com/'
   const posting = 'https://apply.workable.com/brightloop/j/1A2B3C4D5E'
-  const api = 'https://apply.workable.com/api/v1/accounts/brightloop/jobs?details=true'
+  const api = 'https://apply.workable.com/api/v1/widget/accounts/brightloop?details=true'
   assert.equal(await atsListDate(index, posting, stub({ [api]: { body: { jobs: [{ shortcode: 'OTHER', published_on: '2026-11-19' }] } } }).f, NOW), null, 'no entry for this posting')
   assert.equal(await atsListDate(index, posting, stub({ [api]: { body: { jobs: [{ shortcode: '1A2B3C4D5E' }] } } }).f, NOW), null, 'entry carries no date')
   assert.equal(await atsListDate(index, posting, stub({ [api]: { body: { jobs: [{ shortcode: '1A2B3C4D5E', published_on: '2026-11-19' }, { shortcode: '1A2B3C4D5E', published_on: '2026-11-20' }] } } }).f, NOW), null, 'two days for one posting is not a fact')
@@ -141,5 +141,23 @@ test('DATES board index pages date postings for any industry and country, and ne
   // the fail-closed half: a different board's index cannot date this posting, even when it lists postings
   const other = atsList('https://boards.greenhouse.io/northlinecare')!
   assert.equal(await atsListDate('https://boards.greenhouse.io/northlinecare', boards[3].posting, stub({ [other.apiUrl]: { body: boards[0].body } }).f, NOW), null, 'a posting from another board is not dated here')
+})
+
+// Diagnosis on a live Workable board (2026-11-26): the single record is /api/v1/accounts/<board>/jobs/<shortcode> and prints the day as
+// `published`; the list record is the account widget, /api/v1/widget/accounts/<board>?details=true, with jobs[].published_on. The
+// guessed /api/v1/accounts/<board>/jobs?details=true answers 400. Workable also serves a locale-prefixed path.
+test('DATES Workable: the account widget is the list record and a locale prefix still names the posting', async () => {
+  const { atsList, atsListDate, atsPosting } = await import('../lib/discover/ats-dates.ts')
+  const index = 'https://apply.workable.com/degura/'
+  const rec = atsList(index)
+  assert.equal(rec?.apiUrl, 'https://apply.workable.com/api/v1/widget/accounts/degura?details=true', 'the list is the account widget')
+  const localised = 'https://apply.workable.com/en/degura/j/B48FCABF70'
+  const single = atsPosting(localised)
+  assert.equal(single?.platform, 'workable')
+  assert.equal(single?.apiUrl, 'https://apply.workable.com/api/v1/accounts/degura/jobs/B48FCABF70')
+  const own = await atsDate(localised, stub({ [single!.apiUrl]: { body: { shortcode: 'B48FCABF70', published: '2026-11-19T00:00:00.000Z' } } }).f, NOW)
+  assert.equal(own?.date, '2026-11-19', 'the record prints the day as published')
+  const listed = await atsListDate(index, localised, stub({ [rec!.apiUrl]: { body: { jobs: [{ shortcode: 'B48FCABF70', url: 'https://apply.workable.com/j/B48FCABF70', published_on: '2026-11-19' }] } } }).f, NOW)
+  assert.equal(listed?.date, '2026-11-19', 'the widget list dates the same posting')
 })
 

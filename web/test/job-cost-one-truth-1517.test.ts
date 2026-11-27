@@ -205,7 +205,7 @@ bothEngines('#1517: after a trial run settles, the allowance it used equals the 
   const now = 1795300200
   await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, status, funded_by, attempts, estimate, spend_reserved_usd, spend_cap_reserved_usd, created_at, finished_at) VALUES (?, 'T', 'x', 'i', 'l', 'q', 'done', 'trial', 1, ?, 0.3, 0.0412, 1795300000, 1795300100)", [JOB, trialEstimate])
   await db.run("INSERT INTO scan_spend_calls (id, user_id, scan_job_id, attempt, kind, reserve_usd, actual_usd, status, reason, created_at, settled_at) VALUES ('tr1', 'T', ?, 1, 'llm.anthropic', 0.2, 0.0412, 'settled', NULL, 1795300010, 1795300020)", [JOB])
-  await db.run("INSERT INTO trial_reservations (id, tenant_id, job_id, kind, reserve_usd, day, created_at, settled_at, settled_attempt) VALUES ('res1', 'T', ?, 'scan', 0.3, ?, 1795300000, NULL, NULL)", [JOB, trialDay(now)])
+  await db.run("INSERT INTO trial_reservations (id, tenant_id, job_id, kind, reserve_usd, day, created_at, settled_at, settled_attempt) VALUES ('res1', 'T', ?, 'scan', 0.3, ?, 1795300000, NULL, NULL)", [JOB, trialDay(now, 'UTC')])
   const used = async () => { const a = await trialAllowanceLeft(db, 'T', { now, env }); assert.ok(a); return Math.round((a.total_usd - a.left_usd) * 1e6) / 1e6 }
   assert.equal(await used(), 0.3)   // while the run is not settled: the worst-case reservation is held
   await db.run("UPDATE trial_reservations SET settled_at = ?, settled_attempt = 1 WHERE id = 'res1'", [now - 50])

@@ -1,4 +1,5 @@
 import { isCarryStub } from './carry-exclusions.ts'
+import { queryProfileOrigin } from './request-target.ts'
 import { auditEventArgs, type AuditEvent } from '../audit.ts'
 import { migrateScanSpendCap } from './spend-cap.ts'
 import { LLM_TIMEOUT_MS } from '../llm/provider.ts'
@@ -80,7 +81,7 @@ export interface ScanInput {
   location: string
 }
 // Free-text request. The legacy columns stay filled (placeholders) so older workers keep working.
-export interface QueryInput { id?: string; query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null; icpReviewed?: boolean }
+export interface QueryInput { id?: string; query: string; icp?: string | null; sources?: string | null; seller?: string; offer?: string | null; watchId?: string; runBudget?: string | null; icpReviewed?: boolean; icpFromQuery?: boolean; icpRetained?: boolean }
 
 // Schema notes for the external worker (Hermes). Everything is enforced in
 // SQLite itself, so a writer that bypasses the web app cannot corrupt state:
@@ -296,15 +297,16 @@ export function createJob(db: Database.Database, userId: string, input: ScanInpu
 }
 
 // icp is submitted JSON; presence does not prove human review or approval. null means infer it when the job runs.
-// icp_inferred: 0 = submitted from an explicit review flow (the request said reviewed: true), 3 = carried raw (an
+// icp_inferred: 2 = request-derived target, 0 = explicit reviewed submission, 3 = carried raw (an
 // autosaved, restored or repeated profile, NOT a review). 3 is durable: a reload or repeat reads it back as
 // 'carried' and never promotes. Legacy 0 rows predate this distinction and are NOT proof of review either.
-export function createQueryJob(db: Database.Database, userId: string, input: QueryInput): string {
+export function createQueryJob(db: Database.Database, userId: string, input: QueryInput & { inheritedOffer?: string | null }): string {
   const id = input.id ?? randomBytes(12).toString('hex')   // a caller may fix the id first (a trial reservation is linked to it before the job exists)
   // run_budget is part of the INSERT, so a job is never visible to the runner without its budget.
-  const offer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
+  const reviewedOffer = (input.offer ?? '').replace(/\s+/g, ' ').trim().slice(0, 150) || null
+  const offer = reviewedOffer ?? input.inheritedOffer ?? null
   db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, icp, icp_inferred, sources, seller, offer, offer_set_at, watch_id, run_budget) VALUES (?, ?, ?, '(from request)', '-', ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
-    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? (input.icpReviewed === true ? 0 : 3) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, offer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
+    id, userId, input.query.slice(0, 150) || '-', input.query, input.icp ?? null, input.icp && !isCarryStub(input.icp) ? queryProfileOrigin(input) : null, input.sources ?? null, (input.seller ?? '').trim().slice(0, 300) || null, offer, reviewedOffer ? Math.floor(Date.now() / 1000) : null, input.watchId ?? null, input.runBudget ?? null,
   )
   return id
 }
@@ -373,7 +375,7 @@ export function parkPendingReservedJobs(db: Database.Database): void {
     `UPDATE scan_jobs SET status = 'running', claimed_at = 0 WHERE status = 'pending' AND EXISTS (SELECT 1 FROM scan_spend_calls c WHERE c.scan_job_id = scan_jobs.id AND c.status = 'reserved')`,
   ).run()
 }
-import { SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
+import { RELEASE_CREATION_RESERVE_SQL, RELEASE_REFUSAL_RESERVE_SQL, SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 // #1036: a staging real-company check (lib/scan/real-company-check.ts) is inserted 'running' with no claim and finishes within its
 // 60 s crawl deadline. One still 'running' after STAGING_CHECK_DEAD_S lost its process (a restart mid-crawl): it is failed here, so
 // it stops counting as an active scan and can be removed. Never re-queued (it is not a scan a worker may run).
@@ -391,7 +393,7 @@ export function reapStaleRunningJobs(db: Database.Database): void {
      WHERE status = 'running' AND claimed_at < ?`,
   ).run(MAX_ATTEMPTS, MAX_ATTEMPTS, MAX_ATTEMPTS, cutoff)
   db.prepare(REAP_STAGING_CHECKS_SQL).run(Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000) - STAGING_CHECK_DEAD_S)
-  try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(Math.floor(Date.now() / 1000)) } catch { /* no trial table in this store */ } // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
+  try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(Math.floor(Date.now() / 1000)); db.prepare(RELEASE_CREATION_RESERVE_SQL).run(); db.prepare(RELEASE_REFUSAL_RESERVE_SQL).run() } catch { /* no trial table in this store */ } // a trial scan the reaper just failed is settled (its free scan is given back if interrupted)
 }
 export function reapStaleJobs(db: Database.Database): void {
   parkPendingReservedJobs(db)

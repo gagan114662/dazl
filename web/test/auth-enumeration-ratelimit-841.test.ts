@@ -10,6 +10,9 @@ import { fileURLToPath } from 'node:url'
 const web = fileURLToPath(new URL('../', import.meta.url))
 
 test('#841 forgot password and verification resend: same answer for a known and an unknown email; per-IP and per-email 429 (real routes, both engines)', () => {
+  if (process.env.DAZL_REQUIRE_PG === '1') {
+    assert.ok(process.env.DAZL_TEST_PG_URL, 'PostgreSQL CI must provide DAZL_TEST_PG_URL for the auth route tests')
+  }
   const env = { ...process.env }
   delete env.NODE_TEST_CONTEXT // the child reports as its own run
   const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',
@@ -18,5 +21,8 @@ test('#841 forgot password and verification resend: same answer for a known and 
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /# fail 0/)
   assert.match(r.stdout, /AUTH ENUMERATION 841 ok sqlite/)
-  if (process.env.DAZL_TEST_PG_URL) assert.match(r.stdout, /AUTH ENUMERATION 841 ok pg/)
+  if (process.env.DAZL_TEST_PG_URL) {
+    assert.match(r.stdout, /AUTH ENUMERATION 841 ok pg/)
+    assert.match(r.stdout, /^ok \d+ - \[pg\].*the same on Postgres$/m)
+  }
 })

@@ -12,27 +12,47 @@ import { timingProofGap, timingProofGapDb } from '../scan/timing-proof.ts'
 // The user's own recency window (#198) is a hard gate on top: a lead whose event date is not inside the window of the
 // scan that found it (stale, undated, invalid or future) is research only. Ordinary source or identity review never
 // lifts it; only a scan run with a window that covers the date does. An unreadable profile holds too.
-export function currentnessHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date()): boolean {
- const row=db.prepare('SELECT l.source_kind,l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,l.timing_note,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {source_kind:string|null;timing_note:string|null;human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null}|undefined
+export function currentnessHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date(), gateHeld?: () => boolean): boolean {
+ const row=db.prepare('SELECT l.source_kind,l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,l.timing_note,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as CurrentnessRow | undefined
+ return currentnessHeldFromRow(row, now, gateHeld ?? (() => requiredGateHeld(db, tenant, lead) !== null),
+   () => timingProofGap(db, tenant, lead, now) !== null)
+}
+
+type CurrentnessRow = { source_kind:string|null;timing_note:string|null;human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null }
+
+export function currentnessRowsForJob(db: Database.Database, tenant: string, jobId: string, ids: readonly string[]) {
+ // JSON object keys are text on both stores; PostgreSQL json_each values are JSON.
+ const keys = JSON.stringify(Object.fromEntries(ids.map(id => [id, true])))
+ const rows = db.prepare(`SELECT l.id, l.source_kind, l.human_confirmed_at, l.human_confirmed_from, l.review_reason,
+   l.confidence, l.event_date, l.timing_note, j.icp, j.query, j.run_budget
+   FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+   WHERE j.user_id = ? AND j.id = ? AND l.id IN (SELECT key FROM json_each(?))`)
+   .all(tenant, jobId, keys) as (CurrentnessRow & { id: string })[]
+ return new Map(rows.map(row => [row.id, row]))
+}
+
+export function currentnessHeldFromRow(
+ row: CurrentnessRow | undefined, now: Date, gateHeld: () => boolean, proofHeld: () => boolean,
+): boolean {
  if (!row) return false
+ // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
+ if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
  // Discovery dates from the search index cannot authorize email, even on an existing draft.
  if (row.source_kind === 'discover') return !hasDiscoveryEventDate(row) || signalStale(row.event_date, now)
  if (windowHeld(row, now)) return true
- // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
- if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
- if (requiredGateHeld(db, tenant, lead)) return true   // a failed REQUIRED gate survives lead / domain confirmation
+ if (gateHeld()) return true   // a failed REQUIRED gate survives lead / domain confirmation
  // Marked jobs can use only their durable machine proof. Even a review
  // confirmation written by an older release cannot lift this hold or switch
  // the candidate to the legacy research proof fallback.
  if (hasCompanyFirstBudget(row.run_budget)) {
-  try { return timingProofGap(db,tenant,lead,now)!==null } catch { return true }
+  try { return proofHeld() } catch { return true }
  }
  if (row.human_confirmed_at!==null || row.confidence===null) return false
  // A machine-verified lead with no human review is held unless its durable, versioned timing proof stands right now
  // (#377, lib/scan/timing-proof.ts): proven event day in the window, confirmed domain, named person and published route,
  // all still bound to the recorded proof. Model confidence alone never lifts this hold.
  // (The research engine's proof, the only other way out of this hold, was deleted with that engine: #1393. It ran only with LEAD_ENGINE=research.)
- try { return timingProofGap(db, tenant, lead, now)!==null } catch { return true }   // an unreadable proof store holds
+ try { return proofHeld() } catch { return true }   // an unreadable proof store holds
 }
 
 // Read alone for the page: a window hold survives the user's own review, so the page must not clear it optimistically.

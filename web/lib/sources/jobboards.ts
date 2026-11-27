@@ -101,8 +101,8 @@ const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[
 // #1205: a place text (a qualifier, or a country code such as "GB") names the UK when the built-in UK places read it as theirs: the UK London's own
 // markers ("London, UK", "London, GB") or the United Kingdom place ("Scotland", "Wales"). No country is spelled here: the built-in places define it.
 function ukMarker(t: string): boolean { return LONDON_OK.test(`London, ${t}`) || COUNTRY_PLACES.some(c => c.ok(t)) }
-export interface Place { name: string; ok: (...locs: (string | undefined)[]) => boolean }
-const placeOf = (c: { name: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ok: (...l) => l.some(x => !!x && c.ok(x)) })
+export interface Place { name: string; country?: string; ok: (...locs: (string | undefined)[]) => boolean }
+const placeOf = (c: { name: string; country?: string; ok: (l: string) => boolean }): Place => ({ name: c.name, ...(c.country ? { country: c.country } : {}), ok: (...l) => l.some(x => !!x && c.ok(x)) })
 // Any other "<City>, <Country>" in the request (Toronto, Canada / toronto canada / Cambridge, UK / Gurugram India): a posting is in the place when its location names the city as a whole word, in any
 // letter case, and does not name a different country. A city is taken from the words right before a country name when they are separated from it by a comma, follow "in / at / near / from", or are all
 // capitalized ("Berlin Germany"); a bare lowercase noun before a country ("dentists UK") is not a city. The CITY stays the place: "Cambridge, UK" is Cambridge, not the whole United Kingdom.
@@ -153,7 +153,7 @@ export function cityCountryPlace(city: string, country: string, region: string |
     if (namesake && (/\bremote\b/i.test(l) || (named.length === 0 && regions.length === 0))) return false
     return true
   })
-  return { name: city.trim(), ok }
+  return { name: city.trim(), country, ok }
 }
 // #1095 (live staging trial, 2026-11-13): "Austin B2B SaaS companies hiring their first account executive", whose profile resolved the place
 // to "Austin, TX", named no place this function knew (a US city is neither London/NYC, a state name nor "<City>, <Country>"), so the free
@@ -261,7 +261,13 @@ export function absorbStates(places: string[]): string[] {
   return places.filter(p => { const abbr = Object.keys(STATES).find(a => STATES[a] === p); return !(abbr && places.some(q => q !== p && q.endsWith(`, ${abbr}`))) })
 }
 export function placeIn(query: string): Place | null {
-  for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
+  for (const c of CITY_PLACES) if (c.ask.test(query)) {
+    const state = stateIn(c.name)
+    const region = state ? regionOf(state) : null
+    const countryPlace = COUNTRY_PLACES.find(candidate => c.ok(`${c.name}, ${candidate.name}`))
+    const country = region ? countryOfRegion(region) : countryFromField(countryPlace?.name)
+    return placeOf({ ...c, country: country ?? undefined })
+  }
   const us = usCityPlace(query); if (us) return us
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }

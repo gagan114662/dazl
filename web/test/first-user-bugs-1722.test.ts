@@ -24,6 +24,9 @@ test('#1722 an industry that already names companies is not doubled', () => {
 test('#1722 Home sender readiness re-reads when the tab is used again', () => {
   for (const f of ['app/app/readiness.tsx', 'app/app/ready-card.tsx']) {
     const s = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
-    assert.ok(s.includes('visibilitychange') && s.includes("'focus'"), `${f} refreshes sender readiness on focus/visibility`)
+    assert.ok(s.includes('subscribeFocusRefresh('), `${f} refreshes sender readiness when the tab is used again`)
   }
+  // #1876: the focus and visibility listeners themselves live in one shared, debounced place, so the same read is not fired per panel.
+  const shared = readFileSync(new URL('../lib/focus-refresh.ts', import.meta.url), 'utf8')
+  assert.ok(shared.includes("addEventListener('focus'") && shared.includes('visibilitychange'), 'the shared listener still refreshes on focus and visibility')
 })

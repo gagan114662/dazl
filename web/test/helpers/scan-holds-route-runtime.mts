@@ -72,7 +72,7 @@ test('#874 scan route: a valid long profile whose holds cannot fit is refused (4
     assert.ok(ICP_JSON_BUDGET - flat(norm) - 16 < minimalHold, `the smallest hold record (${minimalHold}) does not fit in the room left (${ICP_JSON_BUDGET - flat(norm) - 16})`)
 
     // --- prior stored state: a roomy profile WITH the hold is saved by the route (control: roomy-hold succeeds and keeps the hold)
-    const roomy = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, icp: withResearch(shortFlat() as never, heldResearch()) }))
+    const roomy = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, reviewed: true, icp: withResearch(shortFlat() as never, heldResearch()) }))
     const roomyBody = await roomy.json() as { job_id?: string; error?: string }
     assert.equal(roomy.status, 202, JSON.stringify(roomyBody))
     const prior = storedIcp(db, roomyBody.job_id!)
@@ -81,7 +81,7 @@ test('#874 scan route: a valid long profile whose holds cannot fit is refused (4
 
     // --- the refusal: no job, no change to ANY stored table (profile, decisions, offers)
     const beforeJobs = jobs(db), beforeDump = dump(db)
-    const refused = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, icp: longIcp }))
+    const refused = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, reviewed: true, icp: longIcp }))
     const refusedBody = await refused.json() as { error?: string; message?: string; job_id?: string }
     assert.equal(refused.status, 400, JSON.stringify(refusedBody))
     assert.equal(refusedBody.error, 'holds_too_large'); assert.ok(refusedBody.message && !refusedBody.job_id)
@@ -90,13 +90,25 @@ test('#874 scan route: a valid long profile whose holds cannot fit is refused (4
     assert.deepEqual(storedIcp(db, roomyBody.job_id!), prior, 'the prior stored profile and its holds are exactly as they were')
 
     // --- control: the SAME long profile without any hold is an ordinary success (research that cannot fit is omitted, as before)
-    const plain = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, icp: withResearch(longFlat(), noHoldResearch()) }))
+    const plain = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, reviewed: true, icp: withResearch(longFlat(), noHoldResearch()) }))
     const plainBody = await plain.json() as { job_id?: string; error?: string }
     assert.equal(plain.status, 202, JSON.stringify(plainBody)); assert.equal(jobs(db), beforeJobs + 1)
     assert.equal(storedIcp(db, plainBody.job_id!).who.length, 6, 'the long profile was stored whole')
     // and with no research at all
     done(db)
-    const bare = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, icp: withResearch(longFlat(), undefined) }))
+    const bare = await POST(request({ query: 'dental practices in Ohio hiring front desk', offer: NAME, reviewed: true, icp: withResearch(longFlat(), undefined) }))
     assert.equal(bare.status, 202, 'no research: success')
+
+    // A different typed target drops old positives, not the unresolved hold.
+    done(db)
+    const nextQuery = 'Independent music schools in Portugal expanding their front desk'
+    const fresh = await POST(request({ query: nextQuery, offer: NAME, reviewed: false, icp: longIcp }))
+    const freshBody = await fresh.json() as { job_id?: string; error?: string }
+    assert.equal(fresh.status, 202, JSON.stringify(freshBody))
+    const freshIcp = storedIcp(db, freshBody.job_id!)
+    assert.equal(freshIcp.summary, nextQuery)
+    assert.deepEqual(freshIcp.who, [])
+    assert.ok(freshIcp.research?.u?.some(u => u.n.includes('alpha')), 'new query keeps the unresolved hold')
+    assert.deepEqual(storedIcp(db, roomyBody.job_id!), prior, 'old play remains unchanged')
   } finally { db.close() }
 })
