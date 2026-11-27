@@ -26,7 +26,7 @@ import { MAX_ATTEMPTS, reapStaleJobs, markSeenBefore } from './store.ts'
 import { KEEP_MODEL_CALLS_JOB_SQL, SETTLE_FREE_ORPHANS_JOB_SQL } from './free-orphans.ts'
 import { kickQueueRunner, queueTenants } from './queue-runner.ts'
 import { kickSharedScanQueue, sharedScanQueue } from '../queue/scan-claimer.ts'
-import { RELEASE_CREATION_RESERVE_SQL, SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
+import { RELEASE_CREATION_RESERVE_SQL, RELEASE_REFUSAL_RESERVE_SQL, SETTLE_REAPED_TRIAL_SQL } from '../billing/trial-reap.ts'
 import { getDb, sqliteDb } from '../db/client.ts'
 import { readAccountMarket } from '../settings/search-market-store.ts'
 import { MARKET_NOTICE, resolveSearchMarket, tinyfishMarket, type SearchMarket } from './search-market.ts'
@@ -3109,7 +3109,7 @@ export function requeueInFlightForShutdown(db: Database.Database): number {
         if (c === 0 && end.run(now, job.id, job.attempts, MAX_ATTEMPTS, pinned ? 1 : 0).changes === 1) {
           // a trial scan's reservation is settled as the reaper settles it; the queue claim is closed by its token, so
           // the account's next scan is claimable at once
-          try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now); db.prepare(RELEASE_CREATION_RESERVE_SQL).run() } catch (e) { if (!/no such table/i.test((e as Error).message)) throw e } // a store with no trial tables has nothing to settle; anything else rolls this scan's ending back (the lease reaper then does both)
+          try { db.prepare(SETTLE_REAPED_TRIAL_SQL).run(now); db.prepare(RELEASE_CREATION_RESERVE_SQL).run(); db.prepare(RELEASE_REFUSAL_RESERVE_SQL).run() } catch (e) { if (!/no such table/i.test((e as Error).message)) throw e } // a store with no trial tables has nothing to settle; anything else rolls this scan's ending back (the lease reaper then does both)
           // The queue item is closed 'done', as the claimer closes any item whose scan already ended ("nothing to run":
           // the scan row has the outcome). Only when the queue is on this handle; with the queue on Postgres the
           // claim waits for its lease (no kick can tell this row from one whose run is still going).
