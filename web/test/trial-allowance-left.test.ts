@@ -47,7 +47,7 @@ bothEngines('allowance left: an unconfigured trial or an unreadable ledger gives
   assert.equal(await left(db, u.id, {}), null, 'no wallet ceilings configured')
   const broken = { ...db, all: async () => { throw new Error('db down') } } as unknown as Db
   assert.equal(await trialAllowanceLeft(broken, u.id, { env: caps, now: NOW }), null)
-  assert.equal(trialDay(NOW) > 0, true)
+  assert.equal(trialDay(NOW, 'UTC') > 0, true)
 })
 
 const base = { budget: null, limited: true, trialReserveUsd: 0.3 } as const

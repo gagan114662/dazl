@@ -13,7 +13,9 @@
 //     bounded by their prompt's UTF-8 bytes plus a margin, and their max_tokens. Failed calls and retries keep their
 //     reservation; a re-claimed attempt starts from what the job already reserved (scan_jobs.spend_reserved_usd).
 //   - per trial account, in total across all days (DAZL_TRIAL_ACCOUNT_TOTAL_USD), and
-//   - globally per day, Toronto time (DAZL_TRIAL_GLOBAL_DAILY_USD; #1621, see trialDay and globalDailyCapUsd): checked at admission, in one transaction every admission takes
+//   - globally per day (DAZL_TRIAL_GLOBAL_DAILY_USD; #1621, and #2054 as corrected on review: the day is the platform's
+//     UTC day for every account - the ceiling is platform money and keeps ONE day; an account's own zone governs
+//     per-account limits and shown reset times, never this ceiling. See trialDay and globalDailyCapUsd): checked at admission, in one transaction every admission takes
 //     in turn (the trial_budget_lock row), so concurrent workers and instances cannot admit against the same room. A
 //     scan counts as its full reserve until ALL its paid work has ended - the scan, then its enrichment (buyer fit is
 //     a guarded model call after the scan reads 'done') - which the runner records as the reservation's settled_at at
@@ -44,6 +46,7 @@ import { randomBytes } from 'node:crypto'
 import { captureError } from '../ops/errors.ts'
 import { asDb, type Db, type DbLike, type Tx, type TxBody } from '../db/client.ts'
 import { operatorKey, TRIAL_SCANS_PER_ACCOUNT } from '../scan/trial.ts'
+import { FALLBACK_ZONE, dateInZone, dayNumber, dayStartUnix } from '../account-zone.ts'
 import { trialIdentity } from '../auth/email-identity.ts'
 
 export function migrateTrialBudget(db: Database.Database): void {
@@ -122,23 +125,31 @@ export const CONSUMER_DOMAINS = new Set(['gmail.com', 'googlemail.com', 'outlook
   'yandex.ru', 'mail.ru', 'qq.com', '163.com', '126.com', 'naver.com', 'rediffmail.com', 'hotmail.co.uk', 'yahoo.co.uk', 'yahoo.co.in', 'outlook.in'])
 export const emailDomain = (email: string) => email.trim().toLowerCase().split('@')[1] ?? ''
 
-// #1621: the shared daily allowance starts again at midnight in Toronto (dazl's day), not at midnight UTC (which is 7pm or 8pm
-// there, the middle of the evening). A day is numbered by its Toronto calendar date (days since 1970-01-01), so it is the same
-// number a UTC day had, and rows written before this keep their meaning but for the few hours between the two midnights.
-export const TRIAL_ZONE = 'America/Toronto'
-const zoneDate = new Intl.DateTimeFormat('en-CA', { timeZone: TRIAL_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' })
-// The Toronto calendar date at this moment, as YYYY-MM-DD.
-export function trialDate(nowS: number): string {
-  const p = Object.fromEntries(zoneDate.formatToParts(new Date(nowS * 1000)).map(x => [x.type, x.value]))
-  return `${p.year}-${p.month}-${p.day}`
+// #2054, corrected on review (Ziggy): the shared daily allowance is platform money, so its day is ONE platform
+// day - the UTC day - for every account. The day bucket written on a reservation, the ledger's 'today' sums and
+// globalDailyCapUsd's day are all this platform day; if each account's day were its own zone's, the buckets would
+// split by zone and the day's total spend could pass the global ceiling. An account's own zone still governs what
+// is genuinely the account's (lib/scan/trial.ts's per-account scan count, the send day in
+// lib/outreach/send-budget.ts, and every shown reset time) - never this ceiling.
+// (#1621 before this: the day was Toronto's for every account; the first #2054 build made it the admitting
+// account's own, which is what the correction above reverses for the global ceiling only.)
+// trialDate / trialDay / trialDayStart stay zone-parameterized: they are the general day math
+// (lib/account-zone.ts) other surfaces use with the zone that owns the day in question. This wallet only ever
+// passes the platform zone (UTC, FALLBACK_ZONE). A day is numbered by its calendar date in the zone (days since
+// 1970-01-01).
+// The calendar date at this moment in the given zone, as YYYY-MM-DD.
+export function trialDate(nowS: number, zone: string): string {
+  return dateInZone(nowS, zone)
 }
-export const trialDay = (nowS: number) => Math.floor(Date.parse(`${trialDate(nowS)}T00:00:00Z`) / 86_400_000)
-// The moment (unix seconds) that day starts in Toronto: 04:00 UTC in summer, 05:00 UTC in winter.
-export function trialDayStart(day: number): number {
-  for (const h of [4, 5]) { const s = day * 86400 + h * 3600; if (trialDay(s) === day && trialDay(s - 1) === day - 1) return s }
-  return day * 86400 + 5 * 3600
+export const trialDay = (nowS: number, zone: string) => dayNumber(nowS, zone)
+// The moment (unix seconds) that day starts in the given zone, exact on clock-change days too.
+export function trialDayStart(day: number, zone: string): number {
+  return dayStartUnix(day, zone)
 }
-// #1621 (owner): on launch day, Friday 2026-11-27 Toronto time, the shared daily allowance of $13.33 is $40; from midnight it is
+// The platform day: the UTC day number of an instant, and the unix second a platform day starts (its UTC midnight).
+const platformDay = (nowS: number) => trialDay(nowS, FALLBACK_ZONE)
+const platformDayStart = (day: number) => trialDayStart(day, FALLBACK_ZONE)
+// #1621 (owner): on launch day, Friday 2026-11-27 (the platform day, UTC - #2054 as corrected: the lift is a property of the platform day, not of any account's local date), the shared daily allowance of $13.33 is $40; from midnight it is
 // $13.33 again, with nothing to switch by hand. The built-in rule lifts exactly that configured amount (LAUNCH_DAY.fromUsd) and no
 // other: a deployment (or a test) configured with any other DAZL_TRIAL_GLOBAL_DAILY_USD keeps its own ceiling on that date too.
 // DAZL_TRIAL_GLOBAL_DAILY_BY_DATE replaces the rule with dates that apply whatever the configured amount
@@ -278,7 +289,7 @@ export const reservationCost = (r: LedgerRow) => isRead(r)
   ? (readSettled(r) ? Math.max(0, Number(r.spent_usd)) : Number(r.reserve_usd))
   : settled(r) ? Math.max(0, recordedJobCostUsd(r.spend_reserved_usd, r.spend_cap_reserved_usd) ?? Number(r.reserve_usd)) : Number(r.reserve_usd)
 const countsToday = (r: LedgerRow, day: number) => Number(r.day) === day
-  || (Number(r.day) < day && (isRead(r) ? readEndedAt(r) >= trialDayStart(day) : (!settled(r) || Number(r.settled_at) >= trialDayStart(day))))
+  || (Number(r.day) < day && (isRead(r) ? readEndedAt(r) >= platformDayStart(day) : (!settled(r) || Number(r.settled_at) >= platformDayStart(day))))
 // A trial attempt released before any cost: its scan failed (not cancelled: a cancelled scan may have paid for work
 // already under way), recorded no spend at all, and its current attempt has settled. Every other admission keeps its
 // place among the account's TRIAL_SCANS_PER_ACCOUNT attempts: running, queued for a retry, linked to no scan, or
@@ -337,7 +348,7 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet,
       WHERE u.id <> ? AND lower(u.email) LIKE ? LIMIT 1`, [user.id, `%@${domain}`])
     if (other) return 'domain_used'
   }
-  const l = ledger(yield* t.all<LedgerRow>(LEDGER_SQL, [user.id, day, day, trialDayStart(day), trialDayStart(day)]), user.id, day)
+  const l = ledger(yield* t.all<LedgerRow>(LEDGER_SQL, [user.id, day, day, platformDayStart(day), platformDayStart(day)]), user.id, day)
   // a small tolerance for float sums (0.1 + 0.2), far below a cent
   // three admitted attempts that can cost dazl money per account, paid failures and cancellations included
   // (#1095: one without Google; past it the answer is to link Google, which opens the rest)
@@ -350,7 +361,9 @@ function* refusal(t: Tx, user: { id: string; email: string }, caps: TrialWallet,
 export async function admitTrialScan(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<Admission> {
   const caps = trialCaps(o.env)
   if (!caps) return { ok: false, reason: 'not_configured' }
-  const now = o.now ?? Math.floor(Date.now() / 1000), day = trialDay(now)
+  const now = o.now ?? Math.floor(Date.now() / 1000)
+  // #2054 (as corrected): the reservation's day bucket is the platform (UTC) day, the same for every account
+  const day = platformDay(now)
   return db.tx(function* (t: Tx): TxBody<Admission> {
     // every admission takes this row first (created by the first admission, so a freshly migrated store stays empty), so
     // two instances cannot both admit against the same remaining budget: the upsert locks the row until this commits
@@ -369,7 +382,9 @@ export async function admitTrialScan(db: Db, user: { id: string; email: string }
 export async function admitTrialSiteReadBudget(db: Db, user: { id: string; email: string }, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<Admission> {
   const caps = trialWalletCaps(o.env)
   if (!caps) return { ok: false, reason: 'not_configured' }
-  const now = o.now ?? Math.floor(Date.now() / 1000), day = trialDay(now)
+  const now = o.now ?? Math.floor(Date.now() / 1000)
+  // #2054 (as corrected): the reservation's day bucket is the platform (UTC) day, the same for every account
+  const day = platformDay(now)
   return db.tx(function* (t: Tx): TxBody<Admission> {
     yield* t.run('INSERT INTO trial_budget_lock (id, n) VALUES (1, 1) ON CONFLICT (id) DO UPDATE SET n = trial_budget_lock.n + 1')
     const why = yield* refusal(t, user, caps, day, TRIAL_SITE_READ_RESERVE_USD, o.env ?? process.env)
@@ -397,7 +412,8 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
   const read = o.kind === 'site_read'
   const caps = read ? trialWalletCaps(o.env) : trialCaps(o.env)
   if (!caps) return 'not_configured'
-  const day = trialDay(o.now ?? Math.floor(Date.now() / 1000))
+  // #2054 (as corrected): the day checked is the platform (UTC) day, the same for every account
+  const day = platformDay(o.now ?? Math.floor(Date.now() / 1000))
   const reserveUsd = o.reserveUsd ?? (read ? TRIAL_SITE_READ_RESERVE_USD : (caps as TrialCaps).reserveUsd)
   return db.tx(t => refusal(t, user, caps, day, reserveUsd, o.env ?? process.env))
 }
@@ -409,11 +425,13 @@ export async function trialRefusal(db: Db, user: { id: string; email: string }, 
 export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: number; env?: Record<string, string | undefined> } = {}): Promise<{ left_usd: number; total_usd: number } | null> {
   const caps = trialWalletCaps(o.env)
   if (!caps) return null
-  const day = trialDay(o.now ?? Math.floor(Date.now() / 1000))
   try {
+    // #2054 (as corrected): the ledger's day is the platform (UTC) day; the account sum itself runs over every day,
+    // so the allowance shown is the account's own figure and does not depend on any zone
+    const day = platformDay(o.now ?? Math.floor(Date.now() / 1000))
     // #1579: the account total does not bind the operator's acceptance account, so there is no "left" to show: no line
     if (await trialQaExemptAccount(db, tenantId, o.env ?? process.env)) return null
-    const l = ledger(await db.all<LedgerRow>(LEDGER_SQL, [tenantId, day, day, trialDayStart(day), trialDayStart(day)]), tenantId, day)
+    const l = ledger(await db.all<LedgerRow>(LEDGER_SQL, [tenantId, day, day, platformDayStart(day), platformDayStart(day)]), tenantId, day)
     if (!Number.isFinite(l.account)) return null
     return { left_usd: Math.min(caps.accountTotalUsd, Math.max(0, caps.accountTotalUsd - l.account)), total_usd: caps.accountTotalUsd }
   } catch { return null }
