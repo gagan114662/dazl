@@ -52,7 +52,7 @@ test('#1727 fix 2: a scan that ran free steps and stopped is an interruption, no
 
 const TRIAL_ENV = { DAZL_TRIAL_ANTHROPIC_KEY: 'sk-ant-fixture', DAZL_TRIAL_SCAN_RESERVE_USD: '0.75', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '10', DAZL_TRIAL_GLOBAL_DAILY_USD: '100' }
 const ledgerRows = (db: Db, tenant: string) => db.all<LedgerRow>("SELECT r.tenant_id, r.kind, r.reserve_usd, r.spent_usd, r.day, r.created_at, r.settled_at, r.settled_attempt, j.status, j.error, j.candidates, j.attempts, j.spend_reserved_usd, j.spend_cap_reserved_usd, CASE WHEN j.error = 'accounting_uncertain' THEN EXISTS (SELECT 1 FROM leads l WHERE l.scan_job_id = j.id) END AS has_saved_leads FROM trial_reservations r LEFT JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id WHERE r.tenant_id = ?", [tenant])
-const today = () => trialDay(Math.floor(Date.now() / 1000))
+const today = () => trialDay(Math.floor(Date.now() / 1000), 'UTC') // #2054: the fixture accounts save no zone, so their day is the UTC fallback day
 const withTrialEnv = async (fn: () => Promise<void>) => {
   const saved = Object.fromEntries(Object.keys(TRIAL_ENV).map(k => [k, process.env[k]]))
   Object.assign(process.env, TRIAL_ENV)
