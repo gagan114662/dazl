@@ -429,7 +429,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.company_domain, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind, l.company_domain
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
   ).get(leadId, tenantId) as (Lead & { company_domain: string | null }) | undefined
   if (!lead) throw new OutreachError('not_found')
