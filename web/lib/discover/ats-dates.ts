@@ -95,7 +95,9 @@ export function embeddedAtsPosting(html: string, pageUrl: string | URL | null = 
   const found = new Map<string, AtsPosting>()
   for (const m of html.matchAll(/<(?:iframe|embed|object)\b[^>]*?\b(?:src|data)=["']([^"'\s]+)["'][^>]*>/gi)) {
     let abs: string
-    try { abs = base ? new URL(m[1], base).toString() : new URL(m[1]).toString() } catch { continue }
+    // Real markup escapes the query separator: src="...?for=acme&amp;token=4012345" names the same posting.
+    const src = m[1].replace(/&amp;/gi, '&').replace(/&#0*38;|&#x0*26;/gi, '&')
+    try { abs = base ? new URL(src, base).toString() : new URL(src).toString() } catch { continue }
     const rec = atsPosting(abs) ?? greenhouseEmbedPosting(abs)
     if (rec) found.set(rec.apiUrl, rec)
   }
@@ -123,6 +125,7 @@ export async function careersAtsDate(
   now: Date = new Date(),
   maxAgeDays = ATS_DATE_MAX_AGE_DAYS,
   timeoutMs = 8_000,
+  claim = '',
 ): Promise<AtsDate | null> {
   const rec = embeddedAtsPosting(html, pageUrl)
   if (!rec) return null
@@ -136,9 +139,11 @@ export async function careersAtsDate(
     const body = await r.json()
     const date = dayOf(rec.read(body), now, maxAgeDays)
     const title = typeof rec.readTitle(body) === 'string' ? (rec.readTitle(body) as string).trim().slice(0, 200) || null : null
-    // The record is this page's posting only when the page prints that posting's own title: one iframe on a page says nothing about
-    // which vacancy (or which event) the page is about, so an unbound record dates nothing.
-    return date && title && pageNamesTitle(html, title) ? { date, sourceUrl: rec.apiUrl, platform: rec.platform, title } : null
+    // The record is this page's posting only when the page prints that posting's own title AND the claim is that same posting: one
+    // iframe on a page says nothing about which vacancy (or which event) the page is about, and a sidebar vacancy on a page announcing
+    // a different role is a different posting, not this claim's day.
+    const bound = !!title && pageNamesTitle(html, title) && (!claim || namesTitle(claim, title))
+    return date && title && bound ? { date, sourceUrl: rec.apiUrl, platform: rec.platform, title } : null
   } catch { return null }
 }
 
@@ -146,10 +151,14 @@ export async function careersAtsDate(
 const pageWords = (html: string): string =>
   html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')
     .toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-const pageNamesTitle = (html: string, title: string): boolean => {
-  const t = pageWords(title), p = ` ${pageWords(html)} `
-  return t.length >= 4 && p.includes(` ${t} `)
+const words = (text: string): string[] => pageWords(text).split(' ').filter(Boolean)
+// A title is named when every word of it is present ("Sales Development Representative" and "... Representatives" are one posting).
+const plural = (w: string): string => w.replace(/s$/, '').replace(/e$/, '')
+const namesTitle = (text: string, title: string): boolean => {
+  const t = words(title), h = words(text)
+  return t.length > 0 && t.every(w => h.some(x => plural(x) === plural(w) || x === w))
 }
+const pageNamesTitle = (html: string, title: string): boolean => namesTitle(html, title)
 
 export interface AtsList {
   platform: AtsPlatform

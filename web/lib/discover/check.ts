@@ -426,7 +426,8 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
     // A careers page on the company's own domain names its posting record in its own markup (an embedded board); read that record first.
     // Only a hiring signal is dated this way, and only when the page prints that posting's title (careersAtsDate): a funding or expansion
     // page that happens to embed a vacancy never borrows the vacancy's day.
-    const embedded = isDiscoveryHiringLead(c) ? await careersAtsDate(raw, u, fetchImpl, now, INDEX_DATE_MAX_AGE_DAYS, timeoutMs) : null
+    const claim = [c.signal, c.evidence_quote ?? ''].join(' ')
+    const embedded = isDiscoveryHiringLead(c) ? await careersAtsDate(raw, u, fetchImpl, now, INDEX_DATE_MAX_AGE_DAYS, timeoutMs, claim) : null
     if (embedded) out = { ...out, date: embedded.date, date_source: 'page', date_proof: 'ats_structured', date_record_url: embedded.sourceUrl }
     else {
       const day = embeddedDay(raw, now, isDiscoveryHiringLead(c))
