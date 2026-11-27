@@ -23,6 +23,24 @@ if (process.env.DAZL_READY_1980_CHILD) {
     }
   })
 } else {
+  test('#1980 an accepted technical-support inbox cannot clear a refused sales contact', async () => {
+    const { publishedAddressRefused } = await import('../lib/journey.ts')
+    const { contextLabel } = await import('../lib/outreach/contact-context.ts')
+    const source_url = 'https://workshop.example/contact'
+    const contact = 'rowan@workshop.example'
+    const alternate = 'hello@workshop.example'
+    const row = (kind: string, value: string, label: string | null = null) => ({
+      connector: 'sitecrawl', kind, value, label, source_url,
+    })
+    const checks = [row('deliverability', `${contact}|rejected`), row('deliverability', `${alternate}|accepted`)]
+    const refusedWith = (...excerpts: string[]) => publishedAddressRefused({
+      contact, source_url, evidence_excerpt: null,
+      enrichments: [...checks, ...excerpts.map(excerpt => row('email', alternate, contextLabel({ excerpt, source_url })))],
+    })
+    assert.equal(refusedWith('Email us for technical support'), true)
+    assert.equal(refusedWith('Contact us', 'Email us for technical support'), true)
+    assert.equal(refusedWith('Contact us for business inquiries'), false)
+  })
   test('#1980 a domain-only MX result cannot clear a mailbox rejection', async () => {
     const { deliverabilityBlocked } = await import('../lib/outreach/contact-route.ts')
     const email = 'rowan@workshop.example'

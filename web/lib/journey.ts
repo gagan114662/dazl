@@ -5,8 +5,9 @@
 import { discoverNotReady, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review-view.ts'
+import { readContextLabel } from './outreach/contact-context.ts'
 import { recordedDeliverability } from './outreach/contact-route.ts'
-import { displayedEmailSource, PUBLISHED_EMAIL_RE, publishedEmail } from './outreach/published-email.ts'
+import { classifyPurpose, displayedEmailSource, PUBLISHED_EMAIL_RE, publishedEmail } from './outreach/published-email.ts'
 import { scanOutcome, type ScanOutcomeKind } from './scan/scan-outcome.ts'
 import type { CardLead } from './scan/opportunity.ts'
 import { heldState, type ResearchCause } from './lead-state.ts'
@@ -29,12 +30,14 @@ export function publishedAddressRefused(lead: Pick<CardLead, 'contact' | 'source
   const verdict = (address: string) => recordedDeliverability(address, lead.enrichments ?? [])?.verdict
   const primary = verdict(email)
   if (primary !== 'rejected' && primary !== 'no_mx') return false
-  return !(lead.enrichments ?? []).some(row => {
-    if (row.connector !== 'sitecrawl' || row.kind !== 'email') return false
+  const crawledAddresses = (lead.enrichments ?? []).filter(row => row.connector === 'sitecrawl' && row.kind === 'email')
+  const restricted = new Set(crawledAddresses
+    .filter(row => classifyPurpose(row.value.trim().toLowerCase(), readContextLabel(row.label, row.source_url)).purpose === 'non-sales')
+    .map(row => row.value.trim().toLowerCase()))
+  return !crawledAddresses.some(row => {
     const alternate = row.value.trim().toLowerCase()
-    if (alternate === email || !PUBLISHED_EMAIL_RE.test(alternate) || !displayedEmailSource(lead, alternate)) return false
-    return publishedEmail({ ...lead, contact: alternate, evidence_excerpt: null }) !== null &&
-      verdict(alternate) === 'accepted'
+    return alternate !== email && PUBLISHED_EMAIL_RE.test(alternate) && !restricted.has(alternate)
+      && !!displayedEmailSource(lead, alternate) && verdict(alternate) === 'accepted'
   })
 }
 
