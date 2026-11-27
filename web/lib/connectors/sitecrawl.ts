@@ -677,6 +677,10 @@ function properNameTokens(name: string): boolean {
   return !/[a-z]{2,}ted$/.test(toks[toks.length - 1])
 }
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
+// Retain the Latin name shape and its short-surname guard. For native scripts, keep bounded
+// letter tokens with script-appropriate casing (some scripts do not have case).
+const NATIVE_NAME_LINE = /^(?!.*\p{Script=Latin})(?:\p{Lu}[\p{Ll}\p{M}'’\-]{1,20}|\p{Lo}[\p{Lo}\p{M}]{0,20})(?:\s+(?:\p{Lu}[\p{Ll}\p{M}'’\-]{1,24}|\p{Lo}[\p{Lo}\p{M}]{0,24})){1,3}$/u
+const extractionName = (name: string): boolean => NAME_LINE.test(name) || NATIVE_NAME_LINE.test(name)
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
 // #1183: a search/filter control (a datalist or dropdown of job titles) is page chrome, never a person card: its options are cut by CONTEXT, so an
@@ -839,8 +843,8 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     if (l.startsWith(HEAD_MARK)) {
       const level = Number(l[HEAD_MARK.length]), head = l.slice(HEAD_MARK.length + 1).trim()
       if (FORMER_SECTION.test(head)) { formerLevel = formerLevel === 0 ? level : Math.min(formerLevel, level) }
-      else if (formerLevel && level <= formerLevel && !NAME_LINE.test(head)) formerLevel = 0
-      if (!NAME_LINE.test(head) || FORMER_SECTION.test(head)) continue
+      else if (formerLevel && level <= formerLevel && !extractionName(head)) formerLevel = 0
+      if (!extractionName(head) || FORMER_SECTION.test(head)) continue
       lines.push(head); inFormer.push(formerLevel > 0); continue
     }
     lines.push(l); inFormer.push(formerLevel > 0)
@@ -848,7 +852,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   // Email addresses are not prose: their lower-case local parts (dana.lee@...) would otherwise reject the very person
   // listed beside them, so they are removed before the lower-case word test.
   const body = lines.join(' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
-  const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
+  const lowerWords = new Set(body.match(/(?<![\p{L}\p{M}])\p{Ll}[\p{Ll}\p{M}'\u2019-]+(?![\p{L}\p{M}])/gu) ?? [])
   const titleWords = new Set<string>()
   const addWords = (t: string) => { for (const w of titleNorm(t).split(' ')) if (w.length >= 4 && !TITLE_STOP.has(w)) titleWords.add(w) }
   for (const r of (buyerRoles ?? '').split(';')) addWords(r)
@@ -861,7 +865,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     // ("us"), so "Contact Us" stays out (Simple AI's CEO Catheryn Li, 2026-11-22).
     const shortSurname = SHORT_SURNAME_LINE.test(name) && (buyerTitle(title, buyerRoles) || /\b(?:co-?founder|founder|ceo|chief executive)\b/i.test(title))
     if (!isPersonName(name)) return false // Qodo High #1532: "Contact Us", "Sign In", "Learn More", "Get Started" are phrases, not names (one rule: isPersonName)
-    if (!(NAME_LINE.test(name) || shortSurname) || looksLikeJobTitle(name) || !(isLeadershipTitle(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
+    if (!(extractionName(name) || shortSurname) || looksLikeJobTitle(name) || !(isLeadershipTitle(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return false
       if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
@@ -885,7 +889,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     if (shared) {
       const names = shared[1].split(/\s*,\s*(?:and\s+|&\s+)?|\s+(?:and|&)\s+/).map(s => s.trim()).filter(Boolean)
       const single = shared[2].replace(/s$/, '')
-      if (names.length >= 2 && names.length <= 4 && isLeadershipTitle(single) && names.every(nm => NAME_LINE.test(nm) && !looksLikeJobTitle(nm))) for (const nm of names) add(nm, single)
+      if (names.length >= 2 && names.length <= 4 && isLeadershipTitle(single) && names.every(nm => extractionName(nm) && !looksLikeJobTitle(nm))) for (const nm of names) add(nm, single)
     }
     // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
     // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.

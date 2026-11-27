@@ -49,3 +49,20 @@ test('#1719: a team card can extract a senior multilingual title without a role 
   assert.equal(people.length, 1)
   assert.equal(chooseSiteBuyer(people, '')?.value, 'Diana Mercer, Diretora Geral')
 })
+
+const russianTeamProse = '<p>наша команда создаёт надёжные инструменты для небольших предприятий помогает клиентам выбирать оборудование проводить установку обслуживание ремонт обучение поддержку и регулярно обновляет техническую документацию</p>'
+
+test('#1719: substantive native-script prose supports a team-page buyer', () => {
+  const card = '<section><h2>Jane Smith</h2><p>Генеральный директор</p></section>'
+  const url = 'https://fixture.example/team'
+  assert.deepEqual(extractPeople(card, url), [])
+  assert.deepEqual(extractPeople(russianTeamProse + card, url).map(person => person.value), ['Jane Smith, Генеральный директор'])
+})
+
+test('#1719: native-script names survive team-page extraction', () => {
+  const prose = '<p>this independent business makes reliable equipment for commercial workshops and supplies customers with practical advice on installation maintenance and repairs</p>'
+  for (const { name, title, language } of recordedTeamTitles.slice(1)) {
+    assert.deepEqual(extractPeople(prose + `<section><h2>${name}</h2><p>${title}</p></section>`, 'https://fixture.example/team')
+      .map(person => person.value), [`${name}, ${title}`], language)
+  }
+})
