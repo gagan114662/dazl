@@ -445,7 +445,55 @@ export async function needReadContext(db: Db, tenantId: string, jobId: string, w
 // semantics, the classifier's verdict on the STORED source artifact re-run under the CURRENT rubric as of NOW, the
 // lead still verified, and (for verified buying need) the company domain still confirmed. Any drift, withdrawal or
 // absence reads unproven with the named reason. Read-only: no writes, no re-evaluation persisted, no backfill.
-export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string, leadId: string, opts: { asOf?: Date; context?: NeedReadContext; record?: NeedRecord | null } = {}): Promise<BuyingNeed> {
+type NeedLeadCheck = {
+  id: string
+  company: string
+  company_domain: string | null
+  review_reason: string | null
+  confidence: number | null
+  quarantined_at: number | null
+  source_url: string | null
+  evidence_excerpt: string | null
+  published_at: string | null
+  gate_failed: number | boolean
+}
+
+const NEED_LEAD_CHECK_SQL = `SELECT l.id, l.company, l.company_domain, l.review_reason, l.confidence,
+  l.quarantined_at, l.source_url, l.evidence_excerpt, l.published_at,
+  EXISTS (SELECT 1 FROM lead_enrichments h WHERE h.lead_id = l.id AND h.connector = 'scan:gate' AND h.kind = 'gate_failed') AS gate_failed
+  FROM leads l JOIN scan_jobs j ON l.scan_job_id = j.id WHERE j.user_id = ? AND j.id = ?`
+
+export async function currentBuyingNeedsForLeads(
+  db: Db, tenantId: string, jobId: string, leadIds: readonly string[], opts: { asOf?: Date; windowDays?: number } = {},
+): Promise<Map<string, BuyingNeed>> {
+  if (!leadIds.length) return new Map()
+  const [context, records] = await Promise.all([
+    needReadContext(db, tenantId, jobId, opts.windowDays),
+    db.all<NeedRecord>('SELECT * FROM lead_need_evidence WHERE tenant_id = ? AND job_id = ?', [tenantId, jobId]),
+  ])
+  const recordByLead = new Map(records.map(row => [row.lead_id, row]))
+  const needingCheck = [...new Set(leadIds)].filter(id => {
+    const verdict = recordByLead.get(id)?.verdict
+    return verdict === 'trigger_only' || verdict === 'verified_buying_need'
+  })
+  const checkByLead = new Map<string, NeedLeadCheck>()
+  for (let offset = 0; offset < needingCheck.length; offset += 200) {
+    const ids = needingCheck.slice(offset, offset + 200)
+    const checks = await db.all<NeedLeadCheck>(
+      NEED_LEAD_CHECK_SQL + ` AND l.id IN (${ids.map(() => '?').join(', ')})`, [tenantId, jobId, ...ids],
+    )
+    for (const row of checks) checkByLead.set(row.id, row)
+  }
+  const out = new Map<string, BuyingNeed>()
+  for (const id of leadIds) {
+    out.set(id, await currentBuyingNeed(db, tenantId, jobId, id, {
+      asOf: opts.asOf, context, record: recordByLead.get(id) ?? null, leadCheck: checkByLead.get(id) ?? null,
+    }))
+  }
+  return out
+}
+
+export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string, leadId: string, opts: { asOf?: Date; context?: NeedReadContext; record?: NeedRecord | null; leadCheck?: NeedLeadCheck | null } = {}): Promise<BuyingNeed> {
   // opts.record: a pre-read row for this lead (listings read the job's rows once); null means known absent.
   const record = opts.record !== undefined ? opts.record : await db.get<NeedRecord>('SELECT * FROM lead_need_evidence WHERE tenant_id = ? AND lead_id = ?', [tenantId, leadId])
   if (!record) return { status: 'unproven', reason: 'buying_need_unproven:no_record' }
@@ -453,20 +501,20 @@ export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string,
   const ctx = opts.context ?? await needReadContext(db, tenantId, jobId, record.window_days ?? undefined)
   if (ctx.planSupportKey === null) return { status: 'unproven', reason: 'buying_need_unproven:no_such_job' }
   if (record.plan_support !== ctx.planSupportKey) return { status: 'unproven', reason: 'buying_need_unproven:stale_plan' }
+  const readLeadCheck = () => opts.leadCheck !== undefined ? opts.leadCheck :
+    db.get<NeedLeadCheck>(NEED_LEAD_CHECK_SQL + ' AND l.id = ?', [tenantId, jobId, leadId])
 
   if (record.basis === 'demand_post') {
     // The ONE shared revalidation (sync gate uses the same pure functions): context, bindings, classifier re-run.
     const c = revalidateDemandContext(record, { rubric: ctx.rubric, rubricReason: ctx.rubricReason, planSupportKey: ctx.planSupportKey, asOf: opts.asOf ?? new Date() })
     if (!c.ok) return { status: 'unproven', reason: c.reason }
     if (record.verdict === 'verified_buying_need') {
-      const lead = await db.get<{ company: string; company_domain: string | null; review_reason: string | null; confidence: number | null; quarantined_at: number | null; source_url: string | null; evidence_excerpt: string | null; published_at: string | null }>(
-        'SELECT company, company_domain, review_reason, confidence, quarantined_at, source_url, evidence_excerpt, published_at FROM leads WHERE id = ? AND scan_job_id = ?', [leadId, jobId])
+      const lead = await readLeadCheck()
       if (!lead || lead.review_reason !== null || lead.confidence === null || lead.quarantined_at !== null) return { status: 'unproven', reason: 'buying_need_unproven:lead_withdrawn' }
       // The SAME artifact: the lead's current citation/quote/date must be the ones the verdict was recorded from.
       const art = revalidateArtifactBinding(record, lead)
       if (!art.ok) return { status: 'unproven', reason: art.reason }
-      const held = await db.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments h WHERE h.lead_id = ? AND h.connector = 'scan:gate' AND h.kind = 'gate_failed'", [leadId])
-      if (held) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
+      if (lead.gate_failed) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
       const b = revalidateVerifiedBinding(record, lead.company, !!lead.company_domain && await domainConfirmedDb(db, tenantId, leadId, lead.company_domain))
       if (!b.ok) return { status: 'unproven', reason: b.reason }
     }
@@ -477,11 +525,9 @@ export async function currentBuyingNeed(db: Db, tenantId: string, jobId: string,
   // hiring_trigger / none: the plan semantics were checked above; a trigger-only verdict also needs the lead to still
   // be a verified, unheld row (a later hold or withdrawal ends the trigger reading too).
   if (record.verdict === 'trigger_only') {
-    const lead = await db.get<{ review_reason: string | null; confidence: number | null; quarantined_at: number | null }>(
-      'SELECT review_reason, confidence, quarantined_at FROM leads WHERE id = ? AND scan_job_id = ?', [leadId, jobId])
+    const lead = await readLeadCheck()
     if (!lead || lead.review_reason !== null || lead.confidence === null || lead.quarantined_at !== null) return { status: 'unproven', reason: 'buying_need_unproven:lead_withdrawn' }
-    const held = await db.get<{ x: number }>("SELECT 1 AS x FROM lead_enrichments h WHERE h.lead_id = ? AND h.connector = 'scan:gate' AND h.kind = 'gate_failed'", [leadId])
-    if (held) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
+    if (lead.gate_failed) return { status: 'unproven', reason: 'buying_need_unproven:lead_held' }
   }
   if (record.verdict === 'unproven') return { status: 'unproven', reason: record.reason ?? 'buying_need_unproven' }
   return { status: record.verdict, record } as BuyingNeed

@@ -50,7 +50,7 @@ async function deliver(db: Database.Database, events: CalEvent[], now = 1000) {
   for (const e of events) out.push(await recordEvent(sqliteDb(db), T, e, now))
   return out
 }
-const conv = (db: Database.Database) => { const r = conversionBySignal(db, T)[0]; return { booked: r.booked, held: r.held, no_show: r.no_show, cancelled: r.cancelled } }
+const conv = async (db: Database.Database) => { const r = (await conversionBySignal(sqliteDb(db), T))[0]; return { booked: r.booked, held: r.held, no_show: r.no_show, cancelled: r.cancelled } }
 
 test('parseEvent: the five recorded triggers, Cal.com shapes; anything incomplete is ignored', () => {
   assert.deepEqual(created, { kind: 'booking', trigger: 'BOOKING_CREATED', uid: 'A', at: Date.parse('2026-10-01T09:00:00.000Z'), attendees: [{ email: 'jane@acme.example', name: 'Jane Doe' }, { email: 'colleague@acme.example', name: 'Sam' }], startAt: Date.parse('2026-10-10T10:00:00Z') / 1000, endAt: Date.parse('2026-10-10T10:30:00Z') / 1000, icalUid: 'ical-a', icalSeq: 0, fromUid: null })
@@ -79,7 +79,7 @@ test('created -> rescheduled -> cancelled converges in all 6 delivery orders, wi
     const db = setup()
     await deliver(db, [...order, ...order.slice().reverse()]) // every event replayed, in reverse
     finals.push(state(db))
-    assert.deepEqual(conv(db), { booked: 0, held: 0, no_show: 0, cancelled: 1 }, `order ${order.map(e => e.kind === 'booking' ? e.trigger : e.kind)}`)
+    assert.deepEqual(await conv(db), { booked: 0, held: 0, no_show: 0, cancelled: 1 }, `order ${order.map(e => e.kind === 'booking' ? e.trigger : e.kind)}`)
     assert.equal((await listBookings(sqliteDb(db), T)).length, 2, 'both uids stay listed')
   }
   for (const f of finals) assert.deepEqual(f, finals[0])
@@ -98,7 +98,7 @@ test('created -> rescheduled in either order: one standing booking at the new ti
     const db = setup()
     await deliver(db, order)
     finals.push(state(db))
-    assert.deepEqual(conv(db), { booked: 1, held: 0, no_show: 0, cancelled: 0 })
+    assert.deepEqual(await conv(db), { booked: 1, held: 0, no_show: 0, cancelled: 0 })
   }
   assert.deepEqual(finals[1], finals[0])
   assert.deepEqual(finals[0].rows.map(r => [r.booking_uid, r.status]), [['A', 'rescheduled'], ['B', 'scheduled']])
@@ -124,9 +124,9 @@ test('MEETING_ENDED is not a held meeting; held comes only from an audited manua
   assert.deepEqual(await setManualOutcome(sqliteDb(db), T, 'actor-1', 'A', 'no_show', {}, before), { ok: false, error: 'not_yet' })
   const endedA = ev({ triggerEvent: 'MEETING_ENDED', uid: 'A', endTime: '2026-10-10T10:30:00.000Z', attendees: jane })
   assert.equal((await recordEvent(sqliteDb(db), T, endedA)).status, 'ended')
-  assert.deepEqual(conv(db), { booked: 1, held: 0, no_show: 0, cancelled: 0 }, 'ended slot: still booked, not held')
+  assert.deepEqual(await conv(db), { booked: 1, held: 0, no_show: 0, cancelled: 0 }, 'ended slot: still booked, not held')
   assert.deepEqual(await setManualOutcome(sqliteDb(db), T, 'actor-1', 'A', 'held', { correlationId: 'req-1' }, after), { ok: true, status: 'held' })
-  assert.deepEqual(conv(db), { booked: 1, held: 1, no_show: 0, cancelled: 0 })
+  assert.deepEqual(await conv(db), { booked: 1, held: 1, no_show: 0, cancelled: 0 })
   const audit = db.prepare("SELECT tenant_id, actor_id, action, resource_type, resource_id, summary, correlation_id FROM audit_events WHERE action = 'booking.outcome_set'").all()
   assert.deepEqual(audit, [{ tenant_id: T, actor_id: 'actor-1', action: 'booking.outcome_set', resource_type: 'calcom_booking', resource_id: 'A', summary: JSON.stringify({ from: 'ended', to: 'held', manual: 'held' }), correlation_id: 'req-1' }])
   // a webhook replay does not undo the person's reconciliation; clearing it brings the webhook-derived status back
@@ -143,7 +143,7 @@ test('manual reconciliation: a rescheduled-away booking is refused; a manual can
   assert.deepEqual(await setManualOutcome(sqliteDb(db), T, 'actor-1', 'A', 'held', {}, late), { ok: false, error: 'superseded' })
   assert.equal(state(db).stage, 'booked_call')
   assert.deepEqual(await setManualOutcome(sqliteDb(db), T, 'actor-1', 'B', 'cancelled', {}, late), { ok: true, status: 'cancelled' })
-  assert.deepEqual(conv(db), { booked: 0, held: 0, no_show: 0, cancelled: 1 })
+  assert.deepEqual(await conv(db), { booked: 0, held: 0, no_show: 0, cancelled: 1 })
   assert.equal(state(db).stage, null, 'the lead had no stage before the booking')
 })
 
@@ -153,7 +153,7 @@ test('no-show: per attendee, latest mark wins in any order; only the primary att
   const finals: unknown[] = []
   for (const order of permutations([rescheduled, endedB, on])) {
     const db = setup(); await deliver(db, order); finals.push(state(db))
-    assert.deepEqual(conv(db), { booked: 1, held: 0, no_show: 1, cancelled: 0 })
+    assert.deepEqual(await conv(db), { booked: 1, held: 0, no_show: 1, cancelled: 0 })
   }
   for (const f of finals) assert.deepEqual(f, finals[0])
   for (const order of permutations([rescheduled, on, off, guest])) {
@@ -199,7 +199,7 @@ test('F1: a reschedule supersedes a manual "held" on the old uid, in every deliv
     const out: Record<string, unknown> = {}
     for (const s of order) out[s.name] = await s.run(db)
     const why = label(order)
-    assert.deepEqual(conv(db), { booked: 0, held: 0, no_show: 0, cancelled: 1 }, why)
+    assert.deepEqual(await conv(db), { booked: 0, held: 0, no_show: 0, cancelled: 1 }, why)
     assert.equal(state(db).stage, 'replied', `${why}: the stage the booking replaced comes back`)
     const a = state(db).rows.find(r => r.booking_uid === 'A')!
     assert.equal(a.status, 'rescheduled', why)
@@ -454,7 +454,7 @@ test('query plans: standing(), syncStage\'s lookup and clearing UPDATE, and conv
   const seen: string[] = []
   const prepare = raw.prepare.bind(raw)
   ;(raw as { prepare: unknown }).prepare = (sql: string) => { seen.push(sql); return prepare(sql) }
-  try { conversionBySignal(raw, T) } finally { (raw as { prepare: unknown }).prepare = prepare }
+  try { await conversionBySignal(sqliteDb(raw), T) } finally { (raw as { prepare: unknown }).prepare = prepare }
   const conversion = seen.find(s => s.includes('FROM calcom_bookings b'))
   assert.ok(conversion, 'conversionBySignal reads bookings')
   const plans: Record<keyof typeof statements | 'conversion', string[]> = { standing: plan(statements.standing), prevLookup: plan(statements.prevLookup), clear: plan(statements.clear), conversion: plan(conversion) }

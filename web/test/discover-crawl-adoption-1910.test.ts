@@ -4,6 +4,7 @@ import test, { type TestContext } from 'node:test'
 import Database from 'better-sqlite3'
 import { addEnrichment, enrichmentsForLeads, type Enrichment } from '../lib/connectors/store.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
+import type { ApolloBuyerEvidence } from '../lib/enrich/apollo-ready-match.ts'
 import type { DiscoverResult } from '../lib/discover/agent.ts'
 import { saveKey } from '../lib/llm/key-store.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
@@ -32,7 +33,7 @@ const found: DiscoverResult = {
   stop: 'end_turn', model: 'claude-opus-5-5', note: null,
 }
 
-async function adopted(t: TestContext, rows: CrawlRow[]) {
+async function adopted(t: TestContext, rows: CrawlRow[], observe?: (rows: readonly { leadId: string; evidence: ApolloBuyerEvidence }[]) => void) {
   t.mock.method(Date, 'now', () => now)
   const crawlSetting = process.env.SITECRAWL_ENABLED
   process.env.SITECRAWL_ENABLED = '1'
@@ -51,9 +52,18 @@ async function adopted(t: TestContext, rows: CrawlRow[]) {
   assert.ok(job)
   let savedLeadId: string | undefined
   assert.equal(await runJob(db, job, {
-    master, discover: true, discoverImpl: async () => found, enrichImpl: null,
-    fetchImpl: async () => new Response('fixture has no external reads', { status: 403 }),
+    master, onApolloEvidence: observe, discover: true, discoverImpl: async () => found, enrichImpl: null,
+    fetchImpl: async (input, init) => {
+      if (String(input) === 'https://api.anthropic.com/v1/messages' && init?.body &&
+          JSON.parse(String(init.body)).model === 'claude-haiku-5-5') {
+        return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+        usage: { input_tokens: 0, output_tokens: 0 } })
+      }
+      return new Response('fixture has no external reads', { status: 403 })
+    },
     crawlGet: async url => {
+      if (observe && url === home + 'robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
+      if (observe && url === home) return { status: 200, body: '<html><body><p>Fern Dental, Austin, TX</p></body></html>', finalUrl: url }
       if (url !== evidence) return { status: 404, body: '', finalUrl: url }
       // Seed at the crawler's persistence boundary, after its per-lead cleanup.
       // The strict parser would ordinarily prevent these conflicting rows.
@@ -85,4 +95,15 @@ test('Discovery keeps the crawled buyer but refuses an address proved on a diffe
 test('Discovery refuses to choose between two crawled buyers', async t => {
   const other = { ...buyer, value: 'Alex Lee, Practice Manager' }
   assert.deepEqual(await adopted(t, [buyer, other, email]), [])
+})
+
+test('#1910 Discovery reports eligible Apollo evidence only after a completed crawl without a published address', async t => {
+  const batches: { leadId: string; evidence: ApolloBuyerEvidence }[][] = []
+  await adopted(t, [buyer], rows => batches.push([...rows]))
+  assert.equal(batches.length, 1)
+  assert.equal(batches.flat().length, 1)
+  assert.deepEqual(batches.flat()[0]?.evidence, {
+    first: 'dana', last: 'ruiz', confirmedDomain: domain,
+    dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published',
+  })
 })

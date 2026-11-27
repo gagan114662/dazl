@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
+import { bothEngines } from './helpers/engines.ts'
+import * as reopen from '../lib/outreach/reopen.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateReplies } from '../lib/outreach/replies.ts'
@@ -120,4 +122,22 @@ test('held lead blocks re-open drafting and existing re-open sending',async()=>{
  createReopenDraft(db,'A',tid,'Dazl')
  db.prepare('UPDATE leads SET fit=0,intent=NULL WHERE id=?').run(lid)
  await assert.rejects(sendReopen(db,'A',tid),/lead_ungraded/)
+})
+
+bothEngines('reopen overview reads only the workspace and distinguishes warm, suppressed, and drafted threads', async ({ db }) => {
+  for (const [tenant, id] of [['owner', 'warm'], ['owner', 'suppressed'], ['owner', 'drafted'], ['neighbor', 'other']]) {
+    await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status) VALUES (?, ?, 'Seller', 'Services', 'Region', 'running')", [id, tenant])
+    await db.run("INSERT INTO leads (id, scan_job_id, company, signal, source_url) VALUES (?, ?, 'Business', 'Hiring', 'https://example.test/jobs')", [id, id])
+    await db.run('INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [tenant, id, id, id + '@example.test', id, NOW - days(45), NOW - days(45)])
+  }
+  await db.run("INSERT INTO suppressions (tenant_id, email, reason) VALUES ('owner', 'suppressed@example.test', 'manual')")
+  await db.run("INSERT INTO reopen_messages (tenant_id, thread_id, lead_id, to_email, body) VALUES ('owner', 'drafted', 'drafted', 'drafted@example.test', 'A saved draft for an existing thread.')")
+  const owner = await reopen.readReopenOverview(db, 'owner', NOW)
+  assert.deepEqual(owner.warm.map(t => t.thread_id), ['warm'])
+  assert.deepEqual(owner.reopens.map(t => [t.thread_id, t.reopen?.status]), [['drafted', 'draft']])
+  assert.deepEqual((await reopen.readReopenOverview(db, 'neighbor', NOW)).warm.map(t => t.thread_id), ['other'])
+  assert.deepEqual(await reopen.readReopenOverview(db, 'unrelated', NOW), { warm: [], reopens: [] })
+  await db.run("UPDATE followup_threads SET lead_id = 'other' WHERE tenant_id = 'owner' AND thread_id = 'warm'")
+  const [unlinked] = (await reopen.readReopenOverview(db, 'owner', NOW)).warm
+  assert.deepEqual([unlinked.company, unlinked.name], ['', ''], 'a foreign lead cannot decorate an owned thread')
 })

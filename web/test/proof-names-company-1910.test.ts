@@ -52,3 +52,25 @@ for (const s of shapes) {
     assert.equal(postingQuote([s.other], s.role, s.company), '', 'another company proof is dropped')
   })
 }
+
+test('company-authored vacancy proof preserves punctuation and legal suffixes verbatim', () => {
+  for (const [company, printed, role] of [
+    ['Cedar & Pratt', 'Cedar & Pratt', 'Founder'],
+    ['Smith & Sons HVAC', 'Smith & Sons HVAC', 'Service Manager'],
+    ['Acme Inc.', 'Acme Inc.', 'Founder'],
+    ['Acme', 'Acme Inc.', 'Founder'],
+  ]) {
+    const line = `${printed} is hiring a ${role} to lead its new practice.`
+    assert.equal(postingQuote([line], role, company), line)
+    assert.equal(postingQuote([`Other ${line}`], role, company), '')
+  }
+})
+
+test('role headings and opening quotation marks preserve the employer subject', () => {
+  for (const prefix of ['The opportunity ', 'The role: “', '“']) {
+    const statement = 'Brightloop is hiring an Account Executive to own the sales pipeline.'
+    const line = prefix + statement
+    assert.equal(postingQuote([line], 'Account Executive', 'Brightloop'), line)
+    assert.equal(postingQuote([prefix + 'Other ' + statement], 'Account Executive', 'Brightloop'), '')
+  }
+})

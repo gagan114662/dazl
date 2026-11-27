@@ -53,9 +53,9 @@ test('checkLead: the text Claude read decides first, then the read by dazl, then
   const ours = await checkLead(l, [], page('<html><body><p>14 October 2026</p><p>Northwind Dental will open its second clinic in the spring.</p></body></html>'))
   assert.deepEqual([ours.proof, ours.proof_read_by], ['confirmed', 'dazl'])
   assert.equal((await checkLead(l, [], page('<p>Unrelated story</p>'))).proof, 'company_not_on_page')
-  // a page nobody could read: shown when the search result's own title names the company AND speaks of the signal, dated or not
+  // An unread page stays held even when the search title states the claim.
   const listed = await checkLead({ ...l, signal_date: null }, [{ url: l.evidence_url, title: 'Northwind Dental to open second clinic', page_age: null, text: null }], page('blocked', 403))
-  assert.deepEqual([listed.proof, listed.signal_seen, isShown(listed)], ['listed', true, true])
+  assert.deepEqual([listed.proof, listed.signal_seen, isShown(listed)], ['listed', false, false])
   assert.equal(isShown(read), true, 'a real expansion page: the quoted words are in the text that was read')
   const unseen = await checkLead(l, [{ url: 'https://news.example/other', title: 'Northwind Dental', page_age: null, text: null }], page('blocked', 403))
   assert.deepEqual([unseen.proof, isShown(unseen)], ['unseen', false], 'a proof URL the run never saw and nobody can read is not shown')
@@ -188,7 +188,7 @@ test('routine directory text that shares words with the signal is not shown; the
   const real = await checkLead(l, [], page('<p>Northwind Dental will open its second clinic on King Street next spring.</p>'))
   assert.deepEqual([real.proof, real.signal_seen, isShown(real)], ['confirmed', true, true])
   const realTitle = await checkLead({ ...l, evidence_quote: null }, [{ url: l.evidence_url, title: 'Northwind Dental opens second clinic downtown', page_age: null, text: null }], page('blocked', 403))
-  assert.deepEqual([realTitle.proof, realTitle.signal_seen, isShown(realTitle)], ['listed', true, true])
+  assert.deepEqual([realTitle.proof, realTitle.signal_seen, isShown(realTitle)], ['listed', false, false])
 })
 
 // #1575, same-cohort repair. The strict rule above stays as it is. These cases are leads whose proof DOES state the claim and which the
@@ -250,7 +250,7 @@ test('#1575 the event and its qualifier are never set aside or outvoted: the rev
     const seen = [{ url: l.evidence_url, title: c.quote, text: path === 'reader' ? c.quote : null, page_age: null }]
     const fetcher = (async () => path === 'dazl' ? new Response(c.quote) : new Response('', { status: 403 })) as unknown as typeof fetch
     const out = await checkLead(l, seen, fetcher)
-    assert.equal(isShown(out), c.want, `${c.id} ${path}`)
+    assert.equal(isShown(out), c.want && path !== 'title', `${c.id} ${path}`)
     if (!c.want) assert.ok(out.claim_lacks.includes('second'), `${c.id} ${path}: the hold names the word the proof lacks`)
   }
 })
@@ -361,7 +361,7 @@ test('#1037: a profile seen for a same-named person in another lead\'s lookup, o
 // Staging, 2026-11-23 (96111ddd): the every-word rule showed 1 of 15 real leads although 12 had their quote on a page naming the
 // company. The shapes below are those leads' shapes with invented names: a long signal line with an address or a posting age, and a
 // quote that the page prints. Words cannot settle such a lead, so Claude is asked one question; the word rule stays the fast path.
-test('quote on the page, words unsettled: Claude is asked whether the quoted text states the claim, and only then', async () => {
+test('the judge decides only when the quote is found on the page', async () => {
   const page = (body: string) => (async () => new Response(body, { status: 200 })) as unknown as typeof fetch
   const asked: { signal: string; company: string; statements: string[] }[] = []
   const ask = (answer: boolean) => async (signal: string, company: string, statements: string[]) => { asked.push({ signal, company, statements }); return answer }
@@ -377,13 +377,13 @@ test('quote on the page, words unsettled: Claude is asked whether the quoted tex
   assert.deepEqual([no.signal_seen, no.signal_by, isShown(no)], [false, 'claude', false], 'Claude says the text does not state the claim: the user\'s review')
   const broke = await checkLead(own, [], page(body), 12_000, new Date(), async () => { throw new Error('model unavailable') })
   assert.deepEqual([broke.signal_seen, isShown(broke)], [false, false], 'an asker that fails leaves the lead as the words left it')
-  // never asked: the quote is not on the page (a directory page that only names the company), or the words already settle it
+  // Never ask when the quote is missing. Full lexical overlap still needs the configured judge.
   asked.length = 0
   const dir = await checkLead(own, [], page('<html><body><h1>Northwind Dental</h1><p>Reviews, opening hours and directions for Northwind Dental. Open Monday to Friday.</p></body></html>'), 12_000, new Date(), ask(true))
   assert.deepEqual([dir.proof, dir.quote_on_page, isShown(dir), asked.length], ['confirmed', false, false, 0])
   const plain = parseLeads(JSON.stringify({ leads: [lead({ signal: 'Opening a second clinic', signal_date: null, evidence_url: 'https://northwind-dental.example/new-location', evidence_quote: 'Northwind Dental is opening a second clinic' })] }), 1).leads[0]
   const fast = await checkLead(plain, [], page('<html><body><p>Northwind Dental is opening a second clinic in March.</p></body></html>'), 12_000, new Date(), ask(false))
-  assert.deepEqual([fast.signal_seen, fast.signal_by, asked.length], [true, undefined, 0], 'every word present: shown without a call')
+  assert.deepEqual([fast.signal_seen, fast.signal_by, asked.length], [false, 'claude', 1], 'every word present: the judge can still refuse the claim')
   const { saysYes } = await import('../lib/discover/entail.ts')
   assert.deepEqual(['YES', ' yes.', 'Yes, it does', 'NO', 'no', 'Not sure', 'yesterday'].map(saysYes), [true, true, true, false, false, false, false])
 })

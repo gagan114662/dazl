@@ -60,7 +60,9 @@ export function mergeIntoRunReport(db: Database.Database, jobId: string, attempt
   try {
     const row = db.prepare('SELECT report FROM scan_run_report WHERE job_id = ? AND attempt = ?').get(jobId, attempt) as { report: string } | undefined
     if (!row) return false
-    const r = { ...(JSON.parse(row.report) as Record<string, unknown>), ...patch }
+    const current = JSON.parse(row.report) as Record<string, unknown>
+    if (typeof current.market_notice === 'string' && Object.keys(current).every(key => key === 'attempt' || key === 'market_notice')) return false
+    const r = { ...current, ...patch }
     const s = JSON.stringify(r); if (s.length > 120_000) return false
     db.prepare('UPDATE scan_run_report SET report = ? WHERE job_id = ? AND attempt = ?').run(s, jobId, attempt)
     return true

@@ -57,3 +57,17 @@ test('#349: a generic request and an exact reviewed repeat keep their existing c
   assert.equal(websiteReview.requestConfirmationProfile('Companies in need of new suppliers', null, saved), null)
   assert.equal(websiteReview.requestConfirmationProfile('Find dental clinics in Toronto', reviewed, saved), null)
 })
+
+test('#349: Fo’s dentist request shows typed targeting and hides the saved-profile summary', () => {
+  const query = 'Dentists in Toronto that are hiring'
+  assert.deepEqual(submitSearch(query), [[null, undefined, undefined, ['Existing customers']]])
+
+  const client = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
+  assert.match(client, /requestProfile &&[^\n]*data-testid="request-target"[^\n]*\{query\}/)
+  assert.match(client, /!requestProfile && businessIcp &&[^\n]*data-testid="business-profile"/)
+})
+
+test('#349: an unrelated new buyer and market use the same targeting path', () => {
+  assert.deepEqual(submitSearch('Veterinary practices in Chicago opening new locations'),
+    [[null, undefined, undefined, ['Existing customers']]])
+})

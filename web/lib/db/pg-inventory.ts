@@ -40,6 +40,7 @@ export const LOCKS: { id: string; re: RegExp; note: string }[] = [
 // Every module-level Map/Set, reviewed: what it holds and whether two instances need to share it. A new one fails
 // test/pg-inventory.test.ts until it is classified here.
 export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' | 'constant' ; note: string }> = {
+  'lib/focus-refresh.ts:subscribers': { share: 'safe to lose', note: 'browser-only (#1876/#1880): the mounted Home panels\' refresh callbacks for this page load; a reload re-subscribes, and no server instance reads it' },
   'lib/ops/loop-stall.ts:spans': { share: 'safe to lose', note: 'per-process diagnostic: recent scan start/end times, read only to name scans in this process\'s event-loop stall log line (#1463); losing it only drops names from a log line' },
   'lib/connectors/sitecrawl.ts:lastHit': { share: 'safe to lose', note: 'per-host crawl politeness delay; each instance waits on its own' },
   'lib/scan/place-agreement.ts:REGION_BY_ALIAS': { share: 'constant', note: 'region alias lookup, filled once at load from the fixed country / state / province lists in the file, then only read' },
@@ -47,6 +48,7 @@ export const STATE_NOTES: Record<string, { share: 'must share' | 'safe to lose' 
   'lib/evals/contract.ts:BY_VERSION': { share: 'safe to lose', note: 'evaluation contracts frozen in this process, for the same-version-same-content check; the contract hash is persisted with each result, so another instance re-freezes and compares' },
   'lib/analytics/track-client.ts:seen': { share: 'safe to lose', note: 'browser-only (#1616): which funnel events this page load already sent, so each is sent once per page' },
   'lib/ops/emitted.ts:seen': { share: 'safe to lose', note: 'which bundles this build emitted' },
+  'lib/account-zone.ts:formatters': { share: 'safe to lose', note: 'Intl.DateTimeFormat instances cached per zone name (#2054); a lost entry is rebuilt on the next read, never a different result' },
   'lib/outreach/reopen.ts:inFlight': { share: 'must share', note: 're-open sends running in this process; another instance cannot see them (row claim fences the send, this guards resolve)' },
   'lib/rate-limit.ts:local': { share: 'safe to lose', note: "per-process shadow, only for the low-risk 'local' kinds while the shared store fails; closed kinds refuse (#356, #400)" },
   'lib/scan/countries.ts:BY_NAME': { share: 'constant', note: 'filled once from a literal table' },

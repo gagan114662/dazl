@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from '../helpers/tenant-route-db.ts'
+import { setSellerLine } from '../helpers/scan-route-auth-stub.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { saveKey } from '../../lib/llm/key-store.ts'
 import { POST as SCAN } from '../../app/api/scan/route.ts'
@@ -22,7 +23,7 @@ function setup() {
 function as(db: Database.Database) {
   const id = `E${++n}`
   saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
-  setUser({ id, business_name: 'Acme' })
+  setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' })
 }
 const req = (path: string, body: unknown) => new NextRequest(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.1.0.${++n}` }, body: JSON.stringify(body) })
 const est = (body: unknown) => ESTIMATE(req('/api/scan/estimate', body))
@@ -39,7 +40,7 @@ async function keyless(fn: (db: Database.Database, id: string) => Promise<void>)
     db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')").run(id, `${id}@gmail.com`)
     db.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
     db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Acme', 'personal', ?, 1)").run(id, id) // as sign-in creates it
-    setUser({ id, business_name: 'Acme', email: `${id}@gmail.com` })     // no API key: the shared trial funds this account
+    setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme', email: `${id}@gmail.com` })     // no API key: the shared trial funds this account
     await fn(db, id)
   } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 }

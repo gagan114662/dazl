@@ -3,8 +3,8 @@
 // drafting itself all read the effective offer from here, so they cannot disagree.
 //
 // The effective offer of a play, in order:
-//   1. the offer reviewed for this play (scan_jobs.offer): set on the review step before the scan ran, or chosen
-//      later to resolve a conflict;
+//   1. the offer stored for this play (scan_jobs.offer): reviewed before the scan, chosen later to resolve
+//      a conflict, or recorded at creation without a confirmation timestamp when inherited from Memory;
 //   2. otherwise the offer recorded when the play was created (scan_jobs.seller, a snapshot of the profile then:
 //      "<sells> - <website>"), or, for a play created before snapshots, the tenant's current selling context: the
 //      Memory positioning, else the business profile's offer (what drafting used before plays had their own).
@@ -21,9 +21,10 @@ import { effectiveOffer, cleanOffer, completeOffer, isMissingSchema, tenantOffer
 // The effective offer of one play of this tenant (null: no such play of this tenant).
 export async function readPlayOffer(db: DbLike, tenantId: string, jobId: string): Promise<PlayOffer | null> {
   const d = asDb(db)
-  const row = await d.get<{ offer: string | null; seller: string | null; query: string | null }>('SELECT offer, seller, query FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
+  const row = await d.get<{ offer: string | null; seller: string | null; query: string | null; offer_set_at: number | null }>('SELECT offer, seller, query, offer_set_at FROM scan_jobs WHERE id = ? AND user_id = ?', [jobId, tenantId])
   if (!row) return null
-  return effectiveOffer(row, await profileOffer(d, tenantId))
+  const resolved = effectiveOffer(row, await profileOffer(d, tenantId))
+  return resolved.source === 'play' && row.offer_set_at === null ? { ...resolved, source: 'recorded' } : resolved
 }
 
 // The tenant's own selling context (play-offer-text.ts tenantOffer): the Memory positioning, else the business

@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { readyComplete, readyItems, type ReadyItem } from '@/lib/ready-card'
 import { loadReadinessInput } from './readiness-input'
+import { subscribeFocusRefresh } from '@/lib/focus-refresh'
 
 // Home's setup checklist toward the first useful result (lib/ready-card.ts). Each step still to do has one button straight
 // to its fix (secondary: Home keeps one primary action; the next step is marked by its dark dot). Read-only; gone once
@@ -12,14 +13,12 @@ export default function ReadyCard() {
   const [items, setItems] = useState<ReadyItem[] | null>(null)
   useEffect(() => {
     // #1722: overlapping loads apply in start order, so a slow earlier read cannot revert the sender status.
-    const load = () => { const seq = ++seqRef.current; void loadReadinessInput().then(({ input }) => { if (seq === seqRef.current) setItems(readyItems(input)) }) }
+    const load = (epoch?: number) => { const seq = ++seqRef.current; void loadReadinessInput(epoch === undefined ? {} : { fresh: epoch }).then(({ input }) => { if (seq === seqRef.current) setItems(readyItems(input)) }) }
     load()
-    window.addEventListener('profile-updated', load)
     // #1722: the sender status can change in another tab; re-read when this tab is used again.
-    const wake = () => { if (!document.hidden) load() }
-    window.addEventListener('focus', wake)
-    document.addEventListener('visibilitychange', wake)
-    return () => { window.removeEventListener('profile-updated', load); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
+    // #1876: one shared listener for the page, so a focus refreshes once instead of once per panel and event.
+    const offWake = subscribeFocusRefresh(load) // one epoch per focus or save: the panels share that read (#1880)
+    return () => { offWake() }
   }, [])
   if (!items || readyComplete(items)) return null
   const done = items.filter(x => x.state === 'done').length

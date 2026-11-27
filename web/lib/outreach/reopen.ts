@@ -4,6 +4,7 @@
 // touches reopens. One re-open per thread, ever (primary key). Suppression is checked
 // at draft time and again at send time.
 import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
 import { buildMime, toBase64Url } from '../gmail/mime.ts'
 import { confirmedSendResult, connectionGone, getAccessTokenBound, gmailSend, isConnectionReplaced, gmailStatus, type OAuthDeps } from '../gmail/oauth.ts'
 import { getMasterKey } from '../secrets.ts'
@@ -12,7 +13,7 @@ import { currentnessHeld } from './currentness.ts'
 import { accountSendCount, anyUncertainSend, tableExists } from './send-budget.ts'
 import { recheckSendAuthority } from './send-authority.ts'
 import { composeBody, getSettings, isSuppressed, leadHeld, leadHoldCode, recipientAllowed, leadEvidenceEligible, domainReviewHeld, domainHoldCode, OutreachError, testFixtureSend, unsubToken, DAILY_CAP, SENDING_STALE_S, type Deps } from './service.ts'
-import { replySafetyStale } from './store.ts'
+import { norm, replySafetyStale } from './store.ts'
 
 export const WARM_MIN_DAYS = 30
 export const WARM_MAX_DAYS = 90
@@ -37,39 +38,60 @@ export function migrateReopen(db: Database.Database): void {
 interface WarmRow { thread_id: string; lead_id: string; to_email: string; root_message_id: string; last_lead_reply_at: number; company: string; name: string; last_class: string | null }
 export interface WarmThread { thread_id: string; company: string; name: string; to_email: string; last_reply_at: number; reply_excerpt: string; reopen: { status: string; body: string } | null }
 
-// Threads that qualify right now: last lead reply 30-90 days old, sequence not stopped,
-// latest reply not an opt-out or a no, address not suppressed, no terminal stage, and no
-// re-open created yet (one per thread, ever).
-export function warmAgain(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): WarmThread[] {
-  migrateReopen(db)
-  const rows = db.prepare(
-    `SELECT t.thread_id, t.lead_id, t.to_email, t.root_message_id, t.last_lead_reply_at,
+const WARM_THREADS_SQL = `SELECT t.thread_id, t.lead_id, t.to_email, t.root_message_id, t.last_lead_reply_at,
             COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name, COALESCE(l.stage, '') AS stage,
             (SELECT classification FROM inbound_messages i WHERE i.tenant_id = t.tenant_id AND i.thread_id = t.thread_id ORDER BY received_at DESC LIMIT 1) AS last_class
-     FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id
+     FROM followup_threads t LEFT JOIN leads l ON l.id = t.lead_id AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id = l.scan_job_id AND j.user_id = t.tenant_id)
      WHERE t.tenant_id = ? AND t.stopped IS NULL AND t.last_lead_reply_at IS NOT NULL
        AND t.last_lead_reply_at BETWEEN ? AND ?
-       AND NOT EXISTS (SELECT 1 FROM reopen_messages r WHERE r.tenant_id = t.tenant_id AND r.thread_id = t.thread_id)`,
-  ).all(tenantId, now - WARM_MAX_DAYS * 86400, now - WARM_MIN_DAYS * 86400) as (WarmRow & { stage: string })[]
+       AND NOT EXISTS (SELECT 1 FROM reopen_messages r WHERE r.tenant_id = t.tenant_id AND r.thread_id = t.thread_id)`
+const LIST_REOPENS_SQL = `SELECT r.thread_id, r.to_email, r.body, r.status, t.last_lead_reply_at, COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
+     FROM reopen_messages r JOIN followup_threads t ON t.tenant_id = r.tenant_id AND t.thread_id = r.thread_id
+     LEFT JOIN leads l ON l.id = r.lead_id AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id = l.scan_job_id AND j.user_id = r.tenant_id) WHERE r.tenant_id = ? ORDER BY r.created_at DESC LIMIT 50`
+const LAST_EXCERPT_SQL = 'SELECT excerpt FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? ORDER BY received_at DESC LIMIT 1'
+type WarmCandidate = WarmRow & { stage: string }
+type ReopenRow = { thread_id: string; to_email: string; body: string; status: string; last_lead_reply_at: number | null; company: string; name: string }
+
+const warmParams = (tenantId: string, now: number) => [tenantId, now - WARM_MAX_DAYS * 86400, now - WARM_MIN_DAYS * 86400]
+const eligibleWarm = (r: WarmCandidate) => r.last_class !== 'opt_out' && r.last_class !== 'negative' && r.stage !== 'booked_call'
+const warmThread = (r: WarmCandidate, excerpt: string): WarmThread => ({
+  thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email,
+  last_reply_at: Number(r.last_lead_reply_at), reply_excerpt: excerpt, reopen: null,
+})
+const listedThread = (r: ReopenRow): WarmThread => ({
+  thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email,
+  last_reply_at: Number(r.last_lead_reply_at ?? 0), reply_excerpt: '', reopen: { status: r.status, body: r.body },
+})
+
+// A warm thread has been quiet for 30–90 days, is still open, and has no existing reopen.
+export function warmAgain(db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)): WarmThread[] {
+  migrateReopen(db)
+  const rows = db.prepare(WARM_THREADS_SQL).all(...warmParams(tenantId, now)) as WarmCandidate[]
   const out: WarmThread[] = []
-  for (const r of rows) {
-    if (r.last_class === 'opt_out' || r.last_class === 'negative') continue
-    if (r.stage === 'booked_call') continue
-    if (isSuppressed(db, tenantId, r.to_email)) continue
-    const excerpt = (db.prepare('SELECT excerpt FROM inbound_messages WHERE tenant_id = ? AND thread_id = ? ORDER BY received_at DESC LIMIT 1').get(tenantId, r.thread_id) as { excerpt: string } | undefined)?.excerpt ?? ''
-    out.push({ thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email, last_reply_at: r.last_lead_reply_at, reply_excerpt: excerpt, reopen: null })
+  for (const row of rows) {
+    if (!eligibleWarm(row) || isSuppressed(db, tenantId, row.to_email)) continue
+    const excerpt = (db.prepare(LAST_EXCERPT_SQL).get(tenantId, row.thread_id) as { excerpt: string } | undefined)?.excerpt ?? ''
+    out.push(warmThread(row, excerpt))
   }
   return out
 }
 
 export function listReopens(db: Database.Database, tenantId: string): WarmThread[] {
   migrateReopen(db)
-  const rows = db.prepare(
-    `SELECT r.thread_id, r.to_email, r.body, r.status, t.last_lead_reply_at, COALESCE(l.company, '') AS company, COALESCE(l.name, '') AS name
-     FROM reopen_messages r JOIN followup_threads t ON t.tenant_id = r.tenant_id AND t.thread_id = r.thread_id
-     LEFT JOIN leads l ON l.id = r.lead_id WHERE r.tenant_id = ? ORDER BY r.created_at DESC LIMIT 50`,
-  ).all(tenantId) as { thread_id: string; to_email: string; body: string; status: string; last_lead_reply_at: number | null; company: string; name: string }[]
-  return rows.map(r => ({ thread_id: r.thread_id, company: r.company, name: r.name, to_email: r.to_email, last_reply_at: r.last_lead_reply_at ?? 0, reply_excerpt: '', reopen: { status: r.status, body: r.body } }))
+  return (db.prepare(LIST_REOPENS_SQL).all(tenantId) as ReopenRow[]).map(listedThread)
+}
+
+export async function readReopenOverview(db: Db, tenantId: string, now = Math.floor(Date.now() / 1000)): Promise<{ warm: WarmThread[]; reopens: WarmThread[] }> {
+  const rows = await db.all<WarmCandidate>(WARM_THREADS_SQL, warmParams(tenantId, now))
+  const warm: WarmThread[] = []
+  for (const row of rows) {
+    if (!eligibleWarm(row)) continue
+    if (await db.get('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?', [tenantId, norm(row.to_email)])) continue
+    const excerpt = await db.get<{ excerpt: string }>(LAST_EXCERPT_SQL, [tenantId, row.thread_id])
+    warm.push(warmThread(row, excerpt?.excerpt ?? ''))
+  }
+  const reopens = (await db.all<ReopenRow>(LIST_REOPENS_SQL, [tenantId])).map(listedThread)
+  return { warm, reopens }
 }
 
 export function reopenText(lead: { company: string; name: string; signal: string; source_url: string }, replyExcerpt: string, businessName: string): string {

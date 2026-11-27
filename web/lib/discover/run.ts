@@ -4,17 +4,18 @@
 //   2. if fewer than `wantShown` leads are shown and the budget has room, a second loop looks for different companies;
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
+import { combineParseDropCounts, type ParseDropCounts } from './parse-drop-counts.ts'
 import { discoverLeads, type DiscoverInput, type DiscoverUsage, type DiscoveredLead, type SeenPage } from './agent.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance } from './search-budget.ts'
-import { signalJudge, type SignalJudge } from './entail.ts'
-import { checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
+import { meterSignalJudge, signalJudge, type SignalJudge } from './entail.ts'
+import { checkEmailSource, checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
-export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean }
+export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; emailDropped: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean; parse_counts?: ParseDropCounts }
 export interface DiscoveryDeps {
   apiKey: string
   fetch?: typeof fetch
@@ -81,8 +82,10 @@ async function checkRunLeads(result: { leads: DiscoveredLead[]; seen: SeenPage[]
     if (response.ok && recordUrls.has(String(url))) bodies.set(String(url), response.clone().json().catch(() => null))
     return response
   }
-  const rechecked = await checkLeads(alternates.map(item => item.candidate), result.seen, read)
+  const rechecked = await checkLeads(alternates.map(item => item.candidate), result.seen, read, 4, judge?.ask)
   for (const [i, lead] of rechecked.entries()) {
+    const original = checked[alternates[i].index]
+    if (lead.proof_check && !isShown(original)) original.proof_check ??= lead.proof_check
     if (lead.proof !== 'confirmed' || !isShown(lead) || !lead.date || lead.date_source !== 'page') continue
     if (!lead.date_on_page) {
       // Only the exact posting record can supply an otherwise unbound machine-readable date.
@@ -110,21 +113,32 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
-  // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
-  const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
-  let leads = await checkRunLeads(first, deps, judge)
+  let parseCounts = first.parse_counts
+  const rawJudge = deps.judge === undefined ? signalJudge(api) : deps.judge
+  const remaining = () => budget.maxUsd - usage.usd - (rawJudge?.usage.usd ?? 0)
+  const judge = rawJudge && meterSignalJudge(rawJudge, remaining)
+  let emailDropped = 0
+  const check = async (result: { leads: DiscoveredLead[]; seen: SeenPage[] }) => {
+    const checked = await checkRunLeads(result, deps, judge)
+    emailDropped += checked.filter((lead, index) => result.leads[index].email && !lead.email).length
+    return checked
+  }
+  let leads = await check(first)
+  const seen = [...first.seen]
   const pages = first.seen.map(p => p.url)
   const model = first.model
   let stop = first.stop
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
-  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
+  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && first.usage.usd + PEOPLE_PASS_USD <= remaining()) {
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
+      parseCounts = combineParseDropCounts(parseCounts, second.parse_counts)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkRunLeads(second, deps, judge)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = await check({ ...second, leads: second.leads.filter(l => !known.has(l.company.toLowerCase())) })
+      seen.push(...second.seen)
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
@@ -142,7 +156,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   // Review of PR #1690: the pass was only checked once against the run's ceiling, before it started, so a run that had spent nearly
   // all of it could still start a full pass and settle past its reservation (now more likely, with leads in review included). The
   // number of leads the pass may take is what the money left can pay for at a lead's worst case.
-  const maxLeads = Math.min(budget.enrichLeads ?? 12, Math.floor((budget.maxUsd - usage.usd + 1e-9) / PEOPLE_LEAD_USD))
+  const maxLeads = Math.min(budget.enrichLeads ?? 12, Math.floor((remaining() + 1e-9) / PEOPLE_LEAD_USD))
   if (!accountingUncertain && enrich && todo.length && maxLeads > 0) {
     try {
       const e = await enrich(todo, { offer: input.offer ?? null, maxLeads }, api)
@@ -150,13 +164,25 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       enriched = e.enriched
       accountingUncertain = e.accountingUncertain === true
       const byCompany = new Map(e.leads.map(l => [l.company, l]))
-      leads = leads.map(l => { const m = byCompany.get(l.company); return m && l.proof !== 'gone' ? { ...l, ...mergeEnriched(l, m) } : l })
+      const sourcePages = [...e.seen, ...seen]
+      // Only a new address needs rechecking. The merge keeps an already-proven address and its citation.
+      const merged = await Promise.all(leads.map(async lead => {
+        const candidate = byCompany.get(lead.company)
+        if (!candidate || lead.proof === 'gone') return { lead, dropped: false }
+        const updated = { ...lead, ...mergeEnriched(lead, candidate) }
+        if (lead.email) return { lead: updated, dropped: false }
+        const checked = await checkEmailSource(updated, sourcePages)
+        return { lead: checked, dropped: !!updated.email && !checked.email }
+      }))
+      emailDropped += merged.filter(item => item.dropped).length
+      leads = merged.map(item => item.lead)
+
     } catch { accountingUncertain = true }
   }
   if (judge) {
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
     accountingUncertain ||= judge.usage.accountingUncertain === true
   }
-  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
+  return { pages, leads, ...(parseCounts ? { parse_counts: parseCounts } : {}), usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, emailDropped, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
     note: accountingUncertain ? 'Some research could not be accounted for. Earlier evidence is kept; the full spending reservation remains held.' : note, accountingUncertain }
 }

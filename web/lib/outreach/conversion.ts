@@ -1,4 +1,5 @@
-import type Database from 'better-sqlite3'
+import type { Db } from '../db/client.ts'
+import { tableExists } from '../db/table-exists.ts'
 
 // Reply rate per signal kind and source, per tenant. Read-only: no table, column or write is added.
 // Denominator = real (non-test) messages with status 'sent'. A message's signal and source come from
@@ -37,23 +38,23 @@ const STANDING = "('scheduled', 'ended', 'held', 'no_show')"
 const booking = (cond: string) => `EXISTS (SELECT 1 FROM calcom_bookings b WHERE b.tenant_id = m.tenant_id AND b.lead_id = m.lead_id AND ${cond}
   AND EXISTS (SELECT 1 FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = m.lead_id AND j.user_id = m.tenant_id) AND m.sent_at IS NOT NULL AND b.created_at >= m.sent_at)`
 
-export function conversionBySignal(db: Database.Database, tenantId: string): ConversionRow[] {
-  const hasBookings = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'calcom_bookings'").get()
-  const rows = db.prepare(`
+export async function conversionBySignal(db: Db, tenantId: string): Promise<ConversionRow[]> {
+  const hasBookings = await tableExists(db, 'calcom_bookings')
+  const rows = await db.all<Omit<ConversionRow, 'reply_rate'>>(`
     SELECT c.signal_kind AS signal_kind, c.source_kind AS source_kind,
            COUNT(*) AS sent,
-           SUM(EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id
-                       AND r.classification NOT IN ('auto','bounce','soft_bounce'))) AS replied,
-           SUM(EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id
-                       AND r.classification = 'positive')) AS interested,
-           ${hasBookings ? `SUM(${booking(`b.status IN ${STANDING}`)})` : '0'} AS booked,
-           ${hasBookings ? `SUM(${booking("b.status = 'held'")})` : '0'} AS held,
-           ${hasBookings ? `SUM(${booking("b.status = 'no_show'")})` : '0'} AS no_show,
-           ${hasBookings ? `SUM(${booking("b.status = 'cancelled'")} AND NOT ${booking(`b.status IN ${STANDING}`)})` : '0'} AS cancelled
+           SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id
+                       AND r.classification NOT IN ('auto','bounce','soft_bounce')) THEN 1 ELSE 0 END) AS replied,
+           SUM(CASE WHEN EXISTS (SELECT 1 FROM inbound_messages r WHERE r.tenant_id = m.tenant_id AND r.outreach_message_id = m.id
+                       AND r.classification = 'positive') THEN 1 ELSE 0 END) AS interested,
+           ${hasBookings ? `SUM(CASE WHEN ${booking(`b.status IN ${STANDING}`)} THEN 1 ELSE 0 END)` : '0'} AS booked,
+           ${hasBookings ? `SUM(CASE WHEN ${booking("b.status = 'held'")} THEN 1 ELSE 0 END)` : '0'} AS held,
+           ${hasBookings ? `SUM(CASE WHEN ${booking("b.status = 'no_show'")} THEN 1 ELSE 0 END)` : '0'} AS no_show,
+           ${hasBookings ? `SUM(CASE WHEN ${booking("b.status = 'cancelled'")} AND NOT ${booking(`b.status IN ${STANDING}`)} THEN 1 ELSE 0 END)` : '0'} AS cancelled
     FROM outreach_messages m
     LEFT JOIN outreach_signal_context c ON c.message_id = m.id AND c.tenant_id = m.tenant_id
     WHERE m.tenant_id = ? AND m.status = 'sent' AND m.test = 0
-    GROUP BY c.signal_kind, c.source_kind`).all(tenantId) as Omit<ConversionRow, 'reply_rate'>[]
+    GROUP BY c.signal_kind, c.source_kind`, [tenantId])
   return rows
     .map(r => ({ ...r, replied: r.replied ?? 0, interested: r.interested ?? 0, booked: r.booked ?? 0, held: r.held ?? 0, no_show: r.no_show ?? 0, cancelled: r.cancelled ?? 0, reply_rate: (r.replied ?? 0) / r.sent }))
     .sort((a, b) => Number(a.signal_kind === null) - Number(b.signal_kind === null) || b.reply_rate - a.reply_rate || b.sent - a.sent)
@@ -78,8 +79,8 @@ export interface ConversionReportRow {
 }
 export interface ConversionReport { reply_reading: boolean; rows: ConversionReportRow[] }
 
-export function conversionReport(db: Database.Database, tenantId: string, replyReading: boolean): ConversionReport {
-  const rows = conversionBySignal(db, tenantId)
+export async function conversionReport(db: Db, tenantId: string, replyReading: boolean): Promise<ConversionReport> {
+  const rows = await conversionBySignal(db, tenantId)
   if (replyReading) return { reply_reading: true, rows: rows.map(r => ({ ...r, observed_replied: r.replied, observed_interested: r.interested })) }
   return {
     reply_reading: false,
