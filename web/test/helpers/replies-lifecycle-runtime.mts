@@ -16,7 +16,7 @@ globalThis.fetch = (async (u: unknown) => { throw new Error(`Unexpected network 
 const raw = new Database(':memory:'); migrateAllSqlite(raw); setScanDb(raw)
 const { GET, POST } = await import('../../app/api/outreach/replies/route.ts')
 
-type Info = RepliesViewInput & { consent: { version: string; accepted: boolean }; bounce_scan: { version: string; accepted: boolean }; read_granted: boolean; gmail_connected: boolean }
+type Info = RepliesViewInput & { consent: { version: string; accepted: boolean }; bounce_scan: { version: string; accepted: boolean }; read_granted: boolean; gmail_connected: boolean; followups_enabled: boolean }
 const as = (tenant: string) => setUser({ id: tenant, business_name: 'Test Co' })
 let ip = 0
 const post = (body: unknown, headers: Record<string, string> = { origin: 'http://localhost' }) => POST(new NextRequest('http://localhost/api/outreach/replies', {
@@ -84,7 +84,7 @@ test('lifecycle: a refused sync says not checked; unauthenticated and cross-site
   as('t5'); assert.equal(await state(), 'disconnected', 'another tenant sees none of t4')
 })
 
-test('reply settings GET uses Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async () => {
+test('reply settings and consent use Postgres without a raw SQLite handle and keeps tenants separate', { skip: pgSkip }, async () => {
   const { schema, drop } = await freshSchema()
   const pg = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 3 })
   try {
@@ -106,5 +106,26 @@ test('reply settings GET uses Postgres without a raw SQLite handle and keeps ten
     const neighbor = await info() as Info & { inbound: unknown[] }
     assert.deepEqual([neighbor.gmail_connected, neighbor.read_granted, neighbor.consent.accepted, neighbor.bounce_scan.accepted], [false, false, false, true])
     assert.deepEqual(neighbor.inbound, [])
+    as('owner')
+    assert.equal((await post({ action: 'bounce_scan_on', accept: true, version: BOUNCE_SCAN_CONSENT_VERSION })).status, 200)
+    await pg.run('INSERT INTO autopilot_settings (tenant_id, followups_enabled) VALUES (?, ?)', ['owner', 1])
+    assert.equal((await post({ action: 'revoke' })).status, 200)
+    const revoked = await info()
+    assert.deepEqual([revoked.consent.accepted, revoked.bounce_scan.accepted, revoked.followups_enabled], [false, true, false])
+    assert.equal((await post({ action: 'consent', accept: true, version: READ_CONSENT_VERSION })).status, 200)
+    assert.equal((await post({ action: 'bounce_scan_off' })).status, 200)
+    const accepted = await info()
+    assert.deepEqual([accepted.consent.accepted, accepted.bounce_scan.accepted], [true, false])
+    as('neighbor')
+    assert.equal((await info()).bounce_scan.accepted, true)
+    await pg.run('UPDATE autopilot_settings SET followups_enabled = 1 WHERE tenant_id = ?', ['owner'])
+    await pg.run('INSERT INTO autopilot_settings (tenant_id, followups_enabled) VALUES (?, ?)', ['neighbor', 1])
+    as('owner')
+    assert.equal((await post({ action: 'followups_off' })).status, 200)
+    assert.equal((await info()).followups_enabled, false)
+    assert.equal((await info()).consent.accepted, true)
+    assert.deepEqual(await pg.all('SELECT tenant_id, action FROM autopilot_audit'), [{ tenant_id: 'owner', action: 'followups_off' }])
+    as('neighbor')
+    assert.equal((await info()).followups_enabled, true)
   } finally { setDb(null); await pg.close(); await drop() }
 })
