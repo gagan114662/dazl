@@ -16,6 +16,12 @@ import { discoverApprove, discoverContact } from '../lib/discover/card.ts'
 
 const lead = (o: Partial<DiscoveredLead>): DiscoveredLead => ({ company: 'Northwind Dental', domain: 'northwind-dental.example', signal: 'Opening a second clinic', signal_date: '2026-10-14', evidence_url: 'https://news.example/northwind', evidence_quote: 'Northwind Dental will open its second clinic', person: 'Dana Ruiz', title: 'Practice Owner', person_source_url: 'https://northwind-dental.example/team', linkedin_url: null, email: null, email_source_url: null, confidence: 'high', why: 'expanding', ...o })
 
+const proofJudgeYes: typeof fetch = async input => {
+  if (String(input) !== 'https://api.anthropic.com/v1/messages') return new Response(null, { status: 403 })
+  return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+    usage: { input_tokens: 0, output_tokens: 0 } })
+}
+
 test('the lane runs for an ordinary request on the workspace\'s own Anthropic key, and only then', () => {
   const job = { query: 'dental clinics expanding', csv_domain: null, watch_id: null, funded_by: 'user' }
   assert.equal(discoverLaneEnabled(job, 'anthropic', {}), true)
@@ -50,7 +56,7 @@ test('a scan through the lane: confirmed leads are ready, an undated one too, an
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
   }
   const asked: { query: string; offer?: string | null; exclude?: string[] }[] = []
-  const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch   // dazl's own read of the unseen proof fails
+  const blocked = proofJudgeYes   // dazl's own read of the unseen proof fails
   const result = await runJob(db, job!, { master, fetchImpl: blocked, discover: true, discoverImpl: async input => { asked.push(input); return asked.length === 1 ? canned : { ...canned, leads: [], seen: [] } },
     // the second pass fills the website of the lead that had none, and costs a little more
     enrichImpl: async leads => ({ leads: leads.map(l => l.company === 'Harbour Smiles' ? { ...l, domain: 'harboursmiles.example' } : l), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.011 }, seen: [], enriched: 1 }) })
@@ -145,7 +151,7 @@ test('a scan accepted as company-first and answered by the lane shows its leads:
       usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
     }
     let n = 0
-    const result = await runJob(db, job!, { master, fetchImpl: (async () => new Response('no', { status: 403 })) as unknown as typeof fetch, discover: true,
+    const result = await runJob(db, job!, { master, fetchImpl: proofJudgeYes, discover: true,
       discoverImpl: async () => n++ === 0 ? canned : { ...canned, leads: [], seen: [] }, enrichImpl: null })
     assert.equal(result, 'done')
     const j = db.prepare('SELECT status, verified, run_budget FROM scan_jobs WHERE id = ?').get(id) as { status: string; verified: number; run_budget: string | null }
@@ -177,7 +183,7 @@ test('a hiring request answered by the lane is not held by the old sales-hiring 
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
   }
   let n = 0
-  const result = await runJob(db, job!, { master, fetchImpl: (async () => new Response('no', { status: 403 })) as unknown as typeof fetch, discover: true,
+  const result = await runJob(db, job!, { master, fetchImpl: proofJudgeYes, discover: true,
     discoverImpl: async () => n++ === 0 ? canned : { ...canned, leads: [], seen: [] }, enrichImpl: null })
   assert.equal(result, 'done')
   const rows = db.prepare('SELECT id, source_kind, review_reason, confidence FROM leads WHERE scan_job_id = ?').all(id) as { id: string; source_kind: string; review_reason: string | null; confidence: number | null }[]
@@ -212,7 +218,7 @@ test('a lead whose proof page is gone is dropped and counted, never listed; the 
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null,
   }
   let calls = 0
-  const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch
+  const blocked = proofJudgeYes
   assert.equal(await runJob(db, job!, { master, fetchImpl: blocked, discover: true, enrichImpl: null, discoverImpl: async () => (++calls === 1 ? canned : { ...canned, leads: [], seen: [] }) }), 'done')
   const leads = listLeads(db, 'T', id, 50, false) as (Record<string, unknown> & { company: string })[]
   assert.deepEqual(leads.map(l => l.company), ['Northwind Dental'], 'the lead with the dead proof link is not listed, for review or otherwise')
@@ -267,7 +273,7 @@ for (const [alreadyNamed, mailbox] of [[false, 'office'], [false, 'dana.ruiz'], 
   }
   assert.equal(await runJob(db, job, {
     master, discover: true, discoverImpl: async () => found, enrichImpl: null,
-    fetchImpl: async () => new Response('no', { status: 403 }),
+    fetchImpl: proofJudgeYes,
     crawlGet: async url => { crawlRequests.push(url); return { status: pages[url] ? 200 : 404, body: pages[url] ?? '', finalUrl: url } },
   }), 'done')
   const completion = db.prepare('SELECT enrich_started_at, enrich_finished_at FROM scan_jobs WHERE id = ?').get(id) as {
@@ -293,4 +299,36 @@ for (const [alreadyNamed, mailbox] of [[false, 'office'], [false, 'dana.ruiz'], 
   assert.deepEqual(adoptedEmail && [adoptedEmail.label, adoptedEmail.source_url],
     hasPersonalAddress ? ['published on a public page', origin + '/team'] : undefined)
   assert.equal(discoverApprove(contactLead, new Date(Date.now())).ok, hasPersonalAddress)
+})
+
+test('#1726 exhausted judge budget saves the held lead and its reason', async () => {
+  const db = new Database(':memory:')
+  try {
+    const master = randomBytes(32)
+    migrateAllSqlite(db)
+    saveKey(db, 'T', 'anthropic', 'sk-ant-test', master)
+    const id = createQueryJob(db, 'T', { query: 'Local clinics opening a second office' })
+    const job = claimKeyedJob(db, id)
+    assert.ok(job)
+    const candidate = lead({})
+    let providerCalls = 0
+    assert.equal(await runJob(db, job, {
+      master, discover: true, enrichImpl: null,
+      fetchImpl: async (_input, init) => {
+        if (String(init?.body).includes('claude-haiku-5-5')) providerCalls++
+        return new Response(null, { status: 403 })
+      },
+      discoverImpl: async () => ({
+        leads: [candidate],
+        seen: [{ url: candidate.evidence_url, title: candidate.company, page_age: null, text: candidate.evidence_quote! }],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.999 },
+        stop: 'end_turn', model: 'claude-opus-5-5', note: null,
+      }),
+    }), 'done')
+    assert.equal(providerCalls, 0)
+    const row = db.prepare('SELECT review_reason, timing_note FROM leads WHERE scan_job_id = ?').get(id)
+    assert.deepEqual(row, { review_reason: 'source_review_required', timing_note: 'Proof not checked (spend cap).' })
+  } finally {
+    db.close()
+  }
 })

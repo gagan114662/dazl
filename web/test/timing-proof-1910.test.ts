@@ -26,7 +26,7 @@ async function readiness(postingDate: string | null, otherMarkup = '') {
     fit: 4, intent: 4, review_reason: null,
     enrichments: [
       { connector: 'discover', kind: 'person', value: 'Dana Rivera, Owner', source_url: `https://${site}/team` },
-      { connector: 'discover', kind: 'email', value: `dana@${site}`, source_url: `https://${site}/contact` },
+      { connector: 'discover', kind: 'email', value: `dana@${site}`, label: 'published on a public page', source_url: `https://${site}/contact` },
     ],
   }
   assert.equal(checked.signal_seen, true, 'the hiring claim itself has independent proof')

@@ -207,6 +207,8 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/feedback', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'settings/profile', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/profile', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
+  { path: 'settings/search-market', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
+  { path: 'settings/search-market', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure' },
   { path: 'track', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'read' }, // #1616: forwards an allowlisted funnel event for the session's own account; reads and writes nothing
   { path: 'unsubscribe', method: 'GET', auth: 'public', note: "HMAC token; acts only on the token's own message" },
   { path: 'unsubscribe', method: 'POST', auth: 'public', note: "HMAC token; acts only on the token's own message" },

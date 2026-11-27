@@ -13,6 +13,7 @@
 // A conflict: the play's own request states an offer ("selling CRM setup to ...") that differs from (2). Then the play
 // has no effective offer until the tenant chooses one, and drafting for it is refused. A play's recorded context is
 // never rewritten except by that explicit choice for that play: an old play keeps the offer it was created with.
+import { hasSellerDescription } from './seller-description.ts'
 export const MAX_OFFER = 150
 
 // The ONLY read failure that may be treated as "this play has no offer of its own": a database from before per-play
@@ -58,7 +59,7 @@ function hasOpenOfferParenthesis(text: string): boolean {
 // founders.", "Do not target people selling services to dental practices.") and negations ("We don't sell to agencies.",
 // "We are not selling hardware.") state none, and neither does "We sell to <buyers>" (a target, not an offer).
 const LEAD = String.raw`(?:^|[,;:\u2013\u2014]\s*|\s-\s*)(?:(?:hi|hello|note|fyi|also|and|but|so|ps)[,:]?\s+)?`
-const SPEAKER = String.raw`(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)`
+const SPEAKER = String.raw`(?:(?:i|we|i'm|we're|i am|we are)\s+(?:sell|selling|offer|offering|provide|providing)|(?:my|our)\s+(?:company|business|agency|practice)\s+(?:sells|offers|provides))`
 const TO_FOR = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const SELLING_TO_FOR = new RegExp(`${LEAD}selling\\s+(.{3,150}?)\\s+(?:to|for)\\s+\\S`, 'di')
 const BARE = new RegExp(`${LEAD}${SPEAKER}\\s+(.{3,150})$`, 'di')
@@ -607,7 +608,11 @@ function withdrawsSaved(withdrawn: string, saved: string): boolean {
   return !unrelatedTermExclusion(withdrawn, saved)
 }
 
-export function effectiveOffer(play: { offer?: string | null; seller?: string | null; query?: string | null }, profileSells: string | null | undefined): PlayOffer {
+export function effectiveOffer(
+  play: { offer?: string | null; seller?: string | null; query?: string | null },
+  profileSells: string | null | undefined,
+  { newPlay = false }: { newPlay?: boolean } = {},
+): PlayOffer {
   const reviewed = completeOffer(play.offer)
   const incomplete = (): PlayOffer => ({ offer: null, source: 'conflict', conflict: { stated: null, recorded: '', incomplete: true } })
   if (reviewed) return { offer: reviewed, source: 'play', conflict: null }
@@ -628,6 +633,8 @@ export function effectiveOffer(play: { offer?: string | null; seller?: string | 
   }
   // the request's whole offer statement is compared (its buyers and seller negations too), not only the offer words
   if (stated && base && !sameOffer(play.query ?? '', base)) return { offer: null, source: 'conflict', conflict: { stated, recorded: base } }
+  // Identity-only descriptions require a choice at admission. Historical reads keep the recorded offer.
+  if (newPlay && !stated && hasSellerDescription(play.query)) return { offer: null, source: 'conflict', conflict: { stated: null, recorded: base ?? '', ambiguous: true } }
   if (base) return { offer: base, source: recorded ? 'recorded' : 'profile', conflict: null }
   if (stated) return { offer: stated, source: 'request', conflict: null }
   return { offer: null, source: 'none', conflict: null }

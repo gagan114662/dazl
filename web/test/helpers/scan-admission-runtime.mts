@@ -25,7 +25,7 @@ const Q = 'Independent dental practices hiring a receptionist in New York in the
 const jobs = (db: Database.Database, id: string) => db.prepare('SELECT status FROM scan_jobs WHERE user_id = ?').all(id) as { status: string }[]
 async function race(id: string, k = 2) {
   setUser({ id, business_name: 'Acme' })
-  const rs = await Promise.all(Array.from({ length: k }, () => POST(req({ query: Q }))))
+  const rs = await Promise.all(Array.from({ length: k }, () => POST(req({ query: Q, offer: 'Appointment booking software' }))))
   return Promise.all(rs.map(async r => ({ status: r.status, error: ((await r.json()) as { error?: string }).error })))
 }
 function seed(db: Database.Database, id: string, k: number, status: string, extra = '') {
@@ -57,8 +57,8 @@ test('at the last monthly slot, concurrent requests cannot exceed the free quota
 
 test('tenants do not block one another', async () => {
   const db = setup(); const a = tenant(db); const b = tenant(db)
-  setUser({ id: a, business_name: 'A' }); const ra = POST(req({ query: Q }))
-  setUser({ id: b, business_name: 'B' }); const rb = POST(req({ query: Q }))
+  setUser({ id: a, business_name: 'A' }); const ra = POST(req({ query: Q, offer: 'Appointment booking software' }))
+  setUser({ id: b, business_name: 'B' }); const rb = POST(req({ query: Q, offer: 'Appointment booking software' }))
   assert.deepEqual([(await ra).status, (await rb).status], [202, 202])
 })
 

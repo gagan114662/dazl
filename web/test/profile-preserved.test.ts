@@ -22,7 +22,7 @@ test('normalizeIcp keeps a reviewed profile as it is: same roles, place, size, s
   assert.equal(n.signals.length, 1); assert.match(n.signals[0], /seed funding within the past 90 days AND currently hiring sales staff/)
 })
 
-test('the real runner uses a reviewed profile as stored: no profile inference, the profile is not altered, icp_inferred stays 0', async () => {
+test('the real runner uses a reviewed profile as stored: no profile inference, the profile is not altered, icp_inferred stays explicitly reviewed', async () => {
   const r = await runFixture({
     request: REQUEST, modelPlan: PLAN, reviewedIcp: REVIEWED, icpReviewed: true,
     modelIcp: { ...REVIEWED, who: ['Managing Director', 'Head of Sales'], industries: ['SaaS', 'fintech', 'AI'], signals: ['seed funding', 'hiring sales'] },   // what an inference WOULD have produced (must never be used)
@@ -30,7 +30,7 @@ test('the real runner uses a reviewed profile as stored: no profile inference, t
   })
   assert.equal(r.calls.prompts.filter(p => p.startsWith(INFERENCE_PREFIX)).length, 0, 'the runner did not call profile inference')
   const job = r.db.prepare('SELECT icp, icp_inferred FROM scan_jobs').get() as { icp: string; icp_inferred: number }
-  assert.equal(job.icp_inferred, 0, 'still a reviewed (user) profile')
+  assert.equal(job.icp_inferred, 4, 'still a reviewed (user) profile')
   assert.deepEqual(JSON.parse(job.icp), normalizeIcp(REVIEWED), 'stored profile identical to the reviewed one')
 })
 

@@ -15,6 +15,7 @@ import TeamPanel from './team-panel'
 import SessionsPanel from './sessions-panel'
 import ReauthGate from './reauth-gate'
 import AccountPanel from './account-panel'
+import SearchMarketPanel from './search-market-panel'
 import AuditPanel from './audit-panel'
 import { Suspense } from 'react'
 import { connection } from 'next/server'
@@ -45,7 +46,7 @@ async function SettingsBody() {
       <p className="text-sm mb-4" data-testid="business-link"><a className="underline underline-offset-4 inline-flex items-center min-h-11" href="/app/business">See and edit everything dazl knows about your business</a></p>
       <ReauthGate />
       <div id="plan" className="scroll-mt-6"><PlanPanel billingAvailable={billingAvailable()} /></div>
-      <div id="account" className="scroll-mt-6"><AccountPanel /></div>
+      <div id="account" className="scroll-mt-6"><AccountPanel /><SearchMarketPanel /></div>
       <div id="team" className="scroll-mt-6"><TeamPanel /></div>
       <div id="devices" className="scroll-mt-6"><SessionsPanel /></div>
       <div id="memory" className="scroll-mt-6"><MemoryPanel /></div>

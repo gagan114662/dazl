@@ -68,6 +68,7 @@ export function migrateAuth(d: Database.Database): void {
   // Durable audit trail (lib/audit.ts). PG: 0041_audit_events.sql.
   d.exec(AUDIT_DDL)
   d.exec(WORKSPACE_DDL)
+  try { d.exec('ALTER TABLE organizations ADD COLUMN search_market TEXT') } catch { /* exists */ }
   d.exec(INVITATIONS_DDL)
 
   d.transaction(() => { for (const s of BACKFILL_SQL) d.prepare(s).run() })()

@@ -11,18 +11,37 @@ export default function RepliesPanel() {
   // The server's current state, or null when it cannot be read. A failed reload after an action leaves the old status on
   // screen, which could still say "on" after a revoke, so that case is flagged and the controls are replaced by a notice.
   const [stale, setStale] = useState(false)
-  async function load(): Promise<boolean> {
-    try { const r = await fetch('/api/outreach/replies'); if (!r.ok) return false; setI(await r.json()); setStale(false); return true } catch { return false }
-  }
   useEffect(() => {
     let alive = true
-    void (async () => { try { const r = await fetch('/api/outreach/replies'); if (r.ok && alive) setI(await r.json()) } catch { /* no status yet: the panel stays hidden */ } })()
-    return () => { alive = false }
+    let latest = 0
+    async function load(refresh: boolean) {
+      const request = ++latest
+      try {
+        const response = await fetch('/api/outreach/replies')
+        if (!response.ok) {
+          if (refresh && alive && request === latest) setStale(true)
+          return
+        }
+        const info: Info = await response.json()
+        if (!alive || request !== latest) return
+        setI(info)
+        setStale(false)
+      } catch {
+        if (refresh && alive && request === latest) setStale(true)
+      }
+    }
+    void load(false)
+    const refresh = () => void load(true)
+    window.addEventListener('reply-reading-updated', refresh)
+    return () => {
+      alive = false
+      window.removeEventListener('reply-reading-updated', refresh)
+    }
   }, [])
   async function act(action: string, version?: string) {
     const res = await performReplyAction(fetch, action, version ?? i?.consent.version)
     setMsg(res.message)
-    if (!(await load())) setStale(true)
+    window.dispatchEvent(new Event('reply-reading-updated'))
   }
   if (!i || !i.available) return null
   const state = replyReadingState(i)

@@ -252,7 +252,7 @@ export function resolveStructuredDate(blocks: string[] | undefined, company: str
 
 // Bounded finishing pass for undated candidates: at most `max` of them, one fetch each (the verifier's cached page, so normally none). Mutates the candidate: event_date and a timing_note
 // that says where the date came from. It decides nothing about the window - the caller's window gate judges the new date like any other.
-export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | null; event_date_proof_note?: string | null }>(
+export async function finishUndatedLeads<T extends { company: string; signal: string; excerpt: string; source_url: string; event_date: string | null; timing_note?: string | null; event_date_proof?: 'page_bound' | 'ats_structured' | 'page_structured' | null; event_date_proof_note?: string | null }>(
   leads: T[], fetchPage: (url: string) => Promise<{ structured?: string[]; text?: string; published?: string | null } | { fail: string } | null>, max = 6, where: string[] = [], request?: string | null,
 ): Promise<{ company: string; date: string; kind: DateKind | 'OwnPost'; url: string }[]> {
   const done: { company: string; date: string; kind: DateKind | 'OwnPost'; url: string }[] = []

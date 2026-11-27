@@ -6,9 +6,13 @@ import type { Db } from '../db/client.ts'
 import { READ_CONSENT_VERSION } from './read-consent.ts'
 import { readGmailStatus } from '../gmail/oauth.ts'
 
-export async function replyReadingOn(db: Db, tenantId: string): Promise<boolean> {
+export async function hasReadConsentDb(db: Db, tenantId: string): Promise<boolean> {
   const consent = await db.get<{ version: string }>('SELECT version FROM mail_read_consent WHERE tenant_id = ?', [tenantId])
-  if (consent?.version !== READ_CONSENT_VERSION) return false
+  return consent?.version === READ_CONSENT_VERSION
+}
+
+export async function replyReadingOn(db: Db, tenantId: string): Promise<boolean> {
+  if (!(await hasReadConsentDb(db, tenantId))) return false
   const g = await readGmailStatus(db, tenantId)
   return !!g && g.read_granted && g.status === 'active'
 }

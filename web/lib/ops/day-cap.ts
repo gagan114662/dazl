@@ -2,7 +2,7 @@
 // lib/llm/spend-pool.ts windowCap) in an env file, without touching any other entry or setting. Pure: the operator
 // script (scripts/set-day-cap.mts) reads and writes the file. The per-scan cap (DAZL_SCAN_CAP_CAD, CAD 5) is separate and
 // unchanged: a day cap only bounds how many scans fit in a day.
-import { closeSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync, chownSync } from 'node:fs'
+import { closeSync, fchmodSync, fchownSync, fstatSync, fsyncSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { CAP_ENV, OWNER_DAY_CEILING_USD } from '../llm/spend-pool.ts'
@@ -16,12 +16,22 @@ export const APPLY_STEP = 'apply it with the prod deploy, which regenerates the 
 export function writeEnvAtomically(file: string, text: string, beforeRename: () => void = () => {}, write: (fd: number, b: Buffer, off: number) => number = (fd, b, off) => writeSync(fd, b, off, b.length - off)): void {
   const st = statSync(file)
   const tmp = join(dirname(file), `.${basename(file)}.${randomBytes(6).toString('hex')}.tmp`)
-  const fd = openSync(tmp, 'wx', st.mode & 0o777)
+  const fd = openSync(tmp, 'wx', st.mode & 0o600)
   try {
     const buf = Buffer.from(text, 'utf8')
     // a write may take fewer bytes than asked: keep writing until every byte is in, then flush
-    try { for (let off = 0; off < buf.length;) { const n = write(fd, buf, off); if (!(n > 0)) throw new Error('env write made no progress'); off += n } fsyncSync(fd) } finally { closeSync(fd) }
-    try { chownSync(tmp, st.uid, st.gid) } catch { /* not permitted as this user: the file stays the operator's */ }
+    try {
+      for (let off = 0; off < buf.length;) {
+        const n = write(fd, buf, off)
+        if (!(n > 0)) throw new Error('env write made no progress')
+        off += n
+      }
+      try { fchownSync(fd, st.uid, st.gid) } catch { /* the operator may lack permission to restore ownership */ }
+      const owner = fstatSync(fd)
+      // Only restore group and other access once the original ownership is confirmed.
+      if (owner.uid === st.uid && owner.gid === st.gid) fchmodSync(fd, st.mode & 0o777)
+      fsyncSync(fd)
+    } finally { closeSync(fd) }
     beforeRename()
     renameSync(tmp, file)
   } catch (e) { try { unlinkSync(tmp) } catch { /* already gone */ } throw e }

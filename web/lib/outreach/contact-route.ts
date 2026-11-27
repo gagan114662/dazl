@@ -65,14 +65,25 @@ export { GENERIC_LOCAL, nameBound } from './generic-inbox.ts'
 import { GENERIC_LOCAL, nameBound } from './generic-inbox.ts'
 
 
+export function recordedDeliverability(email: string, rows: Pick<RouteRow, 'kind' | 'value' | 'retrieved_at'>[]): { verdict: Verdict; at: number | null } | undefined {
+  const address = norm(email)
+  const matches = rows
+    .filter(r => r.kind === 'deliverability')
+    .map(r => { const [addr, verdict] = (r.value ?? '').toLowerCase().split('|'); return { addr, verdict: verdict as Verdict, at: r.retrieved_at ?? null } })
+    // A domain-level row (`@domain|verdict`) can only say something about the domain, never accept one mailbox.
+    .filter(r => (DELIVERABILITY_VERDICTS as readonly string[]).includes(r.verdict) && (r.addr === address || (r.addr === `@${address.split('@')[1]}` && DOMAIN_VERDICTS.has(r.verdict))))
+    .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+  const latest = matches[0]
+  // A working mail server cannot overturn a specific mailbox outcome.
+  if (latest?.verdict === 'mx_found' || latest?.verdict === 'catch_all') {
+    return matches.find(row => row.addr === address && (row.verdict === 'accepted' || row.verdict === 'rejected')) ?? latest
+  }
+  return latest
+}
+
 function deliverabilityOf(email: string, rows: RouteRow[], now: number): ContactRoute['deliverability'] {
   if (emailDomainInvalid(email)) return { state: 'domain_invalid', checkedAt: null, text: `Deliverability: fails. ${email.split('@')[1]} is not a domain that can receive mail.` }
-  const recorded = rows
-    .filter(r => r.kind === 'deliverability')
-    .map(r => { const [addr, verdict] = r.value.toLowerCase().split('|'); return { addr, verdict: verdict as Verdict, at: r.retrieved_at ?? null } })
-    // A domain-level row (`@domain|verdict`) can only say something about the domain, never accept one mailbox.
-    .filter(r => (DELIVERABILITY_VERDICTS as readonly string[]).includes(r.verdict) && (r.addr === email || (r.addr === `@${email.split('@')[1]}` && DOMAIN_VERDICTS.has(r.verdict))))
-    .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0]
+  const recorded = recordedDeliverability(email, rows)
   if (!recorded) return { state: 'not_checked', checkedAt: null, text: 'Deliverability: not checked. Being published does not prove the mailbox still works.' }
   const when = recorded.at ? ` (checked ${dayOf(recorded.at)}${daysSince(recorded.at, now) > STALE_CONTACT_DAYS ? ', over 6 months ago' : ''})` : ''
   switch (recorded.verdict) {
