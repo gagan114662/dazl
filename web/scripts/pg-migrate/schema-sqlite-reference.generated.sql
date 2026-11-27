@@ -17,6 +17,11 @@ CREATE TABLE apollo_credit_ledger (
   PRIMARY KEY (tenant_id, lead_id)
 );
 
+CREATE TABLE apollo_credit_total (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  used INTEGER CHECK (used >= 0)
+);
+
 CREATE TABLE app_leases (
       name TEXT PRIMARY KEY,
       owner TEXT NOT NULL,

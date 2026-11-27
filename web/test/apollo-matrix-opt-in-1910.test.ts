@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
+import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 
 function dryWithCap(cap: string, ...args: string[]) {
   return spawnSync(process.execPath, [
@@ -43,7 +44,8 @@ test('#1910 matrix dry mode reports the bounded call count from an evidence snap
   const dir = mkdtempSync(join(tmpdir(), 'apollo-dry-'))
   try {
     const dbPath = join(dir, 'ledger.sqlite')
-    new Database(dbPath).close()
+    const setup = new Database(dbPath)
+    try { migrateAllSqlite(setup) } finally { setup.close() }
     const input = join(dir, 'scan.json')
     const evidence = { first: 'Casey', last: 'Olsen', confirmedDomain: 'example.test',
       dayVerified: true, otherwiseReady: true, ownSiteRead: 'none_published' }
@@ -57,7 +59,8 @@ test('#1910 matrix dry mode reports the bounded call count from an evidence snap
     assert.match(result.stdout, /Apollo calls planned: 1/)
     const db = new Database(dbPath, { readonly: true })
     try {
-      assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name = 'apollo_credit_ledger'").get(), undefined)
+      assert.equal(db.prepare('SELECT COUNT(*) FROM apollo_credit_ledger').pluck().get(), 0)
+      assert.equal(db.prepare('SELECT used FROM apollo_credit_total').pluck().get(), 0)
     } finally { db.close() }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

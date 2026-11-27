@@ -6,12 +6,17 @@ import test from 'node:test'
 import Database from 'better-sqlite3'
 import { matchReadyApolloBuyer, planApolloBuyerMatches, type ApolloBuyerEvidence } from '../lib/enrich/apollo-ready-match.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
-import { reserveApolloLead } from '../lib/enrich/apollo-credit-ledger.ts'
+import { asDb, pgDb, type Db } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { deleteTenant } from '../lib/tenant/lifecycle.ts'
+import { freshSchema, PG_URL, pgSkip } from './helpers/pg-test.ts'
+import { planApolloReservations, reserveApolloLead } from '../lib/enrich/apollo-credit-ledger.ts'
 
 test('#1910 Apollo refuses when off and admits only one lookup per lead across restarts and tenants', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'apollo-ledger-'))
   const path = join(directory, 'test.db')
   let db = new Database(path)
+  migrateAllSqlite(db)
   try {
     assert.equal(await reserveApolloLead(db, 'tenant-a', 'first', {}, { id: 'scan', limit: 2 }), false)
     assert.equal(await reserveApolloLead(db, 'tenant-a', 'first', { APOLLO_CREDIT_CAP: '1.5' }, { id: 'scan', limit: 2 }), false)
@@ -204,4 +209,105 @@ test('#1910 workspace credit refusal blocks the pilot before it dispatches or co
     assert.deepEqual(dispatched, ['first'])
     assert.deepEqual(db.prepare('SELECT lead_id FROM apollo_credit_ledger').pluck().all(), ['first'])
   } finally { db.close() }
+})
+
+const pilotCap = { APOLLO_CREDIT_CAP: '1' }
+const pilotScan = { id: 'test-scan', limit: 2 }
+
+async function reserveThenErase(db: Db) {
+  assert.equal(await reserveApolloLead(db, 'tenant-a', 'lead-a', pilotCap, pilotScan), true)
+  assert.equal(await reserveApolloLead(db, 'tenant-b', 'lead-b', pilotCap, pilotScan), false)
+  const erased = await deleteTenant(db, 'tenant-a', { policy: { suppressions: 'erase' }, requestedBy: 'synthetic test' })
+  assert.equal(erased.state, 'completed')
+  assert.deepEqual(await db.all('SELECT tenant_id FROM apollo_credit_ledger WHERE tenant_id = ?', ['tenant-a']), [])
+}
+
+async function assertCapSurvives(db: Db) {
+  assert.equal(await reserveApolloLead(db, 'tenant-b', 'lead-b', pilotCap, pilotScan), false)
+  assert.deepEqual(await planApolloReservations(db, 'tenant-b', ['lead-b'], pilotCap, pilotScan), [])
+}
+
+async function assertAtomicReservations(one: Db, two: Db, rejectTally: () => void | Promise<unknown>) {
+  const cap = { APOLLO_CREDIT_CAP: '2' }
+  const admit = (db: Db, tenant: string) => reserveApolloLead(db, tenant, 'shared-lead', cap, pilotScan)
+  const results = await Promise.all([admit(one, 'tenant-b'), admit(two, 'tenant-c')])
+  assert.equal(results.filter(Boolean).length, 1)
+  const winner = results[0] ? 'tenant-b' : 'tenant-c'
+  const extended = { APOLLO_CREDIT_CAP: '3' }
+  assert.equal(await reserveApolloLead(one, winner, 'shared-lead', extended, pilotScan), false)
+  assert.equal(Number((await one.get<{ used: number }>('SELECT used FROM apollo_credit_total'))?.used), 2)
+  await rejectTally()
+  assert.equal(await reserveApolloLead(two, 'tenant-d', 'other-lead', extended, pilotScan), false)
+  assert.deepEqual(await two.all('SELECT lead_id FROM apollo_credit_ledger WHERE tenant_id = ?', ['tenant-d']), [])
+  assert.equal(Number((await two.get<{ used: number }>('SELECT used FROM apollo_credit_total'))?.used), 2)
+}
+
+test('#1910 SQLite lifetime cap survives tenant deletion and reopening', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'apollo-erasure-'))
+  const path = join(dir, 'pilot.sqlite')
+  let db = new Database(path)
+  try {
+    migrateAllSqlite(db)
+    await reserveThenErase(asDb(db))
+    db.close()
+    db = new Database(path)
+    migrateAllSqlite(db)
+    await assertCapSurvives(asDb(db))
+    const second = new Database(path)
+    try {
+      await assertAtomicReservations(asDb(db), asDb(second), () => {
+        db.exec("CREATE TRIGGER reject_pilot_tally BEFORE UPDATE ON apollo_credit_total BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+      })
+    } finally { second.close() }
+  } finally {
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#1910 PostgreSQL lifetime cap survives tenant deletion and reconnecting', { skip: pgSkip }, async () => {
+  const schema = await freshSchema()
+  const options = { connectionString: PG_URL!, searchPath: schema.schema }
+  let db = pgDb(options)
+  try {
+    await runPgMigrations(db.pool)
+    await reserveThenErase(db)
+    await db.pool.end()
+    db = pgDb(options)
+    await assertCapSurvives(db)
+    const second = pgDb(options)
+    try {
+      await assertAtomicReservations(db, second, () =>
+        db.pool.query('ALTER TABLE apollo_credit_total ADD CHECK (used <= 2)'))
+    } finally { await second.pool.end() }
+  } finally {
+    await db.pool.end()
+    await schema.drop()
+  }
+})
+
+test('#1910 SQLite upgrade fails closed when a legacy ledger may have lost receipts', async () => {
+  const db = new Database(':memory:')
+  try {
+    db.exec(`CREATE TABLE apollo_credit_ledger (tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+      scan_id TEXT NOT NULL, credit INTEGER NOT NULL DEFAULT 1, result TEXT NOT NULL DEFAULT 'reserved',
+      PRIMARY KEY (tenant_id, lead_id))`)
+    migrateAllSqlite(db)
+    await assertCapSurvives(asDb(db))
+  } finally { db.close() }
+})
+
+test('#1910 PostgreSQL upgrade fails closed when a legacy ledger may have lost receipts', { skip: pgSkip }, async () => {
+  const schema = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema.schema })
+  try {
+    await db.pool.query(`CREATE TABLE apollo_credit_ledger (tenant_id TEXT NOT NULL, lead_id TEXT NOT NULL,
+      scan_id TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 1, result TEXT NOT NULL DEFAULT 'reserved',
+      PRIMARY KEY (tenant_id, lead_id))`)
+    await runPgMigrations(db.pool)
+    await assertCapSurvives(db)
+  } finally {
+    await db.pool.end()
+    await schema.drop()
+  }
 })

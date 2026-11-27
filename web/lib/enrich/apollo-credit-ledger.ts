@@ -12,6 +12,11 @@ export const APOLLO_CREDIT_LEDGER_SCHEMA = `CREATE TABLE IF NOT EXISTS apollo_cr
   PRIMARY KEY (tenant_id, lead_id)
 )`
 
+export const APOLLO_CREDIT_TOTAL_SCHEMA = `CREATE TABLE apollo_credit_total (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  used INTEGER CHECK (used >= 0)
+)`
+
 export const APOLLO_PILOT_MAX_CREDITS = 50
 
 export function apolloCreditCap(env: Env): number {
@@ -39,12 +44,14 @@ export async function reserveApolloLead(
     return await asDb(store).tx(function* (tx) {
       // SQLite's write transaction serializes reservations. Lock across tenants in Postgres too.
       if (tx.kind === 'pg') yield* tx.get("SELECT pg_advisory_xact_lock(hashtext('apollo-credit-ledger')) AS locked")
-      if (tx.kind === 'sqlite') yield* tx.run(APOLLO_CREDIT_LEDGER_SCHEMA)
       const result = yield* tx.run(`INSERT INTO apollo_credit_ledger (tenant_id, lead_id, scan_id)
-        SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM apollo_credit_ledger) < ?
+        SELECT ?, ?, ? WHERE (SELECT used FROM apollo_credit_total WHERE singleton = 1) < ?
         AND (SELECT COUNT(*) FROM apollo_credit_ledger WHERE tenant_id = ? AND scan_id = ?) < ?
         ON CONFLICT (tenant_id, lead_id) DO NOTHING`, [tenantId, leadId, scan.id, cap, tenantId, scan.id, scan.limit])
-      return result.changes === 1
+      if (result.changes !== 1) return false
+      const tally = yield* tx.run('UPDATE apollo_credit_total SET used = used + 1 WHERE singleton = 1 AND used < ?', [cap])
+      if (tally.changes !== 1) throw new Error('Apollo lifetime reservation was not recorded')
+      return true
     })
   } catch {
     return false
@@ -66,17 +73,20 @@ export async function planApolloReservations(
 ): Promise<string[]> {
   const cap = apolloCreditCap(env)
   if (!cap || !tenantId || !validScan(scan) || !leadIds.length) return []
-  let reservations: { tenant_id: string; lead_id: string; scan_id: string }[]
+  let rows: { used: number | string | null; lead_id: string | null; scan_id: string | null }[]
   try {
-    reservations = await asDb(store).all('SELECT tenant_id, lead_id, scan_id FROM apollo_credit_ledger')
+    rows = await asDb(store).all(`SELECT t.used, l.lead_id, l.scan_id FROM apollo_credit_total t
+      LEFT JOIN apollo_credit_ledger l ON l.tenant_id = ? WHERE t.singleton = 1`, [tenantId])
   } catch (error) {
     const e = error as { code?: string; message?: string }
-    if (e.code !== '42P01' && !/^no such table: apollo_credit_ledger$/i.test(e.message ?? '')) throw error
-    reservations = []
+    if (e.code === '42P01' || /^no such table: apollo_credit_(ledger|total)$/i.test(e.message ?? '')) return []
+    throw error
   }
-  const own = reservations.filter(row => row.tenant_id === tenantId)
-  const available = Math.max(0, Math.min(cap - reservations.length,
-    scan.limit - own.filter(row => row.scan_id === scan.id).length))
-  const used = new Set(own.map(row => row.lead_id))
-  return [...new Set(leadIds)].filter(id => id && !used.has(id)).slice(0, available)
+  if (rows[0]?.used == null) return []
+  const used = Number(rows[0].used)
+  if (!Number.isSafeInteger(used) || used < 0) return []
+  const available = Math.max(0, Math.min(cap - used,
+    scan.limit - rows.filter(row => row.scan_id === scan.id).length))
+  const seen = new Set(rows.map(row => row.lead_id))
+  return [...new Set(leadIds)].filter(id => id && !seen.has(id)).slice(0, available)
 }
