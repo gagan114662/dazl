@@ -173,23 +173,17 @@ export async function timingProofGapsDb(
 
   const idsSql = db.kind === 'pg' ? 'SELECT json_array_elements_text(CAST(? AS json))' : 'SELECT value FROM json_each(?)'
   const scoped = `j.user_id = ? AND j.id = ? AND l.id IN (${idsSql})`
-  const rows = await db.all<LeadRow & { contact: string | null }>(
-    `SELECT l.id, l.contact, l.source_url, l.company_domain, l.event_date, l.event_date_proof, l.signal,
-       l.signal_kind, l.review_reason, l.quarantined_at, l.confidence, j.query, j.icp, j.run_budget
-       FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE ${scoped}`,
-    [tenant, jobId, JSON.stringify([...gaps.keys()])],
-  )
-  const eligible = rows.filter(row => {
-    const gap = eventGap(row, now)
-    gaps.set(row.id, gap)
-    return gap === null
-  })
-  if (!eligible.length) return gaps
-
+  type BatchLead = LeadRow & { contact: string | null }
   type Evidence = SiteRow & ActRow & { lead_id: string; retrieved_at: number | null }
-  let evidence: Evidence[]
-  try {
-    evidence = await db.all<Evidence>(
+  const { rows, eligible, evidence } = await db.tx(function* (tx) {
+    const rows = yield* tx.all<BatchLead>(
+      `SELECT l.id, l.contact, l.source_url, l.company_domain, l.event_date, l.event_date_proof, l.signal,
+         l.signal_kind, l.review_reason, l.quarantined_at, l.confidence, j.query, j.icp, j.run_budget
+         FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE ${scoped}`,
+      [tenant, jobId, JSON.stringify([...gaps.keys()])],
+    )
+    const eligible = rows.filter(row => eventGap(row, now) === null)
+    const evidence = eligible.length ? yield* tx.all<Evidence>(
       `SELECT e.lead_id, e.connector, e.kind, e.value, e.label, e.source_url, e.retrieved_at
        FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
        WHERE ${scoped} AND e.tenant_id = ? AND (
@@ -198,11 +192,11 @@ export async function timingProofGapsDb(
          OR e.connector = ? OR (e.connector = ? AND e.kind = ?)
        ) ORDER BY e.insert_seq`,
       [tenant, jobId, JSON.stringify(eligible.map(row => row.id)), tenant, ACTIONABLE_CONNECTOR, TIMING_PROOF_CONNECTOR, TIMING_PROOF_KIND],
-    )
-  } catch {
-    for (const row of eligible) gaps.set(row.id, 'domain_unconfirmed')
-    return gaps
-  }
+    ) : []
+    return { rows, eligible, evidence }
+  }, 'serializable')
+  for (const row of rows) gaps.set(row.id, eventGap(row, now))
+
   const byLead = new Map<string, Evidence[]>()
   for (const row of evidence) {
     const group = byLead.get(row.lead_id)
