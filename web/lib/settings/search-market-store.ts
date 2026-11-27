@@ -13,10 +13,10 @@ export async function readAccountMarket(db: Db, tenantId: string): Promise<Searc
   return { country: isoCountry(market.country), language: marketLanguage(market.language) }
 }
 
-export async function captureAccountMarket(db: Db, tenantId: string, locale: unknown): Promise<void> {
+export async function captureAccountMarket(db: Db, tenantId: string, locale: unknown, actorId: string): Promise<void> {
   const market = browserMarket(locale)
   if (!market.country && !market.language) return
-  await db.run('UPDATE organizations SET search_market = ? WHERE id = ? AND search_market IS NULL', [JSON.stringify(market), tenantId])
+  await db.run("UPDATE organizations SET search_market = ? WHERE id = ? AND search_market IS NULL AND kind = 'personal' AND created_by = ?", [JSON.stringify(market), tenantId, actorId])
 }
 
 export async function writeAccountMarket(db: Db, tenantId: string, market: SearchMarket): Promise<void> {

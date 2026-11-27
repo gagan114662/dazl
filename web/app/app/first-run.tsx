@@ -183,16 +183,22 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       return
     }
     if (firstStatus === 'failed') return
-    const poll = () => void fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => {
-      if (!j?.status) return
+    let active = true
+    let issued = 0
+    let applied = 0
+    const poll = async () => {
+      const sequence = ++issued
+      const j = await fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null)
+      if (!active || sequence <= applied || !j?.status) return
+      applied = sequence
       const report = j.run_report?.at(-1)
       const marketNotice = report?.attempt === j.attempts ? report?.market_notice : null
       setFirst(f => f && f.id === firstId ? { ...f, status: j.status, marketNotice, f5: j.first5 && typeof j.first5 === 'object' ? j.first5 : f.f5 } : f)
-    })
+    }
     // The first read right away (the live view should not sit empty for a whole interval), then every few seconds.
     const t0 = setTimeout(poll, 400)
     const t = setInterval(poll, POLL_MS)
-    return () => { clearTimeout(t0); clearInterval(t) }
+    return () => { active = false; clearTimeout(t0); clearInterval(t) }
   }, [firstId, firstStatus])
 
   if (ready === 'loading') return null

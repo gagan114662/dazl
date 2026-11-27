@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
   if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   const db = await getDb()
   if (typeof body.locale === 'string') {
-    await captureAccountMarket(db, user.tenantId, body.locale)
+    await captureAccountMarket(db, user.tenantId, body.locale, user.actorId)
   } else {
     const country = isoCountry(body.country)
     const language = marketLanguage(body.language)

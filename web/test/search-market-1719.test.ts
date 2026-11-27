@@ -76,8 +76,8 @@ test('real runner uses per-tenant market hints and preserves the no-market call 
   const research = async () => ({ text: '[]', citedUrls: [] })
   const provider = { complete, research }
   async function scan(tenant: string, query: string, locale?: string) {
-    raw.prepare("INSERT INTO organizations (id, kind, created_by, created_at) VALUES (?, 'team', ?, 0)").run(tenant, tenant)
-    if (locale) await captureAccountMarket(db, tenant, locale)
+    raw.prepare("INSERT INTO organizations (id, kind, created_by, created_at) VALUES (?, 'personal', ?, 0)").run(tenant, tenant)
+    if (locale) await captureAccountMarket(db, tenant, locale, tenant)
     saveKey(raw, tenant, 'anthropic', 'sk-ant-api03-fixture', master)
     const id = createQueryJob(raw, tenant, { query, icp: JSON.stringify({ summary: 'Manufacturers adding warehouses' }) })
     urls.length = 0
@@ -110,7 +110,7 @@ test('real runner uses per-tenant market hints and preserves the no-market call 
   assert.deepEqual(await readAccountMarket(db, 'language'), { country: null, language: 'pt' })
 
   await writeAccountMarket(db, 'account', { country: 'BE', language: 'nl' })
-  await captureAccountMarket(db, 'account', 'en-US')
+  await captureAccountMarket(db, 'account', 'en-US', 'account')
   assert.deepEqual(await readAccountMarket(db, 'account'), { country: 'BE', language: 'nl' })
   assert.deepEqual(await readAccountMarket(db, 'explicit'), { country: 'CH', language: 'fr' })
 })
@@ -212,4 +212,50 @@ test('#1719: status distinguishes a market notice from recorded fetch outcomes',
   assert.equal(writeRunReport(raw, job, 1, report, { DAZL_RUN_REPORT: '1' }), true)
   assert.equal((await readScanStatus(db, 'tenant', job))?.not_recorded.includes('per_url_fetch_outcomes'), false)
   assert.equal(await readScanStatus(db, 'other-tenant', job), undefined)
+})
+
+test('#1719: first-play polling cannot restore an older result after completion', async () => {
+  const source = readFileSync(new URL('../app/app/first-run.tsx', import.meta.url), 'utf8')
+  const start = source.indexOf("    if (firstStatus === 'failed') return")
+  const end = source.indexOf('  }, [firstId, firstStatus])', start)
+  assert.ok(start >= 0 && end > start)
+  let read: (() => Promise<void>) | undefined
+  let current = { id: 'job', status: 'running', marketNotice: null as string | null }
+  const older = Promise.withResolvers<unknown>()
+  const newer = Promise.withResolvers<unknown>()
+  const responses = [older, newer]
+  runInNewContext(`(() => { ${source.slice(start, end)} })()`, {
+    firstStatus: 'running', firstId: 'job', POLL_MS: 100,
+    fetch: async () => ({ ok: true, json: () => responses.shift()!.promise }),
+    setFirst: (update: (state: typeof current) => typeof current) => { current = update(current) },
+    setTimeout: (poll: typeof read) => { read = poll },
+    setInterval: () => undefined,
+  })
+  assert.ok(read)
+  const firstPoll = read()
+  const secondPoll = read()
+  newer.resolve({ status: 'done', attempts: 1, run_report: [{ attempt: 1, market_notice: MARKET_NOTICE }] })
+  await secondPoll
+  older.resolve({ status: 'running', attempts: 1, run_report: [] })
+  await firstPoll
+  assert.equal(current.status, 'done')
+  assert.equal(current.marketNotice, MARKET_NOTICE)
+})
+
+test('#1719: browser locale only initializes the actor’s personal workspace', async t => {
+  const raw = new Database(':memory:')
+  t.after(() => raw.close())
+  migrateAuth(raw)
+  const db = sqliteDb(raw)
+  const org = raw.prepare('INSERT INTO organizations (id, kind, created_by, created_at) VALUES (?, ?, ?, 0)')
+  org.run('team', 'team', 'owner')
+  org.run('personal', 'personal', 'owner')
+  await captureAccountMarket(db, 'team', 'nl-BE', 'invited-admin')
+  assert.equal(await readAccountMarket(db, 'team'), null)
+  await captureAccountMarket(db, 'personal', 'nl-BE', 'invited-admin')
+  assert.equal(await readAccountMarket(db, 'personal'), null)
+  await captureAccountMarket(db, 'personal', 'fr-CH', 'owner')
+  assert.deepEqual(await readAccountMarket(db, 'personal'), { country: 'CH', language: 'fr' })
+  await writeAccountMarket(db, 'team', { country: 'BE', language: 'nl' })
+  assert.deepEqual(await readAccountMarket(db, 'team'), { country: 'BE', language: 'nl' })
 })
