@@ -266,6 +266,7 @@ type HopPolicy = {
 
 export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: HopPolicy): Promise<Page | FetchFail> {
   const posting = atsPostingRef(rawUrl)
+  // This includes EU Lever postings at https://jobs.eu.lever.co, whose records use the EU API.
   if (posting && hopPolicy?.preferLiteralAts) {
     const literal = await fetchPageRead(rawUrl, render, signal, hopPolicy, null)
     if ('text' in literal || signal?.aborted) return literal

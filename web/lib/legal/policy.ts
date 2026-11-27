@@ -94,6 +94,11 @@ export const API_HOSTS: Record<string, { name: string; role: HostRole; off?: key
   'api.hubapi.com': { name: 'HubSpot', role: 'customer_provider' },
   'api.pipedrive.com': { name: 'Pipedrive', role: 'customer_provider' },
   'api.github.com': { name: 'GitHub', role: 'public_source' },
+  'boards.greenhouse.io': { name: 'Greenhouse job posting pages', role: 'public_source' }, // board URLs use boards-api.greenhouse.io; posting URLs are fetched directly only for cited-email verification
+  'job-boards.greenhouse.io': { name: 'Greenhouse job posting pages', role: 'public_source' }, // posting URLs use boards-api.greenhouse.io; fetched directly only for cited-email verification
+  'jobs.lever.co': { name: 'Lever job posting pages', role: 'public_source' }, // posting URLs use api.lever.co; fetched directly only for cited-email verification
+  'jobs.eu.lever.co': { name: 'Lever job posting pages', role: 'public_source' }, // posting URLs use api.eu.lever.co; fetched directly only for cited-email verification
+  'jobs.ashbyhq.com': { name: 'Ashby job posting pages', role: 'public_source' }, // posting URLs use api.ashbyhq.com; fetched directly only for cited-email verification
   'boards-api.greenhouse.io': { name: 'Greenhouse job boards', role: 'public_source' },
   'api.lever.co': { name: 'Lever job boards', role: 'public_source' },
   'api.eu.lever.co': { name: 'Lever job boards', role: 'public_source' }, // EU-hosted Lever boards (lib/sources/ats-board-api.ts)
@@ -132,10 +137,6 @@ export const NON_REQUEST_HOSTS: Record<string, string> = {
   'www.linkedin.com': 'constructed profile/company links; LinkedIn pages are read only in the customer\'s own browser by the dazl Connect extension, never by this server',
   'www.youtube.com': 'evidence links to videos; data comes from the YouTube Data API (www.googleapis.com)',
   'news.ycombinator.com': 'evidence and directory links; search goes through hn.algolia.com',
-  'boards.greenhouse.io': 'board URLs use boards-api.greenhouse.io; posting URLs are fetched directly only for cited-email verification',
-  'job-boards.greenhouse.io': 'posting URLs use boards-api.greenhouse.io; fetched directly only for cited-email verification',
-  'jobs.lever.co': 'posting URLs use api.lever.co; fetched directly only for cited-email verification (EU: jobs.eu.lever.co)',
-  'jobs.ashbyhq.com': 'posting URLs use api.ashbyhq.com; fetched directly only for cited-email verification',
   'cal.com': 'booking-link detection pattern, never fetched',
   'calendly.com': 'booking-link detection pattern, never fetched',
   'www.crtc.gc.ca': 'guidance link in a comment',
