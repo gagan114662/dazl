@@ -12,6 +12,7 @@ export async function GET(req?: NextRequest) {
   // the tenant's latest, as before (the Leads page restores its last profile from this).
   const jobId = req?.nextUrl.searchParams.get('job_id') ?? null
   const job = jobId ? await jobQueryIcp(await getDb(), user.tenantId, jobId) : await latestQueryJob(await getDb(), user.tenantId)
+  if (jobId && !job) return NextResponse.json({ error: 'not_found' }, { status: 404 })
   if (!job) return NextResponse.json({ query: null, icp: null, icp_source: null })
   return NextResponse.json({ query: job.query, icp: shownIcp(job.icp), icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 || job.icp_inferred === 0 ? 'carried' : job.icp_inferred === 4 ? 'user' : null })
 }

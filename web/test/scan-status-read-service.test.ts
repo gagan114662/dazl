@@ -49,7 +49,10 @@ bothEngines('whole scan status: tenant scope, same-id poison other store, record
       assert.deepEqual(active?.source_runs, (sourceRuns(raw, 'A', job) as Record<string, unknown>[]).map(({ job_id: omit, ...r }) => { void omit; return r }))
       assert.deepEqual(active?.run_report, runReportFor(raw, 'A', job))
     }
-    const report = { resolution: { candidates: 2, resolved: 1, unresolved: 1, by_reason: { held: 1 } } }
+    const report = {
+      resolution: { candidates: 2, resolved: 1, unresolved: 1, by_reason: { held: 1 } },
+      urls: [{ url: 'https://example.test/news', hit_date: null, walled: false, selected: true, tinyfish_text_chars: null, own_fetch: 'ok' }],
+    }
     await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', [job, JSON.stringify(report)])
     const estimate = estimateRun({ budget: { first5: true, paid_fallback: false, credit_enrichment: false }, payer: 'you' })
     await db.run('UPDATE scan_jobs SET estimate = ?, spend_reserved_usd = 0 WHERE id = ?', [JSON.stringify(estimate), job])
