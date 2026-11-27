@@ -213,6 +213,13 @@ const collectHosts = (src: string): Set<string> => {
   return out
 }
 
+test('ATS posting hosts read for cited-email verification are disclosed public sources', () => {
+  for (const host of ['boards.greenhouse.io', 'job-boards.greenhouse.io', 'jobs.lever.co', 'jobs.eu.lever.co', 'jobs.ashbyhq.com']) {
+    assert.equal(API_HOSTS[host]?.role, 'public_source', host)
+    assert.equal(Object.hasOwn(NON_REQUEST_HOSTS, host), false, host)
+  }
+})
+
 test('every third-party host the code names is disclosed or explicitly not a request; no entry is stale', () => {
   const files: string[] = []
   const walk = (dir: string) => {
