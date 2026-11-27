@@ -12,10 +12,10 @@ const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
 const job = (o: Partial<JourneyJob> = {}): JourneyJob => ({ id: 'a'.repeat(24), status: 'done', error: null, query: 'Dental owners in Ohio', csv_domain: null, created_at: 100, candidates: 3, verified: 1, needs_review: 1, dropped: 1, lead_count: 2, test_only: false, ...o })
 const profile = { sells: 'Booking software', website: 'brightsmile.example' }
 
-test('a verified, dated, in-window lead is an opportunity; its contact status is reported, not required', () => {
+test('a verified, dated, in-window lead needs a published email to be an opportunity', () => {
   const s = previewSplit([lead(), lead({ id: 'l2', contact: null })])
-  assert.deepEqual(s.opportunities.map(l => [l.id, l.contactReady]), [['l1', true], ['l2', false]])
-  assert.equal(s.held.length, 0)
+  assert.deepEqual(s.opportunities.map(l => [l.id, l.contactReady]), [['l1', true]])
+  assert.deepEqual(s.held.map(({ lead, reason }) => [lead.id, reason]), [['l2', 'no published email']])
 })
 
 test('wrong-company, undated, out-of-window, unverified, rejected and in-review leads never enter the preview', () => {

@@ -17,6 +17,13 @@ const lead = (o: Partial<PreviewLead> = {}): PreviewLead => ({
   company_domain: 'exampledental.example', contact: null, quarantined_at: null, confidence: 90, human_confirmed_at: null,
   currentness_held: false, window_held: false, enrichments: ownSiteBuyerRows('exampledental.example'), ...o,   // #1037: names its buyer on its own site
 })
+function withPublishedEmail(l: PreviewLead): PreviewLead {
+  const domain = l.company_domain
+  return { ...l, enrichments: [...(l.enrichments ?? []), {
+    connector: 'sitecrawl', kind: 'email', value: `buyer@${domain}`, label: null,
+    source_url: `https://${domain}/contact`,
+  }] }
+}
 const nyc = [lead({ id: 'a', review_reason: 'counterparty_signal', window_held: true }), lead({ id: 'b', review_reason: 'outside_window_undated', window_held: true })]
 const london = [lead({ id: 'c', review_reason: 'counterparty_signal' }), lead({ id: 'd', review_reason: 'blocked_by_site', window_held: true })]
 const job: JourneyJob = { id: 'a'.repeat(24), status: 'done', error: null, query: 'Dental owners in NYC opening a second office, past 90 days', csv_domain: null, created_at: 100, candidates: 2, verified: 0, needs_review: 2, dropped: 0, lead_count: 2, test_only: false }
@@ -35,7 +42,7 @@ test('only a hold a source check can settle, outside any time-window hold, is ac
   for (const r of ['counterparty_signal', 'job_closed', 'location_mismatch', 'sales_hiring_check_failed', 'something_new']) assert.equal(heldState(lead({ ...dated, review_reason: r }))?.state, 'research', r)
   assert.equal(heldState(lead({ ...dated, review_reason: 'quote_unconfirmed', window_held: true }))?.state, 'research', 'older than the window: research')
   assert.equal(heldState(lead({ quarantined_at: 1 }))?.state, 'rejected')
-  assert.equal(heldState(lead({ ...dated })), null, 'a ready lead is not held')
+  assert.equal(heldState(withPublishedEmail(lead({ ...dated }))), null, 'a ready lead is not held')
 })
 
 test('NYC and London shaped runs: zero actionable review, a research-only stage, no review CTA', () => {
@@ -155,7 +162,7 @@ test('#352 the original gap: a visible no_event_evidence lead is actionable revi
 test('#352 malformed reasons fail closed to research on Home and never crash either surface', () => {
   for (const r of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', '', ' quote_unconfirmed', 'QUOTE_UNCONFIRMED', 'x'.repeat(100_000), '\u0000', '\ud800bad']) {
     const l = lead({ review_reason: r, event_date: '2026-10-01', date_status: 'unverified', day_verified: true })
-    const h = heldState(l)
+    const h = heldState(r === '' ? withPublishedEmail(l) : l)
     if (r === '') { assert.equal(h, null, 'an empty reason is no review reason: the lead is not held by it'); continue }
     assert.equal(h?.state, 'research', JSON.stringify(r.slice(0, 20)))
     assert.equal(typeof researchCause(l), 'string', 'the cause is one of the named causes, never an Object.prototype member')
