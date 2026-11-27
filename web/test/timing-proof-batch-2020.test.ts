@@ -53,19 +53,13 @@ test('timing proof batch matches scalar decisions with constant reads and job/te
     all: (sql, params) => { reads++; return store.all(sql, params) },
     get: (sql, params) => { reads++; return store.get(sql, params) },
   }
-  const batch = (timing as typeof timing & {
-    timingProofGapsDb?: (db: Db, tenant: string, jobId: string, ids: string[], now: Date) =>
-      Promise<Map<string, timing.TimingProofGap | null>>
-  }).timingProofGapsDb
-  assert.equal(typeof batch, 'function', 'the batch reader must exist')
-  if (!batch) return
   for (const n of [20, 40]) {
     reads = 0
     const requested = [...ids.slice(0, n), 'other-job', 'other-tenant', 'absent']
-    assert.deepEqual(await batch(counted, job.user_id, job.id, requested, now), expected(requested))
+    assert.deepEqual(await timing.timingProofGapsDb(counted, job.user_id, job.id, requested, now), expected(requested))
     assert.equal(reads, 2, 'one lead read and one evidence read regardless of batch size')
   }
   reads = 0
-  assert.deepEqual(await batch(counted, 'foreign', job.id, ids, now), new Map(ids.map(id => [id, 'no_lead'])))
+  assert.deepEqual(await timing.timingProofGapsDb(counted, 'foreign', job.id, ids, now), new Map(ids.map(id => [id, 'no_lead'])))
   assert.equal(reads, 1)
 })
