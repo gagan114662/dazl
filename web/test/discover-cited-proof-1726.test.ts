@@ -53,7 +53,11 @@ for (const fixture of [
 }
 
 
-test('#1726 held Discovery lead retains the missing claim words with its source', async () => {
+for (const { label, signal, readable } of [
+  { label: 'missing words', signal: 'Opened its second factory', readable: true },
+  { label: 'long claim', signal: Array.from({ length: 32 }, (_, i) => `requirement${i}`).join(' '), readable: true },
+  { label: 'unread proof', signal: 'Opened its second factory', readable: false },
+]) test(`#1726 held Discovery evidence: ${label}`, async () => {
   const db = new Database(':memory:')
   try {
     const master = randomBytes(32)
@@ -66,7 +70,7 @@ test('#1726 held Discovery lead retains the missing claim words with its source'
     const company = 'Example Cooperative'
     const evidence = 'Example Cooperative opened its second office.'
     const [lead] = parseLeads(JSON.stringify({ leads: [{
-      company, signal: 'Opened its second factory', evidence_url: evidenceUrl, evidence_quote: evidence,
+      company, signal, evidence_url: evidenceUrl, evidence_quote: evidence,
     }] }), 1).leads
     assert.ok(lead)
     let searched = false
@@ -75,7 +79,7 @@ test('#1726 held Discovery lead retains the missing claim words with its source'
       discoverImpl: async () => {
         const leads = searched ? [] : [lead]
         searched = true
-        return { leads, seen: [{ url: evidenceUrl, title: company, text: evidence, page_age: null }],
+        return { leads, seen: [{ url: evidenceUrl, title: company, text: readable ? evidence : null, page_age: null }],
           usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 1, requests: 1, usd: 0.04 },
           stop: 'end_turn', model: 'claude-opus-5-5', note: null }
       },
@@ -85,9 +89,19 @@ test('#1726 held Discovery lead retains the missing claim words with its source'
     assert.equal(row.review_reason, 'source_review_required')
     const enrichments = enrichmentsForLeads(db, 'T', [row.id])[row.id] ?? []
     const stored = enrichments.find(entry => entry.kind === 'claim_lacks')
+    if (!readable) {
+      assert.equal(stored, undefined)
+      return
+    }
     assert.ok(stored)
-    assert.deepEqual(JSON.parse(stored.value), ['factory'])
     assert.equal(stored.source_url, evidenceUrl)
+    if (label === 'long claim') {
+      assert.match(stored.value, /^requirement0, requirement1/)
+      assert.match(stored.value, /…$/)
+      assert.ok(stored.value.length <= 254)
+    } else {
+      assert.equal(stored.value, 'factory')
+    }
   } finally {
     db.close()
   }
