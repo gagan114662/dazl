@@ -69,6 +69,28 @@ function emailClass(l: LeadRow, e: Enrichment[], published: ReturnType<typeof pu
   return 'none'
 }
 
+// A short keyword ("eu", "uk", "usa") matches only as a whole word: "eu" is not in "Reuters" or "Deutsche" (#2106). A longer keyword keeps
+// the plain substring match. A word edge is any character that is not a letter or a digit, so case and punctuation do not matter.
+const SHORT_KEYWORD = 4
+export function keywordIn(text: string, keyword: string): boolean {
+  const k = keyword.toLowerCase().trim()
+  if (!k) return false
+  if (k.length > SHORT_KEYWORD) return text.includes(k)
+  const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'u').test(text)
+}
+// The address with its host's last label removed ("https://tenders.example.eu/n/1" -> "tenders.example/n/1"); anything that is not a URL or a bare host stays as it is.
+export function withoutSuffix(address: string): string {
+  const a = address.trim()
+  if (!a) return ''
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(a) ? a : `https://${a}`)
+    const labels = u.hostname.split('.')
+    if (labels.length < 2) return a
+    return `${labels.slice(0, -1).join('.')}${/^[a-z][a-z0-9+.-]*:\/\//i.test(a) ? u.pathname + u.search : ''}`
+  } catch { return a }
+}
+
 // Percentages are of the leads the scan listed (the Leads page's own list: a poor fit is hidden, a review-lane lead is
 // counted, a rejected one is not), so a scan that found nothing reads 0%, never blank. Ready counts COMPANIES (one per
 // domain or normalised name, ready wins), like Home's tile.
@@ -93,8 +115,11 @@ export function measureCase(db: Database.Database, tenantId: string, jobId: stri
     const ec = emailClass(l, e, published[l.id], guessed[l.id] ?? [])
     if (ec === 'person') email++; else if (ec === 'guess') guess++; else if (ec === 'role') role++
     if (l.source_url && eventDayVerified({ event_date: l.event_date, event_date_proof: l.event_date_proof, signal: l.signal, signal_kind: l.signal_kind }, { now: at })) dated++
-    const text = `${l.company ?? ''} ${l.name ?? ''} ${l.signal ?? ''} ${l.evidence_excerpt ?? ''} ${l.source_url ?? ''} ${l.company_domain ?? ''}`.toLowerCase()
-    if (loc.some(k => text.includes(k)) && cat.some(k => text.includes(k))) match++
+    const words = `${l.company ?? ''} ${l.name ?? ''} ${l.signal ?? ''} ${l.evidence_excerpt ?? ''}`
+    const text = `${words} ${l.source_url ?? ''} ${l.company_domain ?? ''}`.toLowerCase()
+    // The place proxy leaves out a hostname's top-level suffix: a bare ".eu" or ".ca" says where a domain is registered, not where the buyer is (#2106).
+    const placeText = `${words} ${withoutSuffix(l.source_url ?? '')} ${withoutSuffix(l.company_domain ?? '')}`.toLowerCase()
+    if (loc.some(k => keywordIn(placeText, k)) && cat.some(k => keywordIn(text, k))) match++
     const keys = [l.company_domain ? `d:${l.company_domain.trim().toLowerCase()}` : '', company ? `n:${companyKey(company)}` : ''].filter(k => k.length > 2)
     if (!keys.length) keys.push(`id:${l.id}`)
     const why = leadHoldReason(db, tenantId, l, e, timing, at)
