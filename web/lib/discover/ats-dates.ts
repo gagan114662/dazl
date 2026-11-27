@@ -10,12 +10,15 @@ export interface AtsPosting {
   apiUrl: string
   // the field(s) that carry the published day, in order of preference, read from the API body
   read: (body: unknown) => unknown
+  // the posting's own title, so a page that embeds the record can be shown to name that posting
+  readTitle: (body: unknown) => unknown
 }
 
 export interface AtsDate {
   date: string
   sourceUrl: string
   platform: AtsPlatform
+  title?: string | null   // the posting's own title, when the reader had to bind the record to the page that embeds it
 }
 
 // A posting older than this is background, not a reason to write now (same horizon as the rest of discovery).
@@ -34,6 +37,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'greenhouse',
       apiUrl: `https://boards-api.greenhouse.io/v1/boards/${enc(seg[0])}/jobs/${seg[2]}`,
       read: j => obj(j).first_published, // an edit date (updated_at) is not a posting date
+      readTitle: j => obj(j).title,
     }
 
   if (/^jobs\.(?:eu\.)?lever\.co$/.test(host) && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
@@ -41,6 +45,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'lever',
       apiUrl: `${host === 'jobs.eu.lever.co' ? 'https://api.eu.lever.co' : 'https://api.lever.co'}/v0/postings/${enc(seg[0])}/${seg[1]}`,
       read: j => obj(j).createdAt,
+      readTitle: j => obj(j).text,
     }
 
   if (host === 'apply.workable.com' && seg.length >= 3 && seg[1] === 'j')
@@ -48,6 +53,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'workable',
       apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(seg[0])}/jobs/${enc(seg[2])}`,
       read: j => { const r = obj(j); return r.published_on ?? r.published ?? r.created_at },
+      readTitle: j => obj(j).title,
     }
   const wa = /^([a-z0-9-]+)\.workable\.com$/.exec(host)
   if (wa && seg.length >= 2 && seg[0] === 'j')
@@ -55,6 +61,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       platform: 'workable',
       apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(wa[1])}/jobs/${enc(seg[1])}`,
       read: j => { const r = obj(j); return r.published_on ?? r.published ?? r.created_at },
+      readTitle: j => obj(j).title,
     }
 
   if (host === 'jobs.ashbyhq.com' && seg.length >= 2 && /^[0-9a-f-]{36}$/i.test(seg[1]))
@@ -66,6 +73,12 @@ export function atsPosting(url: string | URL): AtsPosting | null {
         const id = seg[1]
         const hit = Array.isArray(jobs) ? jobs.map(obj).find(x => x.id === id || String(x.jobUrl ?? '').includes(id)) : null
         return obj(hit).publishedAt
+      },
+      readTitle: j => {
+        const jobs = obj(j).jobs
+        const id = seg[1]
+        const hit = Array.isArray(jobs) ? jobs.map(obj).find(x => x.id === id || String(x.jobUrl ?? '').includes(id)) : null
+        return obj(hit).title
       },
     }
 
@@ -99,6 +112,7 @@ function greenhouseEmbedPosting(url: string): AtsPosting | null {
     platform: 'greenhouse',
     apiUrl: `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(board)}/jobs/${id}`,
     read: j => obj(j).first_published,
+    readTitle: j => obj(j).title,
   }
 }
 // The day this careers page's embedded board record names for the posting the page shows.
@@ -119,9 +133,22 @@ export async function careersAtsDate(
       headers: { accept: 'application/json' },
     })
     if (!r.ok) return null
-    const date = dayOf(rec.read(await r.json()), now, maxAgeDays)
-    return date ? { date, sourceUrl: rec.apiUrl, platform: rec.platform } : null
+    const body = await r.json()
+    const date = dayOf(rec.read(body), now, maxAgeDays)
+    const title = typeof rec.readTitle(body) === 'string' ? (rec.readTitle(body) as string).trim().slice(0, 200) || null : null
+    // The record is this page's posting only when the page prints that posting's own title: one iframe on a page says nothing about
+    // which vacancy (or which event) the page is about, so an unbound record dates nothing.
+    return date && title && pageNamesTitle(html, title) ? { date, sourceUrl: rec.apiUrl, platform: rec.platform, title } : null
   } catch { return null }
+}
+
+// The page's visible words, folded the way the rest of discovery compares text (punctuation and accents are not words).
+const pageWords = (html: string): string =>
+  html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ')
+    .toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+const pageNamesTitle = (html: string, title: string): boolean => {
+  const t = pageWords(title), p = ` ${pageWords(html)} `
+  return t.length >= 4 && p.includes(` ${t} `)
 }
 
 export interface AtsList {

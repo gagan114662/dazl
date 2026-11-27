@@ -25,8 +25,8 @@ test('#2004 careers page: a Greenhouse embed names the posting record, and its d
   const rec = embeddedAtsPosting(page, CAREERS)
   assert.equal(rec?.apiUrl, 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/4012345')
   assert.equal(rec?.platform, 'greenhouse')
-  const day = await careersAtsDate(page, CAREERS, jsonFetch({ 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/4012345': { first_published: '2026-11-10T00:00:00-05:00' } }), NOW)
-  assert.deepEqual(day, { date: '2026-11-10', sourceUrl: 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/4012345', platform: 'greenhouse' })
+  const day = await careersAtsDate(page, CAREERS, jsonFetch({ 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/4012345': { first_published: '2026-11-10T00:00:00-05:00', title: 'Sales Development Representative' } }), NOW)
+  assert.deepEqual(day, { date: '2026-11-10', sourceUrl: 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/4012345', platform: 'greenhouse', title: 'Sales Development Representative' })
 })
 
 test('#2004 careers page: two different postings embedded settle nothing', async () => {
@@ -55,11 +55,12 @@ test('#2004 careers page: a page that names no board record gives nothing, and n
 })
 
 test('#2004 careers page: a record whose day is in the future or past the window gives nothing', async () => {
-  const page = html(ghEmbed('acme', '4012345'))
+  const page = html(`<h1>Sales Development Representative</h1>${ghEmbed('acme', '4012345')}`)
   const url = 'https://boards-api.greenhouse.io/v1/boards/acme/jobs/4012345'
-  assert.equal(await careersAtsDate(page, CAREERS, jsonFetch({ [url]: { first_published: '2027-01-05T00:00:00Z' } }), NOW), null, 'future')
-  assert.equal(await careersAtsDate(page, CAREERS, jsonFetch({ [url]: { first_published: '2020-01-05T00:00:00Z' } }), NOW), null, 'stale')
-  assert.equal(await careersAtsDate(page, CAREERS, jsonFetch({ [url]: {} }), NOW), null, 'no date field')
+  const title = 'Sales Development Representative'
+  assert.equal(await careersAtsDate(page, CAREERS, jsonFetch({ [url]: { first_published: '2027-01-05T00:00:00Z', title } }), NOW), null, 'future')
+  assert.equal(await careersAtsDate(page, CAREERS, jsonFetch({ [url]: { first_published: '2020-01-05T00:00:00Z', title } }), NOW), null, 'stale')
+  assert.equal(await careersAtsDate(page, CAREERS, jsonFetch({ [url]: { title } }), NOW), null, 'no date field')
 })
 
 test('#2004 careers page end to end: the embedded Lever record dates the lead through the real check', async () => {
@@ -68,7 +69,7 @@ test('#2004 careers page end to end: the embedded Lever record dates the lead th
   const page = html(`<p>${text}</p>${leverFrame('northwind', id)}`)
   const fetchImpl = (async (u: string | URL) => {
     const url = String(u)
-    if (url.startsWith('https://api.lever.co/')) return new Response(JSON.stringify({ createdAt: Date.parse('2026-11-06T00:00:00Z') }), { status: 200, headers: { 'content-type': 'application/json' } })
+    if (url.startsWith('https://api.lever.co/')) return new Response(JSON.stringify({ createdAt: Date.parse('2026-11-06T00:00:00Z'), text: 'Sales Development Representative' }), { status: 200, headers: { 'content-type': 'application/json' } })
     if (url.startsWith('https://careers.example.test/')) return new Response(page, { status: 200, headers: { 'content-type': 'text/html' } })
     return new Response('nope', { status: 404 })
   }) as unknown as typeof fetch
@@ -82,4 +83,6 @@ test('#2004 careers page end to end: the embedded Lever record dates the lead th
   assert.equal(checked.date, '2026-11-06')
   assert.equal(checked.date_source, 'page')
   assert.equal(checked.date_on_page, false, 'the day came from the board record the page names, not from the page text')
+  assert.equal(checked.date_proof, 'ats_structured', 'the record proof kind travels with the day')
+  assert.equal(checked.date_record_url, `https://api.lever.co/v0/postings/northwind/${id}`)
 })

@@ -49,11 +49,17 @@ export function discoveryHiringDateProven(lead: {
   date: string | null
   date_source: 'page' | 'index' | null
   proof: string
+  date_on_page?: boolean
+  date_proof?: 'ats_structured' | null
+  date_record_url?: string | null
 }, windowDays: number, now: Date): boolean {
   if (!isDiscoveryHiringLead(lead)) return true
   const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  // A day the page prints is page_bound. A day the page's own embedded board record names (#2096) is that board record - it is never
+  // page_bound, because the page text does not carry it. Anything else keeps the long-standing page_bound reading.
+  const proof = !lead.date_on_page && lead.date_proof === 'ats_structured' && lead.date_record_url ? 'ats_structured' : 'page_bound'
   return lead.proof === 'confirmed' && lead.date_source === 'page' &&
-    proofBackedTiming({ signal: lead.signal, event_date: lead.date, event_date_proof: 'page_bound' }, windowDays, today)
+    proofBackedTiming({ signal: lead.signal, event_date: lead.date, event_date_proof: proof }, windowDays, today)
 }
 
 interface Binding { v: number; proof: string; date: string; domain: string; route: string }
