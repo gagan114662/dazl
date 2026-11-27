@@ -23,7 +23,7 @@ type Disc = { surfaces: { surface: string; status: string; note: string }[]; exc
 async function first5(env: Record<string, string | undefined>): Promise<Disc> {
   for (const [k, v] of Object.entries(env)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   const db = setup(); as(db)
-  const r = await post({ mode: 'first5', query: Q })
+  const r = await post({ mode: 'first5', query: Q, offer: 'Sales workflow software' })
   const j = await r.json() as { budget?: Disc; error?: string }
   assert.equal(r.status, 202, JSON.stringify(j))
   assert.ok(j.budget, 'a first5 job is answered with its disclosure')
