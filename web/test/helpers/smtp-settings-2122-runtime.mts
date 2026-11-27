@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
 import { sqliteDb } from '../../lib/db/client.ts'
 import { migrateSmtpMailboxes, saveSmtpMailbox } from '../../lib/email/smtp-store.ts'
-import { GET, PUT } from '../../app/api/settings/smtp/route.ts'
+import { DELETE, GET, PUT } from '../../app/api/settings/smtp/route.ts'
 
 test('SMTP settings rejects unauthorized writes before verification and returns only workspace status', async () => {
   const raw = new Database(':memory:')
@@ -29,6 +29,18 @@ test('SMTP settings rejects unauthorized writes before verification and returns 
     assert.deepEqual(await (await GET()).json(), { mailbox: { id, host: input.host, port: input.port, username: input.username } })
     setUser({ id: 'b', business_name: 'Other workspace' })
     assert.deepEqual(await (await GET()).json(), { mailbox: null })
+    const disconnect = (connectionId: string, origin = 'http://localhost') => DELETE(new NextRequest('http://localhost/api/settings/smtp', {
+      method: 'DELETE', headers: { 'content-type': 'application/json', origin, host: 'localhost' },
+      body: JSON.stringify({ id: connectionId }),
+    }))
+    assert.equal((await disconnect(id)).status, 409)
+    setUser({ id: 'a', business_name: 'Owner' })
+    assert.equal((await disconnect(id, 'http://foreign.example')).status, 400)
+    const replacement = await saveSmtpMailbox(sqliteDb(raw), 'a', input, Buffer.alloc(32, 3))
+    assert.equal((await disconnect(id)).status, 409)
+    assert.equal((await disconnect(replacement)).status, 200)
+    assert.deepEqual(await (await GET()).json(), { mailbox: null })
+
   } finally {
     raw.close()
   }
