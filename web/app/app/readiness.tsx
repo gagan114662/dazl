@@ -7,6 +7,7 @@ import { normalizeWebsite } from '@/lib/onboarding'
 import { Icon } from './ui/icons'
 import { Pill } from './ui/bits'
 import { loadReadinessInput } from './readiness-input'
+import { subscribeFocusRefresh } from '@/lib/focus-refresh'
 import { homePlays, readinessRows, type ReadinessInput, type HomePlay } from '@/lib/readiness'
 
 // Home after the first search: the steps left before a useful scan and send, each with its fix (in place, or a link to
@@ -34,11 +35,11 @@ export default function Readiness() {
   // untouched ones keep their empty initial state and a save posts that over the stored profile (data loss).
   const siteDirtyRef = useRef<Record<'website' | 'sells' | 'business_name', boolean>>({ website: false, sells: false, business_name: false })
   const editSite = (k: 'website' | 'sells' | 'business_name', v: string) => { siteDirtyRef.current[k] = true; setSite(cur => ({ ...cur, [k]: v })) }
-  async function load(refreshSite = true) {
+  async function load(refreshSite = true, epoch?: number) {
     // #1471: the plays are GET /api/plays, the same list the Plays page shows; each row's outcome comes from the jobs read
     // #1722: overlapping loads (mount vs wake) apply in start order - a slow earlier read must not revert a newer status.
     const seq = ++loadSeqRef.current
-    const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
+    const [{ input: next, jobs }, listed] = await Promise.all([loadReadinessInput(epoch === undefined ? {} : { fresh: epoch }), fetch('/api/plays').then(r => r.ok ? r.json() : null).catch(() => null)])
     const profile = next.profile
     // The form seeds once from a profile read, and only over untouched input: a wake re-read (refreshSite=false)
     // can win the race and never seeds it, so a discarded older read still applies the seed - otherwise the form
@@ -61,13 +62,10 @@ export default function Readiness() {
   }
   useEffect(() => {
     void load()
-    const refresh = () => void load()
-    window.addEventListener('profile-updated', refresh) // the Home setup steps saved the business or buyer profile
     // #1722: the sender status can change in another tab (Outreach); re-read when this tab is used again.
-    const wake = () => { if (!document.hidden) void load(false) }
-    window.addEventListener('focus', wake)
-    document.addEventListener('visibilitychange', wake)
-    return () => { window.removeEventListener('profile-updated', refresh); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake) }
+    // #1876/#1880: one shared listener for the page and one epoch per focus or save, so the panels share that read.
+    const offWake = subscribeFocusRefresh((epoch, kind) => void load(kind === 'saved', epoch)) // a save reseeds the site form
+    return () => { offWake() }
   }, [])
 
   async function saveSite(e: React.FormEvent) {
