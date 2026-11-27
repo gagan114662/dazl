@@ -3,7 +3,7 @@ import { discoverRecipientRefusal } from '@/lib/outreach/service'
 import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
 import {leadContactContext} from '@/lib/outreach/contact-purpose-db'
 import {currentnessHeld, leadWindowHeld} from '@/lib/outreach/currentness'
-import {requiredGateHeld} from '@/lib/scan/held-state'
+import {requiredGateHeld, requiredGateHeldForJob} from '@/lib/scan/held-state'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { workEmailPageRead } from '@/lib/people/work-email'
@@ -44,6 +44,10 @@ export async function GET(req: NextRequest) {
   // pass the machine's existing currentness, targeting and contact proof.
   // Even all=1 cannot expose held hypotheses for these jobs.
   const results = companyFirst ? await companyFirstResults(sqliteDb(scanDb), user.tenantId, job.id) : null
+  const heldByGate = await requiredGateHeldForJob(sqliteDb(scanDb), user.tenantId, job.id)
+    .catch(() => null)
+  // On a batch read error, retain the scalar reader's fail-closed behavior.
+  const gateHeld = (id: string) => heldByGate?.has(id) ?? (requiredGateHeld(scanDb, user.tenantId, id) !== null)
   const displayEmails = results?.displayProof ?? {}
   const leads = companyFirst ? rows.filter(l => results?.visibleIds.has(l.id)) : rows
   // Company-first held candidates, read-only: who was found and why it is held. No contact, email or score is exposed, and
@@ -55,7 +59,7 @@ export async function GET(req: NextRequest) {
     const now = new Date()
     try {
       if (leadWindowHeld(scanDb, user.tenantId, id, now)) return eventDate ? 'outside_requested_window' : 'event_date_unproven'
-      if (requiredGateHeld(scanDb, user.tenantId, id)) return 'required_gate_failed'
+      if (gateHeld(id)) return 'required_gate_failed'
       const gap = timingProofGap(scanDb, user.tenantId, id, now)
       return gap ? (FINAL_GAP_REASON[gap] ?? gap) : 'held_by_final_checks'
     } catch { return 'held_by_final_checks' }
@@ -83,7 +87,7 @@ export async function GET(req: NextRequest) {
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
-    currentness_held:currentnessHeld(scanDb,user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null, recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
+    currentness_held:currentnessHeld(scanDb,user.tenantId,l.id,undefined,() => gateHeld(l.id)), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:gateHeld(l.id), recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
     lookalike_fit:la && la !== 'unreadable' && !la.exclusionsOnly ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
   // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.

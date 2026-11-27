@@ -66,9 +66,12 @@ test('Leads gate projection preserves scalar outcomes and bounds marker reads', 
   for (let i = 0; i < 18; i++) insertLead.run(`extra-${i}`, owned, `Extra ${i}`)
   const larger = await projection()
   assert.equal(Object.keys(larger.holds).length, 20)
+  for (let i = 18; i < 38; i++) insertLead.run(`extra-${i}`, owned, `Extra ${i}`)
+  const largest = await projection()
+  assert.equal(Object.keys(largest.holds).length, 40)
   unreadable = true
   const failed = await projection()
-  assert.equal(Object.keys(failed.holds).length, 20)
+  assert.equal(Object.keys(failed.holds).length, 40)
   assert.ok(Object.values(failed.holds).every(Boolean), 'unreadable markers hold every affected lead')
 
   unreadable = false
@@ -85,6 +88,7 @@ test('Leads gate projection preserves scalar outcomes and bounds marker reads', 
   assert.equal(reasons['extra-1'], 'required_gate_failed')
   assert.equal(reasons['extra-0'], 'event_date_unproven', 'window precedes the required gate')
 
-  assert.equal(larger.reads, mixed.reads, 'gate marker reads must stay constant as the list grows')
-  assert.ok(larger.reads <= 2, 'normal request uses a bounded number of gate marker reads')
+  assert.equal(largest.reads, larger.reads, 'gate marker reads must stay constant as the list grows')
+  assert.equal(larger.reads, mixed.reads)
+  assert.equal(larger.reads, 1, 'normal request uses one scoped gate marker read')
 })
