@@ -72,7 +72,7 @@ export function isPageProvenEmail(row: Row): boolean {
   return row.label === PAGE_PROVEN_EMAIL_LABEL && hasValidDiscoveryEmailSource(row)
 }
 
-export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
+export function discoverContact(l: { source_kind?: string | null; name?: string | null; company_domain?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
   const rows = (l.enrichments ?? []).filter(r => r.connector === 'discover')
   const mails = rows.filter(r => (r.label === PAGE_PROVEN_EMAIL_LABEL || r.label === 'published on a public page') && hasValidDiscoveryEmailSource(r))
@@ -94,7 +94,9 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
     const doctor = /^dr\.?\s/i.test(person.name) || /\b(?:dentist|doctor|dds|dmd|[a-z]*odontist)\b/i.test(person.title ?? '')
     return nameBound(local, person.name) || (doctor && nameBound(local.replace(/^dr[._-]?/, ''), person.name))
   }
-  const e = mails.find(own)
+  const named = mails.filter(own)
+  const e = named.find(row => emailOnCompanySite(row.value!, null, l.company_domain))
+    ?? named[0]
   return { person, email: e ? { address: e.value!.trim().toLowerCase(), source: e.source_url! } : null, sharedInbox: mails.some(r => isGenericInbox(r.value)), otherAddress: mails.some(r => !isGenericInbox(r.value) && !own(r)) }
 }
 // The address is PUBLISHED BY THE COMPANY: the page that prints it is on the lead's own website (the site or a subdomain of it).
