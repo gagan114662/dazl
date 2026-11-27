@@ -2,6 +2,7 @@
 // the queries sent, every search-result URL with its date, whether it was selected for fetching and whether TinyFish returned
 // text, the verifier's own fetch outcome per cited URL, every extracted candidate with its verification fate and reason, the
 // funnel counts, rejection reasons and model usage. Absent fields stay null ("not recorded"), never a fabricated zero.
+import type { ParseDropCounts } from '../discover/parse-drop-counts.ts'
 import type Database from 'better-sqlite3'
 import type { Db } from '../db/client.ts'
 import { canonicalUrl } from './evidence-origin.ts'
@@ -46,7 +47,7 @@ export interface ReportParts {
   source_skips?: { source: string; status: string; reason: string }[]
   // The Claude discovery lane's own account of its run (#1579, production job 1569fa9c: 0 leads and nothing saved to say why):
   // how it stopped, the budget it ran with, what it returned and the one sentence it gives when it found fewer leads than asked.
-  discover?: { stop: string; note: string | null; budget: 'full' | 'small' | 'smallest'; searches: number; requests: number; passes: number; returned: number; shown: number; usd: number | null } | null
+  discover?: { stop: string; note: string | null; budget: 'full' | 'small' | 'smallest'; searches: number; requests: number; passes: number; returned: number; shown: number; usd: number | null; parse_counts?: ParseDropCounts } | null
 }
 export const MAX_URLS = 120, MAX_CANDIDATES = 80, MAX_REPORT_CHARS = 120_000
 // Table-wide retention: a report older than this is deleted the next time any report is written (reports also go with their job via ON DELETE CASCADE).

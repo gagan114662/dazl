@@ -5,8 +5,10 @@
 // A record is a claim with its proof attached (evidence_url, signal_date). lib/discover/check.ts then reads the proof page
 // itself and labels the record; it never hides one.
 import Anthropic from '@anthropic-ai/sdk'
+import { intentSearchPlan } from './intent-search-plan.ts'
 import { DISCOVERY_SONNET_MODEL, DISCOVERY_SONNET_PRICE as PRICE } from './pricing.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance, type SearchBudget } from './search-budget.ts'
+import { parseDropCounts, missingParserField, type ParseDropCounts } from './parse-drop-counts.ts'
 
 export const DISCOVER_MODEL = process.env.DAZL_DISCOVER_MODEL?.trim() || DISCOVERY_SONNET_MODEL
 const MAX_SEARCHES = process.env.DAZL_DISCOVER_SEARCHES
@@ -49,7 +51,7 @@ export interface DiscoverUsage { input_tokens: number; output_tokens: number; ca
 // A page Claude's own tools returned during the run: a search result (title, and the page's age when the index knows it) or a page it
 // opened (its text). check.ts uses these to tell a proof URL the run really saw from one the model made up.
 export interface SeenPage { url: string; title: string | null; page_age: string | null; text: string | null }
-export interface DiscoverResult { leads: DiscoveredLead[]; usage: DiscoverUsage; stop: string; model: string; note: string | null; seen: SeenPage[] }
+export interface DiscoverResult { leads: DiscoveredLead[]; usage: DiscoverUsage; stop: string; model: string; note: string | null; seen: SeenPage[]; parse_counts?: ParseDropCounts }
 
 const SYSTEM = `You find sales leads for a seller. You are given what the seller sells and who they want to find.
 
@@ -58,6 +60,7 @@ A lead is a real company (or a named person at one) that matches the request AND
 How to work:
 - You have a limited number of searches and page reads. Spend roughly the first half finding companies with the signal and the rest finding the person and website for the best ones. Stop searching and answer before you run out.
 - Search for the signal first, in the place and industry the request names. Dated pages make the best proof: news items, press releases, dated blog or social posts, job postings, permit and registry records. Search in the local language too when the place calls for it.
+${intentSearchPlan()}
 - For each candidate, open the page that proves the signal. Use the date printed on that page for the event. A company's own page often announces something without a date: then look for a dated page about the same event and use that as the proof. If no page prints a date, set signal_date to null; never estimate one. When a page gives an age instead of a date ("Posted 4 days ago"), work the calendar date out from today's date and use it. For a job posting use the date it was posted. For a news item or press release that is itself the announcement, its printed publication date is the date.
 - A lead with a dated proof page is worth far more to the seller than one without. Prefer companies whose signal you can date, and spend a search on dating a strong candidate before adding an undated one.
 - evidence_url must be a page you opened or one that appeared in your search results, and the company's name must be on it.
@@ -93,18 +96,24 @@ const host = (v: unknown): string | null => {
 
 // The model's final text -> lead records. Anything that is not a company with a signal and a proof URL is dropped here,
 // because without those three there is nothing to show or check.
-export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]; note: string | null } {
+export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]; note: string | null; parse_counts?: ParseDropCounts } {
   const m = /<json>([\s\S]*?)<\/json>/.exec(text)
   let raw: unknown
   try { raw = JSON.parse(m ? m[1] : text) } catch { return { leads: [], note: 'unreadable answer' } }
   const o = (raw && typeof raw === 'object' ? raw : {}) as { leads?: unknown; note?: unknown }
   const out: DiscoveredLead[] = [], seen = new Set<string>()
-  for (const item of Array.isArray(o.leads) ? o.leads : []) {
+  const items = Array.isArray(o.leads) ? o.leads : []
+  // Raw includes any entries past the existing accepted-lead cap, where parsing stops.
+  const parse_counts = parseDropCounts(items.length)
+  for (const item of items) {
     const l = (item && typeof item === 'object' ? item : {}) as Record<string, unknown>
     const company = str(l.company, 150), signal = str(l.signal, 500), evidence_url = httpUrl(l.evidence_url)
-    if (!company || !signal || !evidence_url) continue
+    if (!company || !signal || !evidence_url) {
+      parse_counts[missingParserField(company, signal)]++
+      continue
+    }
     const key = company.toLowerCase()
-    if (seen.has(key)) continue
+    if (seen.has(key)) { parse_counts.duplicate++; continue }
     seen.add(key)
     const person = str(l.person, 120) || null
     const linkedin = httpUrl(l.linkedin_url)
@@ -121,7 +130,8 @@ export function parseLeads(text: string, max: number): { leads: DiscoveredLead[]
     })
     if (out.length >= max) break
   }
-  return { leads: out, note: str(o.note, 300) || null }
+  parse_counts.accepted = out.length
+  return { leads: out, note: str(o.note, 300) || null, parse_counts }
 }
 
 export function usd(u: Omit<DiscoverUsage, 'usd'>): number {

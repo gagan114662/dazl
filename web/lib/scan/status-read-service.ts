@@ -51,7 +51,10 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const trial_attempt_restored = job.error === 'accounting_uncertain' && await interruptedTrialAttemptRestored(db, tenantId, job.id)
   const uncertainHold = job.error === 'accounting_uncertain' ? await readUncertainHold(db, tenantId, job.id) : null
   const uncertain_usd = uncertainHold?.usd ?? null, uncertain_steps = uncertainHold?.steps ?? null
-  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, trial_attempt_restored, spend_usd: saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  const currentReport = reportRows?.findLast(row => Number(row.attempt) === job.attempts)?.report ?? null
+  const currentSourceRuns = source_runs.filter(row => row.attempt === job.attempts)
+  const currentEmptyReason = emptyExtractionReason((currentReport as { extraction?: never } | null)?.extraction)
+  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, trial_attempt_restored, spend_usd: saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason: currentEmptyReason, ...outcomeInputs(currentReport, currentSourceRuns, currentStatus) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.

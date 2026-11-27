@@ -1,8 +1,8 @@
 // #1805 (#1604 E1): the daily send limit, in plain words. When the cap is hit the user sees how many
 // went out today and when the rest go out — the reset instant in their own timezone, falling back to
-// America/Toronto — never the raw daily_cap code; and queued sends stay queued, not failed, on both
-// the manual path (Toronto-day cap, resets at the next Toronto midnight) and the sequence path
-// (rolling 24-hour account cap). The builder is the one the Outreach page renders.
+// UTC (#2054) and naming the zone — never the raw daily_cap code; and queued sends stay queued, not
+// failed, on both the manual path (account-day cap, resets at the next midnight in the account's zone)
+// and the sequence path (rolling 24-hour account cap). The builder is the one the Outreach page renders.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -60,12 +60,12 @@ function mock() {
   return { calls, fetchImpl, sendFn, env, master, now: NOW, baseUrl: 'https://app.test', flags: { SEQUENCES_ENABLED: '1', AUTOPILOT_AVAILABLE: '1', AUTOPILOT_ENABLED: '1' } }
 }
 
-test('the message: count, reset time in the reader timezone, Toronto fallback, nothing raw', () => {
-  const resetsAt = sendDayStart(NOW) + DAY // the next Toronto midnight: 2027-01-16 05:00 UTC
-  assert.equal(dailyCapMessage(40, resetsAt, 'America/Toronto', NOW), "You've sent today's 40 emails. You can send the rest after midnight.", 'a reset at the reader midnight reads as after midnight, not 12:00 AM')
-  assert.equal(dailyCapMessage(40, resetsAt, 'America/Vancouver', NOW), "You've sent today's 40 emails. You can send the rest today at 10:00 PM.", 'the same instant, in the reader timezone: still today there (BC is on permanent daylight time in the 2026 tz database, UTC-7 year-round)')
-  assert.equal(dailyCapMessage(40, resetsAt, undefined, NOW), "You've sent today's 40 emails. You can send the rest after midnight.", 'no timezone falls back to America/Toronto')
-  assert.equal(dailyCapMessage(40, resetsAt, 'Bogus/Zone', NOW), "You've sent today's 40 emails. You can send the rest after midnight.", 'an unreadable timezone falls back too, never throws')
+test('the message: count, reset time in the reader timezone, UTC fallback, nothing raw', () => {
+  const resetsAt = sendDayStart(NOW, 'America/Toronto') + DAY // the next Toronto midnight: 2027-01-16 05:00 UTC
+  assert.equal(dailyCapMessage(40, resetsAt, 'America/Toronto', NOW), "You've sent today's 40 emails. You can send the rest after midnight (America/Toronto time).", 'a reset at the reader midnight reads as after midnight, not 12:00 AM')
+  assert.equal(dailyCapMessage(40, resetsAt, 'America/Vancouver', NOW), "You've sent today's 40 emails. You can send the rest today at 10:00 PM (America/Vancouver time).", 'the same instant, in the reader timezone: still today there (BC is on permanent daylight time in the 2026 tz database, UTC-7 year-round)')
+  assert.equal(dailyCapMessage(40, resetsAt, undefined, NOW), "You've sent today's 40 emails. You can send the rest tomorrow at 5:00 AM (UTC time).", 'no timezone falls back to UTC (#2054), named in the copy')
+  assert.equal(dailyCapMessage(40, resetsAt, 'Bogus/Zone', NOW), "You've sent today's 40 emails. You can send the rest tomorrow at 5:00 AM (UTC time).", 'an unreadable timezone falls back too, never throws')
   assert.equal(dailyCapMessage(40, null, 'America/Toronto', NOW), "You've sent today's 40 emails. You can send the rest tomorrow.", 'no reset instant: still plain, no invented time')
   for (const tz of ['America/Toronto', 'America/Vancouver', undefined, 'Bogus/Zone']) assert.ok(!dailyCapMessage(40, resetsAt, tz, NOW).includes('daily_cap'), 'the raw code never reaches the user')
 })
