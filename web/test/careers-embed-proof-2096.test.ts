@@ -143,3 +143,37 @@ test('#2096 connected: the real lane writes the board record as ats_structured w
   assert.ok((row!.event_date_proof_note ?? '').includes(RECORD), `the persisted note cites the record: ${row!.event_date_proof_note}`)
   assert.equal(eventDayVerified(row!, { now: NOW }), true, 'Ready reads the persisted board record')
 })
+
+test('#2096 host and path: only the board host and the posting path name a record, so a lookalike names nothing and is never fetched', async () => {
+  const lookalike = `<iframe src="https://boards.greenhouse.io.example.test/embed/job_app?for=acme&token=4012345"></iframe>`
+  const wrongPath = `<iframe src="https://boards.greenhouse.io/careers/acme?for=acme&token=4012345"></iframe>`
+  const extraSegment = `<iframe src="https://boards.greenhouse.io/embed/job_app/extra?for=acme&token=4012345"></iframe>`
+  for (const embed of [lookalike, wrongPath, extraSegment]) {
+    assert.equal(embeddedAtsPosting(`${QUOTE}. ${embed}`, CAREERS), null, `no record: ${embed}`)
+    const asked: string[] = []
+    const counting = (async (url: string | URL | Request) => {
+      const u = String(url instanceof Request ? url.url : url)
+      asked.push(u)
+      return u === CAREERS
+        ? { ok: true, status: 200, json: async () => ({}), text: async () => `${QUOTE}. ${embed}` }
+        : { ok: true, status: 200, json: async () => ({ id: 4012345, title: ROLE, first_published: DAY }), text: async () => '' }
+    }) as unknown as typeof fetch
+    const c = await checkLead(claim(), [], counting, 5_000, NOW)
+    assert.equal(c.date, null, 'the claim is undated, not dated from a lookalike')
+    assert.equal(c.date_proof ?? null, null)
+    assert.deepEqual(asked, [CAREERS], 'nothing beyond the proof page was fetched')
+  }
+})
+
+test('#2096 undated record: a bound record with no published day gives no date through the real check', async () => {
+  const undated = (async (url: string | URL | Request) => {
+    const u = String(url instanceof Request ? url.url : url)
+    if (u === CAREERS) return { ok: true, status: 200, json: async () => ({}), text: async () => `${QUOTE}. ${EMBED}` }
+    return { ok: true, status: 200, json: async () => ({ id: 4012345, title: ROLE }), text: async () => '' }
+  }) as unknown as typeof fetch
+  const c = await checkLead(claim(), [], undated, 5_000, NOW)
+  assert.equal(c.proof, 'confirmed')
+  assert.equal(c.date, null, 'no published day: the lead is shown undated, never given a day')
+  assert.equal(c.date_proof ?? null, null)
+  assert.equal(c.date_record_url ?? null, null)
+})
