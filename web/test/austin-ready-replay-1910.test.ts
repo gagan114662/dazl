@@ -3,8 +3,8 @@ import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-test('#1910: Home counts exactly the Austin lead with repaired proof and a named contact', () => {
-  const env = { ...process.env }
+test('#1910: Home holds the captured Austin lead and counts one synthetic lead with a published named buyer', () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, SITECRAWL_ENABLED: '1' }
   delete env.NODE_TEST_CONTEXT
   const result = spawnSync(process.execPath, [
     '--experimental-strip-types', '--no-warnings', '--import', './test/helpers/net-fence.ts',

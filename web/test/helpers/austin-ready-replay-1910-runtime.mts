@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
+import { verifySyntheticReadyBuyer } from '../fixtures/synthetic-ready-buyer-1910.ts'
 import { homeReady } from '../../lib/outreach/home-ready.ts'
 import { AUSTIN_JOB_ID, AUSTIN_LEADS, seedAustinJob } from '../fixtures/austin-0e6a919e.ts'
 import { setScanDb, setUser } from './tenant-route-db.ts'
@@ -29,14 +30,14 @@ try {
     .run(`https://${target.company_domain}/careers/fixture-posting`, target.id, AUSTIN_JOB_ID)
 
   const after = await homeReady(tenant, now)
-  const ready = after.companies.filter(lead => lead.ready)
-  assert.deepEqual(ready.map(lead => lead.lead_id), [target.id])
-  assert.equal(after.ready, 1)
-  assert.deepEqual(after.scans, [{ job_id: AUSTIN_JOB_ID, ready: 1 }])
-  assert.equal(ready[0]?.details?.contact_name, target.name)
-  assert.equal(ready[0]?.details?.day_verified, true)
+  const held = after.companies.find(lead => lead.lead_id === target.id)
+  assert.equal(held?.ready, false)
+  assert.equal(held?.reason, 'no contact found yet', 'date proof alone cannot supply a named buyer’s published work email')
+  assert.equal(after.ready, 0)
   assert.deepEqual(after.companies.filter(lead => lead.lead_id !== target.id),
     before.companies.filter(lead => lead.lead_id !== target.id))
 } finally {
   db.close()
 }
+
+await verifySyntheticReadyBuyer()
