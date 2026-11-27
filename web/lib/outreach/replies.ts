@@ -373,6 +373,20 @@ export async function readReplySyncCandidates(db: Db, tenantId: string, now: num
     ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`, [...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs])
 }
 
+export function bindReplySyncThread(db: Db, tenantId: string, messageId: string, threadId: string): Promise<string | null> {
+  return db.tx(function* (tx) {
+    yield* tx.run(
+      "UPDATE outreach_messages SET thread_id = ? WHERE tenant_id = ? AND id = ? AND status = 'sent' AND thread_id IS NULL",
+      [threadId, tenantId, messageId],
+    )
+    const message = yield* tx.get<{ thread_id: string | null }>(
+      "SELECT thread_id FROM outreach_messages WHERE tenant_id = ? AND id = ? AND status = 'sent'",
+      [tenantId, messageId],
+    )
+    return message?.thread_id ?? null
+  })
+}
+
 export async function recordReplySyncThread(db: Db, tenantId: string, messageId: string, threadId: string, rootMessageId: string, now: number): Promise<void> {
   await db.run(
     `INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at)
@@ -380,6 +394,13 @@ export async function recordReplySyncThread(db: Db, tenantId: string, messageId:
      WHERE tenant_id = ? AND id = ? AND status = 'sent'
      ON CONFLICT (tenant_id, thread_id) DO NOTHING`,
     [threadId, rootMessageId, now, tenantId, messageId],
+  )
+}
+
+export async function recordReplySyncActivity(db: Db, tenantId: string, threadId: string, at: number): Promise<void> {
+  await db.run(
+    'UPDATE followup_threads SET last_activity_at = ? WHERE tenant_id = ? AND thread_id = ? AND last_activity_at < ?',
+    [at, tenantId, threadId, at],
   )
 }
 
@@ -429,7 +450,11 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
     if (!m.due) { if (background >= maxThreads) { skipBackground(); continue } background++ }
     try {
       let thread = m.thread_id
-      if (!thread) { thread = ((await get(`messages/${m.gmail_id}?format=minimal`)) as GMsg).threadId; db.prepare('UPDATE outreach_messages SET thread_id = ? WHERE id = ?').run(thread, m.id) }
+      if (!thread) {
+        const discovered = ((await get(`messages/${m.gmail_id}?format=minimal`)) as GMsg).threadId
+        thread = await bindReplySyncThread(store, tenantId, m.id, discovered)
+        if (!thread) continue
+      }
       const t = (await get(`threads/${thread}?format=full`)) as { messages?: GMsg[] }
       out.threads++
       const root = `dazl.${m.id}@${acct.email.split('@')[1]}`
@@ -438,7 +463,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       for (const g of t.messages ?? []) {
         const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
         const from = addr(header(g, 'from'))
-        db.prepare('UPDATE followup_threads SET last_activity_at = max(last_activity_at, ?) WHERE tenant_id = ? AND thread_id = ?').run(at, tenantId, thread)
+        await recordReplySyncActivity(store, tenantId, thread, at)
+        authority()
         if (from === acct.email) continue // our own or the user's message
         if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, g.id)) continue
         const body = messageText(g.payload)

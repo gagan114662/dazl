@@ -14,7 +14,7 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, recordReplySyncThread, checkpointReplySync, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
 
@@ -304,12 +304,21 @@ test('Postgres reply sync selects only the owning tenant and prioritizes due thr
       ['warm', 1], ['recent', 0],
     ])
     assert.deepEqual((await readReplySyncCandidates(db, 'neighbor', NOW)).map(row => row.id), ['foreign'])
+    await db.run("UPDATE outreach_messages SET thread_id = NULL WHERE id = 'recent'")
+    assert.equal(await bindReplySyncThread(db, 'neighbor', 'recent', 'foreign-thread'), null)
+    assert.equal(await bindReplySyncThread(db, 'owner', 'recent', 'recent'), 'recent')
+    assert.equal(await bindReplySyncThread(db, 'owner', 'recent', 'replacement-thread'), 'recent')
     await recordReplySyncThread(db, 'neighbor', 'recent', 'recent', 'foreign-root', NOW)
     await recordReplySyncThread(db, 'owner', 'recent', 'recent', 'owner-root', NOW)
     await recordReplySyncThread(db, 'owner', 'recent', 'recent', 'replacement-root', NOW + 1)
     assert.deepEqual(await db.all(
       "SELECT tenant_id, root_message_id, last_activity_at FROM followup_threads WHERE thread_id = 'recent'",
     ), [{ tenant_id: 'owner', root_message_id: 'owner-root', last_activity_at: NOW - DAY }])
+    await recordReplySyncActivity(db, 'neighbor', 'recent', NOW + 1)
+    await recordReplySyncActivity(db, 'owner', 'recent', NOW)
+    await recordReplySyncActivity(db, 'owner', 'recent', NOW - 1)
+    assert.deepEqual(await db.get('SELECT last_activity_at FROM followup_threads WHERE tenant_id = ? AND thread_id = ?', ['owner', 'recent']),
+      { last_activity_at: NOW })
     await checkpointReplySync(db, 'neighbor', 'recent', NOW + 1)
     assert.equal((await readReplySyncCandidates(db, 'owner', NOW)).find(row => row.id === 'recent')?.reply_checked_at, null)
     await checkpointReplySync(db, 'owner', 'recent', NOW)
