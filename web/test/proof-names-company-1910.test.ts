@@ -65,3 +65,12 @@ test('company-authored vacancy proof preserves punctuation and legal suffixes ve
     assert.equal(postingQuote([`Other ${line}`], role, company), '')
   }
 })
+
+test('role headings and opening quotation marks preserve the employer subject', () => {
+  for (const prefix of ['The opportunity ', 'The role: “', '“']) {
+    const statement = 'Brightloop is hiring an Account Executive to own the sales pipeline.'
+    const line = prefix + statement
+    assert.equal(postingQuote([line], 'Account Executive', 'Brightloop'), line)
+    assert.equal(postingQuote([prefix + 'Other ' + statement], 'Account Executive', 'Brightloop'), '')
+  }
+})
