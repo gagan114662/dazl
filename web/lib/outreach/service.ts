@@ -1,3 +1,4 @@
+import { isPublicSectorBody } from '../non-buyer.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { carriedExcluded } from '../scan/carry-gate.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
@@ -401,7 +402,7 @@ export function discoverRecipientRefusalsForJob(
   return verdicts
 }
 
-function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
+function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead & { company_domain: string | null }, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
   const state = db.prepare('SELECT review_reason, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; company_domain: string | null } | undefined
   if (state?.review_reason || evidenceStateOf(lead) === 'unverified') throw new OutreachError('lead_not_verified')
@@ -428,9 +429,9 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
 
 function draftChecks(db: Database.Database, tenantId: string, leadId: string, manual = false) {
   const lead = db.prepare(
-    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind
+    `SELECT l.id, l.company, l.name, l.contact, l.signal, l.source_url, l.evidence_excerpt, l.confidence, l.fit, l.intent, l.human_confirmed_at, l.review_reason, l.event_date, l.event_date_proof, l.signal_kind, l.company_domain
      FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?`,
-  ).get(leadId, tenantId) as Lead | undefined
+  ).get(leadId, tenantId) as (Lead & { company_domain: string | null }) | undefined
   if (!lead) throw new OutreachError('not_found')
   // A test-only inbox fixture contact (#369) is never drafted to, whatever else holds the lead.
   if (isInboxFixtureAddress(lead.contact ?? '')) throw new OutreachError('fixture_recipient')
@@ -522,6 +523,9 @@ function createDraftInner(db: Database.Database, tenantId: string, leadId: strin
   const r = draftOffer(play, tenant)
   if (r.refuse) throw new OutreachError(r.refuse)
   const positioning = r.offer ?? ''
+  if (isPublicSectorBody({ company: lead.company, domain: lead.company_domain, offer: positioning }).nonBuyer) {
+    throw new OutreachError('public_sector_non_buyer')
+  }
   let t: ReturnType<typeof composeDraftCopy>
   try {
     t = composeDraftCopy(lead, businessName, positioning)
