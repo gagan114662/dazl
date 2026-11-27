@@ -31,7 +31,7 @@ test('#1578 GET /api/leads: an unreadable recipient check is "unreadable" on the
   for (const [id, to] of [[own, 'dana@northwind-dental.example'], [free, 'dana.ruiz+fixture@gmail.com']]) {
     db.prepare("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, score, evidence_excerpt, event_date, date_status, confidence, fit, intent, why, source_kind, company_domain) VALUES (?, ?, 'Dana Ruiz', 'Northwind Dental', 'Opening a second clinic', 'https://news.example/northwind', 85, 'Northwind Dental will open its second clinic', ?, 'verified', 85, 4, 4, 'expanding', 'discover', 'northwind-dental.example')").run(id, job, day)
     addEnrichment(db, 'T', id, { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: 'named on a public page', source_url: 'https://northwind-dental.example/team', confidence: null, source_date: day, retrieved_at: now })
-    addEnrichment(db, 'T', id, { connector: 'discover', kind: 'email', value: to, label: 'published on a public page', source_url: 'https://northwind-dental.example/contact', confidence: null, source_date: day, retrieved_at: now })
+    addEnrichment(db, 'T', id, { connector: 'discover', kind: 'email', value: to, label: 'email verified on source page', source_url: 'https://northwind-dental.example/contact', confidence: null, source_date: day, retrieved_at: now })
   }
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(job)   // leads are stored while the job runs
   type Row = { id: string; recipient_refused?: string | null }

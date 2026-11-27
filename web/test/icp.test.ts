@@ -160,7 +160,7 @@ test('latestQueryJob returns the most recent query job with its stored profile',
   assert.equal(j?.icp, icp)
   assert.equal(j?.icp_inferred, 3, 'a submitted profile without an explicit review flag is a raw carry (durable)')
   createQueryJob(db, 'u1', { query: 'third search', icp, icpReviewed: true })
-  assert.equal(latestQueryJob(db, 'u1')?.icp_inferred, 0, 'only an explicit review submit stores user-reviewed')
+  assert.equal(latestQueryJob(db, 'u1')?.icp_inferred, 4, 'only an explicit review submit stores user-reviewed')
   db.prepare("DELETE FROM scan_jobs WHERE query = 'third search'").run()
   const row = db.prepare('SELECT seller FROM scan_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1').get('u1') as { seller: string }
   assert.equal(row.seller, 'Acme - sales software')

@@ -42,7 +42,7 @@ for (let i = 0; i < 150; i++) { try { await fetch(base + '/sign-in'); break } ca
 
 const JOB = 'b'.repeat(24)
 const ICP = { summary: 'Growing dental practices', who: ['Practice owner'], industries: ['Dental'], sizes: [], where: ['Ohio'], signals: ['new location'], exclude: [] }
-const lead = (id, company, over = {}) => ({ id, name: '', company, contact: null, signal: `${company} opened a second office`, source_url: `https://www.news.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: `${company} opened a second office`, event_date: '2026-10-01', date_status: 'unverified', confidence: 80, review_reason: null, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 3, action: 3, why: `${company} is a two-location practice that matches your dental owner profile. More detail follows.`, signals: null, icp_match: null, enrichments: [], events: [], ...over })
+const lead = (id, company, over = {}) => ({ id, name: '', company, contact: null, signal: `${company} opened a second office`, source_url: `https://www.news.example/${id.slice(0, 4)}`, score: 70, evidence_excerpt: over.contact ? `${company} opened a second office. Contact ${over.contact}.` : `${company} opened a second office`, event_date: '2026-10-01', date_status: 'unverified', confidence: 80, review_reason: null, company_domain: null, human_confirmed_at: null, human_confirmed_from: null, fit: 4, intent: 3, action: 3, why: `${company} is a two-location practice that matches your dental owner profile. More detail follows.`, signals: null, icp_match: null, enrichments: [], events: [], ...over })
 const dom = (site, token, url = 'https://www.news.example/x') => ({ connector: 'sitecrawl', kind: 'domain', value: `${site}|${token}`, label: `domain-basis-v1:${token}`, source_url: url, source_date: '2026-10-20', confidence: null })
 const row = (kind, value) => ({ connector: 'sitecrawl', kind, value, label: null, source_url: 'https://name-guessed.example/team', source_date: '2026-10-20', confidence: null })
 const LEADS = [
@@ -52,7 +52,10 @@ const LEADS = [
   // Instinct's repro: website guessed from the name, crawled address on it, a listed person.
   lead('e'.repeat(24), 'Pico Dental', { contact: 'hello@name-guessed.example', enrichments: [dom('name-guessed.example', 'name_probe', 'https://name-guessed.example/'), row('email', 'hello@name-guessed.example'), row('person', 'Dana Smith, Practice owner')] }),
   lead('f'.repeat(24), 'Twin Dental', { contact: 'hello@a-dental.example', enrichments: [dom('a-dental.example', 'name_probe'), dom('b-dental.example', 'evidence_link_domain_label'), row('email', 'hello@a-dental.example')] }),
-  lead('1'.repeat(24), 'Quiet Dental', { contact: 'privacy@quietdental.example' }),
+  lead('1'.repeat(24), 'Quiet Dental', {
+    contact: 'privacy@quietdental.example', evidence_excerpt: 'Quiet Dental opened a second office',
+    enrichments: [{ ...row('email', 'privacy@quietdental.example'), source_url: 'https://quietdental.example/privacy' }],
+  }),
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
   // #1837: the full three-action row (Approve held - no email; Message on LinkedIn; Reject) under a long one-line summary.
   lead('3'.repeat(24), 'Northgate Dental', { signal: 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter', why: null, source_kind: 'discover', enrichments: [{ connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: null, source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }, { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz', label: 'linked from a public page', source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }] }),

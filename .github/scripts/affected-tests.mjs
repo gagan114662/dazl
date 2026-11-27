@@ -39,4 +39,36 @@ for (const f of web) {
   const re = new RegExp(`[/'"]${mod.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\.[a-z]+)?['"]`)
   for (const t of tests) if (re.test(readFileSync(join(testDir, t), 'utf8'))) out.add(`test/${t}`)
 }
+// These tests inspect whole source trees or route inventories. A new file need not
+// be imported by any of their fixtures to affect their result.
+const sourceInventories = [
+  'analytics-track.test.ts',
+  'auth-form-method.test.ts',
+  'auth-render-request-time.test.ts',
+  'canonical.test.ts',
+  'email-pattern.test.ts',
+  'enrich-reserve-inventory-849.test.ts',
+  'fixture-routes-production-1398.test.ts',
+  'gmail-connect-links-1603.test.ts',
+  'job-isolation-manifest.test.ts',
+  'legal-policy.test.ts',
+  'no-research-engine-1393.test.ts',
+  'ops-sentry.test.ts',
+  'owner-spend-inventory-850.test.ts',
+  'paid-paths-guarded.test.ts',
+  'pg-sql-audit.test.ts',
+  'pg-table-isolation.test.ts',
+  'qa-lane-entry-1398.test.ts',
+  'rate-limit-degraded.test.ts',
+  'request-log.test.ts',
+  'route-error-capture.test.ts',
+  'scan-spend-cap-paths.test.ts',
+  'spend-caps-846-847.test.ts',
+  'tenant-isolation-manifest.test.ts',
+]
+if (web.some(f => /^(lib|app)\//.test(f))) {
+  for (const name of sourceInventories) {
+    if (tests.includes(name)) out.add(`test/${name}`)
+  }
+}
 console.log(out.size ? [...out].sort().join(' ') : 'NONE')

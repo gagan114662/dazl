@@ -34,7 +34,7 @@ const fixture = (name: string, vars: Record<string, string>) =>
 const sign = (body: string) => { const t = Math.floor(Date.now() / 1000); return `t=${t},v1=${createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET!).update(`${t}.${body}`).digest('hex')}` }
 const deliver = async (body: string) => (await webhook.POST(new NextRequest('https://dazl.test/api/billing/webhook', { method: 'POST', body, headers: { 'content-type': 'application/json', 'stripe-signature': sign(body) } }))).json()
 const post = (path: string, body: unknown) => new NextRequest(`https://dazl.test${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', host: 'dazl.test', origin: 'https://dazl.test' } })
-const startScan = async () => { const r = await scan.POST(post('/api/scan', { query: 'companies hiring sales reps in Toronto' })); return { status: r.status, body: await r.json() } }
+const startScan = async () => { const r = await scan.POST(post('/api/scan', { query: 'companies hiring sales reps in Toronto', offer: 'Sales workflow software' })); return { status: r.status, body: await r.json() } }
 const importCsv = async () => { const r = await csv.POST(post('/api/scan/csv', { csv: 'acme-dental-fixture.com\nbeta-roofing-fixture.com\n' })); return { status: r.status, body: await r.json() } }
 const account = async () => { const u = await (await usage.GET(new NextRequest('https://dazl.test/api/usage'))).json() as { plan: string; scan_limit: number | null; billing_status: string | null }; return { plan: u.plan, scan_limit: u.scan_limit, billing_status: u.billing_status } }
 

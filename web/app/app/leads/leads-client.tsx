@@ -1,5 +1,5 @@
 'use client'
-import { discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
+import { discoverContact, discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
@@ -30,13 +30,13 @@ import { OpportunityCardView } from './opportunity-card'
 import { cardCounts, leadCardSummary } from '@/lib/scan/lead-card'
 import LeadsTable from './leads-table'
 import { reviewAction } from '@/lib/scan/review-action'
-import { uncheckableCause } from '@/lib/lead-state'
+import { isUnconfirmedTimingResearch, uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
-import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
+import { publishedEmail, publishedContact, displayedEmailSource, emailsInText, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainUnresolvedText } from '@/lib/connectors/domain-unresolved'
-import { domainReviewFor } from '@/lib/outreach/domain-review'
+import { domainReviewFor } from '@/lib/outreach/domain-review-view'
 import SourceReview from './source-review'
 import PlayResearch from './play-research'
 import ResearchReview, { asResearchBlock } from '../research-review'
@@ -64,6 +64,7 @@ import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { outcomeOwnCopy, scanOutcome, type ScanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { ContactStatusLine } from './contact-status'
+import { EmailSourceLink } from './contact-status'
 import { Icon } from '../ui/icons'
 import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
@@ -228,13 +229,17 @@ type ZeroResultScan = {
 }
 
 function renderZeroResultReason(scan: ZeroResultScan | null) {
-  if (scan?.status !== 'done' || scan.lead_count !== 0) return null
+  if (!scan || scan.lead_count !== 0) return null
+  const outcome = scan.outcome
+  const terminalEmpty = scan.status === 'failed' && scan.error === 'no_candidates' &&
+    (outcome?.kind === 'none_extracted' || outcome?.kind === 'zero_match')
+  if (scan.status !== 'done' && !terminalEmpty) return null
   const report = scan.run_report?.at(-1)
   const discover = report?.discover
   const nativeSearch = report?.native_web_search
   const discoveryStop = discover?.stop === 'end_turn' ? null : discover?.stop
   const nativeLimit = (nativeSearch?.evidence_diagnostic?.result_errors?.max_uses_exceeded ?? 0) > 0
-  const stop = scan.error ?? report?.stop?.code ?? discoveryStop ?? (nativeLimit ? 'max_uses_exceeded' : null)
+  const stop = (terminalEmpty ? null : scan.error) ?? report?.stop?.code ?? discoveryStop ?? (nativeLimit ? 'max_uses_exceeded' : null)
   const helper = zeroResultReason({
     stop,
     query: scan.query ?? '',
@@ -245,7 +250,6 @@ function renderZeroResultReason(scan: ZeroResultScan | null) {
     candidates: scan.quality?.candidates ?? discover?.returned ?? 0,
     rejected: scan.quality?.dropped ?? 0,
   })
-  const outcome = scan.outcome
   const trialStop = scan.error === 'trial_budget_reached' && outcome?.kind === 'stopped'
   const zeroMatch = !stop && outcome?.kind === 'zero_match' && helper.code !== 'budget_spent'
   const extractionShortfall = outcome?.kind === 'none_extracted' && helper.code === 'unknown' &&
@@ -331,6 +335,7 @@ export default function LeadsClient() {
   const [error, setError] = useState('')
   // #1082: the run was limited by the platform's share of the search budget (from the status read)
   // keyed to the job it was read for: a previous run's note never shows under another job
+  const [marketNotice, setMarketNotice] = useState<{ job: string; text: string } | null>(null)
   const [capacityNote, setCapacityNote] = useState<{ job: string; text: string } | null>(null)
   const [quality, setQuality] = useState<Quality | null>(null)
   const [heldView, setHeldView] = useState<{ jobId: string; items: { id: string; company: string; source_url: string; signal: string | null; event_date: string | null; hold_reason: string }[] } | null>(null)
@@ -750,21 +755,29 @@ export default function LeadsClient() {
   useEffect(() => {
     if (!jobId || status === 'done' || status === 'failed' || statusError) return
     let stop = false
+    let started = 0, accepted = 0
     const tick = async () => {
+      const poll = ++started
       const r = await fetch(`/api/scan/status?job_id=${jobId}${passiveJob.current ? '&passive=1' : ''}`).catch(() => null)
-      if (stop) return
+      if (stop || poll < accepted) return
       // 404: this account cannot see that scan - terminal, say so and stop.
-      if (r && r.status === 404) { setStatusError('not_found'); return }
+      if (r && r.status === 404) { accepted = poll; setStatusError('not_found'); return }
       // Network/5xx: the scan itself may be fine. Retry a few times, then surface a
       // status-load error with a retry affordance - never mark the scan failed.
       if (!r || !r.ok) {
+        accepted = poll
         statusFails.current += 1
         if (statusFails.current >= 3) setStatusError('unavailable')
         return
       }
-      statusFails.current = 0
       const s = await r.json()
-      if (!stop) setZeroResultStatus(s.status === 'done' && s.lead_count === 0 ? { jobId, scan: s } : null)
+      if (stop || poll < accepted) return
+      accepted = poll
+      statusFails.current = 0
+      const report = s.run_report?.at(-1)
+      const notice = report?.attempt === s.attempts ? report?.market_notice : null
+      setMarketNotice(typeof notice === 'string' ? { job: jobId, text: notice } : null)
+      if (!stop) setZeroResultStatus((s.status === 'done' || (s.status === 'failed' && s.error === 'no_candidates')) && s.lead_count === 0 ? { jobId, scan: s } : null)
       setStatus(s.status); setEnrichInterrupted(s.enrichment?.state === 'interrupted'); setEmptyReason(typeof s.empty_reason === 'string' ? s.empty_reason : null); setCapacityNote(typeof s.capacity_note === 'string' ? { job: jobId!, text: s.capacity_note } : null); setStopRefusalReason(typeof s.stop_refusal_reason === 'string' ? s.stop_refusal_reason : null); setJobError(s.error ?? ''); setFailedOwnCopy(s.status === 'failed' ? outcomeOwnCopy(s.outcome) : null); setTrialStop(s.status === 'done' && s.error === 'trial_budget_reached' && typeof s.outcome?.label === 'string' ? { label: s.outcome.label, detail: typeof s.outcome.detail === 'string' ? s.outcome.detail : null } : null); setLeadsSoFar(s.lead_count ?? 0); setProgress(Array.isArray(s.progress) ? s.progress : null); setStartedAt(typeof s.running_since === 'number' ? s.running_since : null); setLastProgressAt(typeof s.last_progress_at === 'number' ? s.last_progress_at : null); setCreatedAt(s.created_at ?? null); setAttempt(s.attempts ? [s.attempts, s.max_attempts ?? 3] : null); setNow(Math.floor(Date.now() / 1000))
       setQuality(s.quality ?? null); setCost(s.cost ?? null); setProviderIssues(Array.isArray(s.provider_issues) ? s.provider_issues : null); setProviderIssuesUnknown(s.provider_issues === null)
       if (s.icp) setIcp({ icp: s.icp, source: s.icp_source, websiteReview:s.website_profile_review === 'confirmed', query: typeof s.query === 'string' ? s.query : null })
@@ -1031,11 +1044,11 @@ export default function LeadsClient() {
     return () => { live = false }
   }, [splitFor])
   const countLine = quality ? scanCountTags(quality, currentSplit?.jobId === jobId ? currentSplit.split : null) : null
-  const unconfirmedTiming = leads.filter(l => l.timing === 'unconfirmed' && !l.review_reason && !l.quarantined_at && l.human_confirmed_at == null)
+  const unconfirmedTiming = leads.filter(isUnconfirmedTimingResearch)
   const unconfirmedIds = new Set(unconfirmedTiming.map(l => l.id))
   const readyCandidates = leads.filter(l => !unconfirmedIds.has(l.id))
   const visibleLeads = visibleReadyLeads(readyCandidates, showSeen)
-  const zeroResultScan = status === 'done' && zeroResultStatus?.jobId === jobId ? zeroResultStatus.scan : null
+  const zeroResultScan = zeroResultStatus?.jobId === jobId && zeroResultStatus?.scan.status === status ? zeroResultStatus.scan : null
   const reviewSplit = reviewListSplit(leads)
   const researchLeads = [...reviewSplit.research, ...unconfirmedTiming]
   // #1122: the cost line divides by the leads this page shows, never by the scan's verified counter
@@ -1100,7 +1113,8 @@ export default function LeadsClient() {
           {scanActive && !otherActiveJobId && <span className="text-xs text-gray-500" data-reason="scan-active">{status === 'enriching' ? 'The scan is finishing (contacts and fit checks). You can start another when it ends.' : 'A scan is already running. You can start another when it ends.'}</span>}
         </div>
         {directChoice && <div className="mt-3"><OfferChooser key={directChoice.requested} c={directChoice} onChoose={(o,choice) => chooseDirectOffer(o, directChoice.saved, choice === 'stated' && directChoice.freshTarget === true)} /></div>}
-        {businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
+        {requestProfile && !openWebsiteDraft && !scanActive && !offerConflict?.direct && <p className="text-xs text-[#555] mt-2" data-testid="request-target">Search target: {query}</p>}
+        {!requestProfile && businessIcp && !openWebsiteDraft && !scanActive && !offerConflict?.direct && (!pendingEst || pendingEst.withIcp) && <p className="text-xs text-[#555] mt-2" data-testid="business-profile" data-profile-origin={priorIcp ? 'previous-play' : 'workspace'}>
           {priorIcp ? 'Find leads reuses the profile you reviewed for this search as it is:' : 'Find leads uses the saved profile as it is:'} {businessIcp.summary.replace(/[.\s]+$/, '')}. Statements in it you have not reviewed stay marked as dazl&apos;s reads; your dismissals and holds still apply. Use Review profile first to build a new one from your sentence.
         </p>}
         </div>
@@ -1357,7 +1371,8 @@ export default function LeadsClient() {
           </div>
         </div>
       )}
-      {jobId && status === 'failed' && <p className="text-gray-400 text-sm mb-4" data-testid="scan-failed-copy">{failedOwnCopy ? failedOwnCopy : jobError === 'accounting_uncertain' ? 'This run was interrupted while a paid step was in flight. That step is counted as billed at the amount reserved for it and stays counted against your limits. dazl did not run it again automatically because that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'provider_rate_limited' ? 'The AI provider rate-limited a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'provider_rejected' ? 'The AI provider refused a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'accounting_failed' ? 'This run stopped because the cost of one paid step could not be recorded. dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'source_error' ? 'A source this run depends on failed, so the run stopped before it could conclude. This was not a budget stop: raising or removing the budget would not have searched further. Nothing was concluded about whether leads exist. Try again - if it keeps failing, the source may be down.' : jobError === 'no_discovery' ? 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for this run. That is not proof that no matching companies exist. Run again with a broader search or without that scope limit to look further.' : jobError === 'search_allowance_reached' ? 'The web search allowance for today (this account\'s share of the day, or its share of the platform\'s) was used up, so nothing was searched. That is not an empty search and not a budget limit. Try again after the day turns over (UTC).' : jobError === 'no_lead_source' ? 'No source this run may use could search: the free news search did not run (switched off on this server, or the request has no usable profile) and the capped web search was off, not set up or refused before any search, so nothing was searched. Nothing was concluded about whether leads exist.' : jobError === 'unbounded_fallback_hold' ? 'This run could not conclude from its free sources, and the broader paid research step has no price bound, so the run stopped instead of starting it. Raising or removing the budget would not change this. Nothing was concluded about whether leads exist.' : jobError === 'model_unpriced' ? 'This run stopped because the configured model has no known price, so no paid step was allowed. Raising the budget would not help - check the model setup.' : jobError === 'spend_count_failed' ? 'This run stopped because the cost of a paid step could not be estimated in advance, so the step was not sent. Raising the budget would not help.' : jobError === 'spend_accounting_unavailable' ? 'This run stopped because spend accounting could not be written, so no further paid step was allowed. This is a safety stop, not a budget limit: raising the budget would not help. Nothing was concluded about whether leads exist.' : jobError === 'ownership_lost' ? 'This run stopped because it lost ownership of its own job - another process took it over. This was not a budget stop.' : jobError === 'spend_config_invalid' ? 'This run stopped because its spend configuration was invalid, so no paid step ran. Raising the budget would not help.' : jobError === 'spend_refused' ? 'This run stopped because a paid step was refused before it was sent. Nothing was concluded about whether leads exist.' : jobError === 'budget_stopped' ? (stopRefusalReason === 'owner_pool_limit' ? 'This run stopped because the shared account spending limit (its day/month pool) refused the next paid step before it ran. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. The per-scan budget did not cause it - raising or removing that budget would not have searched further.' : stopRefusalReason === 'over_cap' ? 'This run stopped because its recorded spending cap refused the next paid step before it ran. That is a cap stop, not an empty search: nothing was concluded about whether leads exist. That cap may be the run budget or the service per-scan limit; which one was binding was not kept with this stop.' : stopRefusalReason === 'over_limit' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : stopRefusalReason === 'trial_budget_reached' ? 'This free scan stopped at its spending limit. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. A free scan searches the web only in ways whose cost is fixed in advance.' : 'This run stopped before it could conclude. It was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.') : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'The AI provider rejected the key this scan used. Check or replace your AI key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>}
+      {jobId && status === 'failed' && (renderZeroResultReason(zeroResultScan) ?? <p className="text-gray-400 text-sm mb-4" data-testid="scan-failed-copy">{failedOwnCopy ? failedOwnCopy : jobError === 'accounting_uncertain' ? 'This run was interrupted while a paid step was in flight. That step is counted as billed at the amount reserved for it and stays counted against your limits. dazl did not run it again automatically because that could bill the same step twice. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'provider_rate_limited' ? 'The AI provider rate-limited a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'provider_rejected' ? 'The AI provider refused a request in this run. dazl did not retry it automatically and does not claim it was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to try again.' : jobError === 'accounting_failed' ? 'This run stopped because the cost of one paid step could not be recorded. dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again; start one only if you want to search again.' : jobError === 'source_error' ? 'A source this run depends on failed, so the run stopped before it could conclude. This was not a budget stop: raising or removing the budget would not have searched further. Nothing was concluded about whether leads exist. Try again - if it keeps failing, the source may be down.' : jobError === 'no_discovery' ? 'The sources this run was allowed to use searched and found nothing, and broader paid research was out of scope for this run. That is not proof that no matching companies exist. Run again with a broader search or without that scope limit to look further.' : jobError === 'search_allowance_reached' ? 'The web search allowance for today (this account\'s share of the day, or its share of the platform\'s) was used up, so nothing was searched. That is not an empty search and not a budget limit. Try again after the day turns over (UTC).' : jobError === 'no_lead_source' ? 'No source this run may use could search: the free news search did not run (switched off on this server, or the request has no usable profile) and the capped web search was off, not set up or refused before any search, so nothing was searched. Nothing was concluded about whether leads exist.' : jobError === 'unbounded_fallback_hold' ? 'This run could not conclude from its free sources, and the broader paid research step has no price bound, so the run stopped instead of starting it. Raising or removing the budget would not change this. Nothing was concluded about whether leads exist.' : jobError === 'model_unpriced' ? 'This run stopped because the configured model has no known price, so no paid step was allowed. Raising the budget would not help - check the model setup.' : jobError === 'spend_count_failed' ? 'This run stopped because the cost of a paid step could not be estimated in advance, so the step was not sent. Raising the budget would not help.' : jobError === 'spend_accounting_unavailable' ? 'This run stopped because spend accounting could not be written, so no further paid step was allowed. This is a safety stop, not a budget limit: raising the budget would not help. Nothing was concluded about whether leads exist.' : jobError === 'ownership_lost' ? 'This run stopped because it lost ownership of its own job - another process took it over. This was not a budget stop.' : jobError === 'spend_config_invalid' ? 'This run stopped because its spend configuration was invalid, so no paid step ran. Raising the budget would not help.' : jobError === 'spend_refused' ? 'This run stopped because a paid step was refused before it was sent. Nothing was concluded about whether leads exist.' : jobError === 'budget_stopped' ? (stopRefusalReason === 'owner_pool_limit' ? 'This run stopped because the shared account spending limit (its day/month pool) refused the next paid step before it ran. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. The per-scan budget did not cause it - raising or removing that budget would not have searched further.' : stopRefusalReason === 'over_cap' ? 'This run stopped because its recorded spending cap refused the next paid step before it ran. That is a cap stop, not an empty search: nothing was concluded about whether leads exist. That cap may be the run budget or the service per-scan limit; which one was binding was not kept with this stop.' : stopRefusalReason === 'over_limit' ? 'This run stopped because its per-run budget refused the next paid step. That is a budget stop, not an empty search: nothing was concluded about whether leads exist. Run again without that budget control (or with a larger one) to search further.' : stopRefusalReason === 'trial_budget_reached' ? 'This free scan stopped at its spending limit. That is a limit stop, not an empty search: nothing was concluded about whether leads exist. A free scan searches the web only in ways whose cost is fixed in advance.' : 'This run stopped before it could conclude. It was recorded as a budget stop, but its exact reason was not kept: it may not have been a budget limit, so raising or removing the budget may not change anything. Nothing was concluded about whether leads exist.') : jobError === 'cancelled' ? 'Scan stopped. The step that was already running can continue for a while and may still be billed. Its results are discarded and this scan holds its slot for a few minutes.' : jobError === 'scan_timeout' ? 'This scan ran past its time limit and was stopped between steps. Nothing was saved. Steps that already ran may have been billed by your AI provider. Try again with a narrower search.' : jobError === 'no_candidates' ? (emptyReason ? `${emptyReason} This scan did not count toward your monthly scans.` : 'No candidates were extracted for that search. That does not show that no matching companies exist. Try rephrasing or broadening it - this scan did not count toward your monthly scans.') : jobError === 'key_rejected' ? 'The AI provider rejected the key this scan used. Check or replace your AI key in Settings, then run the scan again.' : jobError === 'trial_key_invalid' ? 'The scan service is having trouble right now. Try again later - this scan did not count toward your free scans.' : jobError === 'key_unreadable' ? KEY_UNREADABLE_COPY.replace(/\.$/, ', then run the scan again.') : 'Scan failed. Try again.'}</p>)}
+      {jobId && marketNotice?.job === jobId && <p className="card p-3 mb-4 text-sm" role="status">{marketNotice.text}</p>}
       {jobId && capacityNote?.job === jobId && <p className="card p-3 mb-4 text-sm" role="status" data-testid="capacity-note">{capacityNote.text}</p>}
       {jobId && status === 'done' && trialStop && (!zeroResultScan || visibleLeads.length > 0) && (
         <div className="card p-4 mb-4 text-sm" role="status" data-testid="trial-stop">
@@ -1559,6 +1574,19 @@ export default function LeadsClient() {
               const timing = l.timing === 'proof_backed' ? timingHeadline({ timing: l.timing }) : c.timing
               // #1037: the person to contact, on the row itself (lib/people/lead-person.ts); null = "No buyer named yet".
               const lp = leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
+              const contactLine = lp ? c.contact : c.contactNoPerson
+              const email = emailsInText(contactLine ?? '')[0]
+              const discovered = discoverContact(l)?.email
+              const citedContact = !isDiscoverLead(l) && l.contact_context && publishedEmail(l) === email?.toLowerCase()
+                ? { ...l, evidence_excerpt: l.contact_context.excerpt, source_url: l.contact_context.source_url }
+                : null
+              const emailSource = email && (discovered?.address === email ? discovered.source
+                : displayedEmailSource(l, email.toLowerCase()) || (citedContact && displayedEmailSource(citedContact, email.toLowerCase())))
+              const visibleLine = email && !emailSource ? contactLine?.slice(0, contactLine.indexOf(email)).replace(/ - $/, '').trim() : contactLine
+              const recipient = isDiscoverLead(l) ? discovered?.address : publishedEmail(l)
+              const approval = c.approve.ok && (!emailSource || email.toLowerCase() !== recipient?.toLowerCase())
+                ? { ok: false as const, reason: 'The recipient needs a visible email source before you can approve.' }
+                : c.approve
               return <div data-testid="lead-card">
                 {/* Below sm the actions sit under the identity so the company, contact and any warning get the full width. */}
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1568,10 +1596,9 @@ export default function LeadsClient() {
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonWithProvenance p={lp} signalSource={l.source_url} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonWithProvenance>
-                    {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
+                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{emailSource ? <> · <EmailSourceLink url={emailSource} /></> : !l.quarantined_at && (l.company_first_published_email?.display_only ? <PublishedEmailProvenance lead={l} /> : <div>Published work email unavailable</div>)}</div>
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
-                    {!l.quarantined_at && <PublishedEmailProvenance lead={l} />}
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>
@@ -1581,8 +1608,8 @@ export default function LeadsClient() {
                   </div>
                   </div>
                   {!l.quarantined_at && <div className="flex flex-wrap gap-2 min-w-0 pl-[52px] sm:pl-0 sm:shrink-0" data-testid="card-actions">
-                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!!approving[l.id] || !!approved[l.id]} title="Creates a draft for you to review in Outreach. Nothing is sent." className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
-                    {!c.approve.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
+                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!approval.ok || !!approving[l.id] || !!approved[l.id]} title={approval.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : approval.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
+                    {!approval.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
                 </div>
@@ -1601,8 +1628,8 @@ export default function LeadsClient() {
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
-                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{c.approve.reason}</span></div>
-                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{c.approve.reason}</span></div> : null}
+                  : !approval.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{approval.reason}</span></div>
+                  : !approval.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{approval.reason}</span></div> : null}
               </div>
             })()}
             <details className="mt-2 text-sm">
@@ -1729,9 +1756,10 @@ export default function LeadsClient() {
             <DiscoveredVia l={l} />
             {(() => {
               const pc = publishedContact(l)
-              const draftTo = publishedEmail(l)
+              const pcSource = pc && displayedEmailSource(l, pc.email)
+              const draftTo = pcSource && publishedEmail(l)
               return <>
-                {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
+                {pc && pcSource && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'} · <EmailSourceLink url={pcSource} /></span>}
                 {pc && (() => { const rv = domainReviewFor(l, l.enrichments)
                   // A contact email that is also the address the crawl recorded is reviewed like a crawled address: equality does not show a cited-page origin.
                   const lc = pc.source === 'lead' && rv.state !== 'not_required'
@@ -1741,17 +1769,18 @@ export default function LeadsClient() {
                   const cv = rv.covered
                   return <span className="text-xs ml-3 block mt-1 border border-black px-2 py-1 text-[#111]">
                     {note}{bpc.domainBasisSourceUrl && bpc.domainBasis !== 'unrecorded' ? <> <a className="underline" href={bpc.domainBasisSourceUrl} target="_blank" rel="noopener noreferrer nofollow">{bpc.domainBasis === 'name_probe' ? 'homepage read' : 'page with the link'}</a>.</> : null}
-                    {rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => <span key={'a' + i}>{i ? ', ' : ''}{a.email}{a.source_url ? <> (<a className="underline" href={a.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}).</span>}
-                    {rv.state === 'required' && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">{rv.multi ? 'These websites are the right company' : 'This website is the right company'}</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
+                    {rv.binding && rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => <span key={'a' + i}>{i ? ', ' : ''}{a.email}{a.source_url && <> (<EmailSourceLink url={a.source_url} />)</>}</span>)}).</span>}
+                    {rv.state === 'required' && !rv.binding && <> A draft needs a visible email source first.</>}
+                    {rv.state === 'required' && rv.binding && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">{rv.multi ? 'These websites are the right company' : 'This website is the right company'}</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
                     {rv.state === 'confirmed' && <> You checked that {rv.multi && cv ? `these ${cv.domains.length} websites and ${cv.addresses.length} addresses are` : `${rv.domain} is`} the right company. <button onClick={() => domainReview(l.id, 'withdraw')} className="underline">withdraw</button></>}
                     {reviewMsg[l.id] ? <span className="text-gray-500 ml-2">{reviewMsg[l.id]}</span> : null}
                   </span> })()}
-                {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
+                {pc && pcSource && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact · <EmailSourceLink url={pcSource} /></span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
                 {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
-                {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
+                {!pc && l.contact && emailsInText(l.contact).length === 0 && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
                 {draftTo && domainReviewFor(l, l.enrichments).state !== 'required' && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>
@@ -1879,12 +1908,14 @@ function OfferChooser({ c, onChoose, onWrite }: { c: { stated: string | null; sa
   const targeting = c.freshTarget && !onWrite
   return <div className="rounded-xl border border-[#e8b04a] bg-[#fff7e6] px-4 py-3 text-sm" role="alert" data-testid="offer-chooser">
     <p className="font-semibold">Which offer is this play for?</p>
-    {c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
+    {c.incomplete && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request says you sell <strong>{c.stated}</strong>. Confirm this offer before running the search.</p>
+      : c.incomplete && !c.saved ? <p className="mt-1 text-[var(--ink-2)]">There is no saved offer for this workspace. Write what this play sells before running the search.</p>
+      : c.incomplete ? <p className="mt-1 text-[var(--ink-2)]">The saved offer is incomplete. Write the full offer before running this play.</p>
       : targeting && c.stated ? <p className="mt-1 text-[var(--ink-2)]">This request names <strong>{c.stated}</strong>. Build targeting from this request or keep the saved targeting. Neither choice changes Settings.</p>
       : c.freshTarget && c.stated ? <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-names-workspace">This request names <strong>{c.stated}</strong>; your saved offer is <strong>{c.saved.replace(/\.$/, "")}</strong>. Choose what this play sells. Neither choice changes Settings.</p>
       : c.stated
       ? <p className="mt-1 text-[var(--ink-2)]">Your request says you sell <strong>{c.stated}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. dazl researches and drafts this play for the one you choose. Your profile is not changed.</p>
-      : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request may name more than one offer because a parenthesis is unfinished. Choose or write this play’s offer before it runs.</p>
+      : c.ambiguous ? <p className="mt-1 text-[var(--ink-2)]">The request does not identify one clear offer. Choose or write this play’s offer before it runs.</p>
       : <p className="mt-1 text-[var(--ink-2)]" data-testid="offer-withdrawn">Your request says you do not offer <strong>{c.withdrawn}</strong>; your business profile says <strong>{c.saved.replace(/\.$/, "")}</strong>. Say what this play sells before it runs. Your profile is not changed.</p>}
     <div className="mt-2 flex flex-wrap gap-2">
       {c.stated && <button type="button" className="btn-primary btn-sm" onClick={() => namesWorkspace ? setWriting(true) : onChoose(c.stated!, 'stated')} data-testid="offer-use-stated">Use: {c.stated}</button>}

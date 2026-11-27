@@ -4,6 +4,7 @@ import { strictOwnContactCards } from './strict-own-contacts.ts'
 import { currentReviewedDomain, domainConfirmed, domainRelationship } from '../signals/domain-basis.ts'
 import { listedProfileLabel, listedProfileUrl, profileFromListedLabel } from '../people/site-profile.ts'
 import { looksLikeJobTitle } from '../people/job-title-name.ts'
+import { multilingualSeniority } from '../people/seniority.ts'
 import {contactContext,contextLabel} from '../outreach/contact-context.ts'
 import https from 'node:https'
 import zlib from 'node:zlib'
@@ -24,7 +25,7 @@ import { detectTech, observability, type Observability, type TechHit } from './t
 import { TECH_SCAN_KIND, TECH_CHANGE_KIND, encodeScan, decodeScan, techChanges, changeRow, scanOf, isScanDomain, type TechScan } from '../signals/tech-observations.ts'
 import { publishedDisplayCountry, recordPublishedDisplay, withdrawPublishedDisplay } from '../people/published-display.ts'
 import { qaClaudeOnlyJob } from '../scan/qa-provider-policy.ts'
-import { personalAddresses, publishedCandidateFor, recordEmailGuesses, usEvidence, type AddressContext } from '../people/email-pattern.ts'
+import { personalAddresses, publishedCandidateFor, recordEmailGuesses, type AddressContext } from '../people/email-pattern.ts'
 import { decodeEntities } from '../verifier/text.ts'
 import { revealEmails } from '../people/email-reveal.ts'
 import { SEARCHABLE_HOLDS } from '../people/searchable-holds.ts'
@@ -35,6 +36,7 @@ import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales, postingOrgIs
 export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
+import { findJobBankEmployerSite } from '../discover/jobbank-employer-site.ts'
 import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
 import { isCountryOrRegion, resolveSegment, regionOf, trimCanadianPostalTail } from '../scan/countries.ts'
 import { candidateDomainSuffixes, countryDomainHints } from './country-domain-hints.ts'
@@ -359,6 +361,19 @@ export function recordNamedSites(text: string, company: string): string[] {
   return out
 }
 export type DomainBasis = 'evidence_own_domain' | 'evidence_link_domain_label' | 'evidence_link_text' | 'name_probe'
+function printedJobBankSite(html: string, sourceUrl: string): string | null {
+  const url = URL.parse(sourceUrl)
+  if (url?.protocol !== 'https:' || !/(^|\.)(?:jobbank|guichetemplois)\.gc\.ca$/i.test(url.hostname) ||
+    !/^\/jobsearch\/jobposting\/\d+\/?$/.test(url.pathname)) return null
+  try {
+    const host = findJobBankEmployerSite(html)
+    return host && ownSiteHost(`https://${host}/`) === host ? host : null
+  } catch {
+    // An invalid character reference in the publisher HTML must not stop the crawl.
+    return null
+  }
+}
+
 export function findCompanySitesWithBasis(company: string, evidenceHtml: string, evidenceUrl: string): { site: string; basis: DomainBasis; structured?: boolean }[] {
   const want = norm(company); if (want.length < 4) return []
   let base: URL; try { base = new URL(evidenceUrl) } catch { return [] }
@@ -651,6 +666,7 @@ const EXEC = `c[a-z]o|chief [a-z]+ officer|(?:vp|svp|evp|vice president|head|dir
 export const PAGE_PEOPLE = 8
 const T = `(?:founder|co-?founder|owner|co-?owner|ceo|president|principal|proprietor|managing director|general manager|director|managing partner|partner|practice manager|office manager|broker|dentist|doctor|${EXEC})`
 const TITLE_FULL = new RegExp(`^${T}(?: (?:&|and) ${T})?$`, 'i')
+const isLeadershipTitle = (title: string) => TITLE_FULL.test(title) || multilingualSeniority(title) > 0
 const PEOPLE_PAGE = /(about|team|leadership|management|executives|people|staff|our-story|who-we-are|meet|contact|company|owner|doctor|dentist)/i
 // Qodo High #1532: words of site navigation and calls to action ("Contact Us", "Get Started", "Book a Demo") - a name made of any of
 // them only is interface text, never a person (a real name holding one word of it - "Maya A. Thornton", "Bill Read" - stays), whatever title sits beside it and whatever the page's prose shows.
@@ -658,7 +674,7 @@ const UI_WORDS = new Set(['contact', 'us', 'get', 'started', 'start', 'book', 'd
   'read', 'about', 'our', 'team', 'join', 'careers', 'home', 'menu', 'apply', 'pricing', 'blog', 'watch', 'see', 'view', 'schedule', 'talk', 'to', 'sales', 'call',
   'now', 'here', 'today', 'a', 'the', 'download', 'subscribe', 'explore', 'discover', 'meet', 'reach', 'out', 'support', 'help', 'privacy', 'terms', 'policy', 'cookie',
   'cookies', 'accept', 'close', 'open', 'next', 'previous', 'back', 'submit', 'send', 'search', 'shop', 'buy', 'order', 'news', 'press', 'events', 'resources', 'docs'])
-const isUiText = (name: string): boolean => name.toLowerCase().split(/[^a-z']+/).filter(Boolean).every(w => UI_WORDS.has(w))
+const isUiText = (name: string): boolean => name.toLowerCase().split(/[^\p{L}\p{M}']+/u).filter(Boolean).every(w => UI_WORDS.has(w))
 const SHORT_SURNAME_LINE = /^[A-Z][a-z'\u2019-]{2,20}\s+[A-Z][a-z]$/
 // Qodo High #1532: a person's name is made of name tokens. A grammar word (pronoun, determiner, preposition, particle) is never a name
 // token, and a token shaped like a past participle ("Started", "Connected") in the surname slot is a verb phrase. This is closed-class
@@ -675,6 +691,10 @@ function properNameTokens(name: string): boolean {
   return !/[a-z]{2,}ted$/.test(toks[toks.length - 1])
 }
 const NAME_LINE = /^(?:(?:Dr|Mr|Ms|Mrs)\.?\s+)?[A-Z][a-z'\u2019-]{1,20}(?:\s+[A-Z]\.?)?\s+[A-Z][A-Za-z'\u2019-]{2,24}$/ // both names 3+ letters: two-letter surnames (Li, Ng) are skipped on purpose, "Us" in "Contact Us" is not a surname
+// Retain the Latin name shape and its short-surname guard. For native scripts, keep bounded
+// letter tokens with script-appropriate casing (some scripts do not have case).
+const NATIVE_NAME_LINE = /^(?!.*\p{Script=Latin})(?:\p{Lu}[\p{Ll}\p{M}'’\-]{1,20}|\p{Lo}[\p{Lo}\p{M}]{0,20})(?:\s+(?:\p{Lu}[\p{Ll}\p{M}'’\-]{1,24}|\p{Lo}[\p{Lo}\p{M}]{0,24})){1,3}$/u
+const extractionName = (name: string): boolean => NAME_LINE.test(name) || NATIVE_NAME_LINE.test(name)
 // Remove balanced elements whose tag (blockquote/cite/q) or class/id (any element) marks quoted third-party content.
 // Returns null when a marked region is malformed (never closed): the page is then not judged at all.
 // #1183: a search/filter control (a datalist or dropdown of job titles) is page chrome, never a person card: its options are cut by CONTEXT, so an
@@ -756,7 +776,10 @@ export function reportsToBuyer(text: string, buyerRoles: string): { name: string
   return buyerTitle(title, buyerRoles) || topSales || founder ? { name, title } : null
 }
 export function buyerTitle(title: string, buyerRoles?: string): boolean {
-  if (!buyerRoles || roleContradicted(title, buyerRoles) || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
+  if (roleContradicted(title, buyerRoles) || title.length > 60 || title.split(/\s+/).length > 6 || /,|\s(?:at|@|for|bei|chez|em|en|presso)\s/i.test(title)) return false
+  if (!buyerRoles?.split(';').some(role => role.trim())) {
+    return isLeadershipTitle(title) && seniority(title) > 1 && !/^broker$/i.test(title)
+  }
   const t = titleNorm(title)
   if (buyerRoles.split(';').map(titleNorm).some(r => r.length >= 3 && (` ${t} `).includes(` ${r} `))) return true
   return titleMatches(title, buyerRoles).length >= 2
@@ -834,8 +857,8 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     if (l.startsWith(HEAD_MARK)) {
       const level = Number(l[HEAD_MARK.length]), head = l.slice(HEAD_MARK.length + 1).trim()
       if (FORMER_SECTION.test(head)) { formerLevel = formerLevel === 0 ? level : Math.min(formerLevel, level) }
-      else if (formerLevel && level <= formerLevel && !NAME_LINE.test(head)) formerLevel = 0
-      if (!NAME_LINE.test(head) || FORMER_SECTION.test(head)) continue
+      else if (formerLevel && level <= formerLevel && !extractionName(head)) formerLevel = 0
+      if (!extractionName(head) || FORMER_SECTION.test(head)) continue
       lines.push(head); inFormer.push(formerLevel > 0); continue
     }
     lines.push(l); inFormer.push(formerLevel > 0)
@@ -843,11 +866,11 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   // Email addresses are not prose: their lower-case local parts (dana.lee@...) would otherwise reject the very person
   // listed beside them, so they are removed before the lower-case word test.
   const body = lines.join(' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
-  const lowerWords = new Set(body.match(/\b[a-z][a-z'\u2019-]{1,}\b/g) ?? [])
+  const lowerWords = new Set(body.match(/(?<![\p{L}\p{M}])\p{Ll}[\p{Ll}\p{M}'\u2019-]+(?![\p{L}\p{M}])/gu) ?? [])
   const titleWords = new Set<string>()
   const addWords = (t: string) => { for (const w of titleNorm(t).split(' ')) if (w.length >= 4 && !TITLE_STOP.has(w)) titleWords.add(w) }
   for (const r of (buyerRoles ?? '').split(';')) addWords(r)
-  for (const l of lines) if (l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))) addWords(l)
+  for (const l of lines) if (l.length < 45 && (isLeadershipTitle(l) || buyerTitle(l, buyerRoles))) addWords(l)
   const reusesTitleWord = (name: string) => titleNorm(name).split(' ').some(w => titleWords.has(w))
   const add = (name: string, title: string, viaJson = false): boolean => {
     name = name.replace(/\s+/g, ' ').trim(); title = title.replace(/\s+/g, ' ').trim()
@@ -856,7 +879,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     // ("us"), so "Contact Us" stays out (Simple AI's CEO Catheryn Li, 2026-11-22).
     const shortSurname = SHORT_SURNAME_LINE.test(name) && (buyerTitle(title, buyerRoles) || /\b(?:co-?founder|founder|ceo|chief executive)\b/i.test(title))
     if (!isPersonName(name)) return false // Qodo High #1532: "Contact Us", "Sign In", "Learn More", "Get Started" are phrases, not names (one rule: isPersonName)
-    if (!(NAME_LINE.test(name) || shortSurname) || looksLikeJobTitle(name) || !(TITLE_FULL.test(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
+    if (!(extractionName(name) || shortSurname) || looksLikeJobTitle(name) || !(isLeadershipTitle(title) || buyerTitle(title, buyerRoles))) return false // #1183: "Litigation Specialist" is a title, not a person
     if (!viaJson) {
       if (!PEOPLE_PAGE.test(path)) return false
       if (lowerWords.size < 15) return false // no prose on the page: nothing to judge a name-shaped phrase against, fail closed
@@ -867,7 +890,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     return true
   }
   for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
-  const isTitleLine = (l: string) => l.length < 45 && (TITLE_FULL.test(l) || buyerTitle(l, buyerRoles))
+  const isTitleLine = (l: string) => l.length < 45 && (isLeadershipTitle(l) || buyerTitle(l, buyerRoles))
   const paired: boolean[] = [] // paired[j]: line j was accepted as the title of the person on line j-1
   for (let i = 0; i < lines.length; i++) {
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
@@ -880,7 +903,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     if (shared) {
       const names = shared[1].split(/\s*,\s*(?:and\s+|&\s+)?|\s+(?:and|&)\s+/).map(s => s.trim()).filter(Boolean)
       const single = shared[2].replace(/s$/, '')
-      if (names.length >= 2 && names.length <= 4 && TITLE_FULL.test(single) && names.every(nm => NAME_LINE.test(nm) && !looksLikeJobTitle(nm))) for (const nm of names) add(nm, single)
+      if (names.length >= 2 && names.length <= 4 && isLeadershipTitle(single) && names.every(nm => extractionName(nm) && !looksLikeJobTitle(nm))) for (const nm of names) add(nm, single)
     }
     // #1183: an adjacent "Name" + "Title" pair is refused when the "name" reuses a word the page's OWN titles and the scan's buyer roles use
     // ("Managing Member" beside "Managing Partner"): that is an unmarked title list, whatever markup it sits in. Learned from the page, not a vocabulary.
@@ -898,6 +921,8 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
 // Which listed person to keep when a page lists many: whoever can sign off on a purchase first. Pure ordering of what
 // extractPeople already accepted; it never adds or invents a person. Ties keep page order (stable sort).
 export function seniority(title: string): number {
+  const multilingual = multilingualSeniority(title)
+  if (multilingual) return multilingual
   const t = title.toLowerCase()
   if (/\b(founder|owner|proprietor|ceo|president|principal|managing (?:director|partner)|chief executive)\b/.test(t)) return 4
   if (/\b(c[a-z]o|chief|vp|svp|evp|vice president|head|general manager)\b/.test(t)) return 3
@@ -1927,6 +1952,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
+      if (ev?.status === 200 && ev.text === undefined && ev.finalUrl === l.source_url && where.length === 1) {
+        const city = where[0].split(',')[0].trim()
+        const host = city && !isCountryOrRegion(city) ? printedJobBankSite(ev.body, l.source_url) : null
+        // Treat the printed field as a candidate. The crawl must independently confirm the name and city.
+        if (host && !basisOf.has(host)) {
+          basisOf.set(host, 'name_probe')
+          structured.push(host)
+        }
+      }
       // Search citations are scan-wide hints, not lead attribution. A publisher may name a website in plain text
       // ("Full Company Name (company.example)") without linking it. Require that exact pairing in THIS lead's
       // stored verified excerpt and re-read the exact publisher source before treating a matching citation as a
@@ -2281,8 +2315,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
             await recordCompanyFirstPublishedDisplay(db, tenantId, l.id, jobId, ownedJob.attempts, { domain: site,
               person: buyer.person, address: buyer.email, source_url: buyer.source, role_quote: buyer.quote, observed_at: buyer.at })
           }
-          // Leave the independent pre-existing sender eligibility unchanged.
-          if (buyer.email && usEvidence(r.homeText, where).us) {
+          // Exact own-site published addresses do not require US geography evidence.
+          if (buyer.email) {
             addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'email', value: buyer.email,
               label: contextLabel({ excerpt: buyer.name + ' | ' + buyer.email, source_url: buyer.source }), confidence: null, ...dated }); n++
           }

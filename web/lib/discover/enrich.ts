@@ -281,7 +281,7 @@ export async function enrichLeads(leads: DiscoveredLead[], o: { offer?: string |
       const { l, i } = todo[k]
       try {
         const merged = mergeEnriched(l, await enrichOne(client, l, o.offer ?? null, seen, usage, searchBudget, () => !accountingUncertain, deps.signal))
-        if (merged.person !== l.person || merged.domain !== l.domain || merged.linkedin_url !== l.linkedin_url) enriched++
+        if (merged.person !== l.person || merged.domain !== l.domain || merged.linkedin_url !== l.linkedin_url || merged.email !== l.email) enriched++
         out[i] = merged
       } catch { accountingUncertain = true }
     }

@@ -8,15 +8,20 @@ import { discoverCounts, discoverState, type DiscoverCounts, type DiscoverState 
 // The columns of a lead its state is read from, for a caller that reads the workspace's own lead rows itself (aliased `l`).
 export const DISCOVER_LEAD_COLUMNS = 'l.name, l.company_domain, l.event_date, l.timing_note, l.fit, l.intent, l.source_kind'
 export type DiscoverLeadRow = { id: string; scan_job_id: string; name: string | null; company_domain: string | null; review_reason: string | null; event_date: string | null; timing_note?: string | null; fit: number | null; intent: number | null; quarantined_at: number | null; source_kind?: string | null }
-export type DiscoverStoredRow = { lead_id: string; kind: string; connector: string; value: string; source_url: string | null }
+export type DiscoverStoredRow = { lead_id: string; kind: string; connector: string; value: string; label: string | null; source_url: string | null; retrieved_at?: number | null; suppressed?: number | null }
 const marks = (n: number) => Array.from({ length: n }, () => '?').join(',')
 const leadsSql = (n: number) => `SELECT l.id, l.scan_job_id, l.review_reason, l.quarantined_at, ${DISCOVER_LEAD_COLUMNS}
   FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE l.scan_job_id IN (${marks(n)}) AND l.source_kind = 'discover'`
 // The rows the run stored for the leads of n searches (the person, the address, the profile), oldest first: the order the card and the
 // draft check read them in. Parameters: the workspace, the workspace again, then the n search ids.
-export const discoverStoredSql = (n: number) => `SELECT e.lead_id, e.kind, e.connector, e.value, e.source_url FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id
-  JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE e.tenant_id = ? AND l.scan_job_id IN (${marks(n)}) AND l.source_kind = 'discover'
-  AND e.connector = 'discover' AND e.kind IN ('person', 'email', 'linkedin') AND e.value != '' ORDER BY e.retrieved_at, e.id`
+export const discoverStoredSql = (n: number) => `SELECT e.lead_id, e.kind, e.connector, e.value, e.label, e.source_url, e.retrieved_at,
+    CASE WHEN s.email IS NULL THEN 0 ELSE 1 END AS suppressed
+  FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id
+  JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ?
+  LEFT JOIN suppressions s ON e.kind = 'email' AND s.tenant_id = e.tenant_id AND s.email = LOWER(TRIM(e.value))
+  WHERE e.tenant_id = ? AND l.scan_job_id IN (${marks(n)}) AND l.source_kind = 'discover'
+  AND ((e.connector = 'discover' AND e.kind IN ('person', 'email', 'linkedin')) OR e.kind = 'deliverability')
+  AND e.value != '' ORDER BY e.retrieved_at, e.id`
 // A store that predates the table simply has no stored rows.
 export const discoverNoTable = (e: unknown): DiscoverStoredRow[] => { if (/no such table|does not exist/i.test(String((e as Error)?.message))) return []; throw e }
 

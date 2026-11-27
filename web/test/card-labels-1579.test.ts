@@ -18,7 +18,7 @@ import { contactSearchNote } from '../lib/outreach/published-email.ts'
 const PROFILE = 'https://www.linkedin.com/in/dana-ruiz/'
 const person = { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Co-founder', label: 'named on a public page', source_url: 'https://news.example/northwind-raises' }
 const linkedin = { connector: 'discover', kind: 'linkedin', value: PROFILE, label: 'linked from a public page', source_url: 'https://news.example/northwind-raises' }
-const email = { connector: 'discover', kind: 'email', value: 'dana@northwind.example', label: 'published on a public page', source_url: 'https://northwind.example/contact' }
+const email = { connector: 'discover', kind: 'email', value: 'dana@northwind.example', label: 'email verified on source page', source_url: 'https://northwind.example/contact' }
 const recent = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
 // the lead as Quest saw it: no date on the signal
 const lead = (o: Record<string, unknown> = {}) => ({ id: 'b'.repeat(24), company: 'Northwind', name: 'Dana Ruiz', signal: 'Hiring a founding SDR', source_url: 'https://jobs.example/northwind/sdr', evidence_excerpt: 'Northwind is hiring a founding SDR.',

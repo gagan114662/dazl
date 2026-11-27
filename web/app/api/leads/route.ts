@@ -1,13 +1,12 @@
 import { companyFirstResults } from '@/lib/scan/company-first-results'
 import { discoverRecipientRefusal } from '@/lib/outreach/service'
 import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
-import {leadContactContext} from '@/lib/outreach/contact-purpose-db'
+import { latestLeadSourceReviews } from '@/lib/db/lead-source-reviews'
 import {currentnessHeld, leadWindowHeld} from '@/lib/outreach/currentness'
-import {requiredGateHeld} from '@/lib/scan/held-state'
+import {requiredGateHeld, requiredGateHeldForJob} from '@/lib/scan/held-state'
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { workEmailPageRead } from '@/lib/people/work-email'
-import { sourceCheckForLead } from '@/lib/scan/source-review'
 import { sqliteLeadsRead } from '@/lib/db/leads-read'
 import { rankLeads } from '@/lib/events/prioritize'
 import { getDb, sqliteDb } from '@/lib/db/client'
@@ -18,7 +17,7 @@ import { fitRationale } from '@/lib/scan/score'
 import { timingProofGap } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
-import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/need-evidence'
+import { currentBuyingNeedsForLeads } from '@/lib/scan/need-evidence'
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 import { discoverCounts } from '@/lib/discover/card'
@@ -44,6 +43,10 @@ export async function GET(req: NextRequest) {
   // pass the machine's existing currentness, targeting and contact proof.
   // Even all=1 cannot expose held hypotheses for these jobs.
   const results = companyFirst ? await companyFirstResults(sqliteDb(scanDb), user.tenantId, job.id) : null
+  const heldByGate = await requiredGateHeldForJob(sqliteDb(scanDb), user.tenantId, job.id)
+    .catch(() => null)
+  // On a batch read error, retain the scalar reader's fail-closed behavior.
+  const gateHeld = (id: string) => heldByGate?.has(id) ?? (requiredGateHeld(scanDb, user.tenantId, id) !== null)
   const displayEmails = results?.displayProof ?? {}
   const leads = companyFirst ? rows.filter(l => results?.visibleIds.has(l.id)) : rows
   // Company-first held candidates, read-only: who was found and why it is held. No contact, email or score is exposed, and
@@ -55,7 +58,7 @@ export async function GET(req: NextRequest) {
     const now = new Date()
     try {
       if (leadWindowHeld(scanDb, user.tenantId, id, now)) return eventDate ? 'outside_requested_window' : 'event_date_unproven'
-      if (requiredGateHeld(scanDb, user.tenantId, id)) return 'required_gate_failed'
+      if (gateHeld(id)) return 'required_gate_failed'
       const gap = timingProofGap(scanDb, user.tenantId, id, now)
       return gap ? (FINAL_GAP_REASON[gap] ?? gap) : 'held_by_final_checks'
     } catch { return 'held_by_final_checks' }
@@ -83,19 +86,17 @@ export async function GET(req: NextRequest) {
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
-    currentness_held:companyFirst ? !results?.readyIds.has(l.id) : currentnessHeld(scanDb,user.tenantId,l.id), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:requiredGateHeld(getScanDb(),user.tenantId,l.id) !== null, recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
-    lookalike_fit:la && la !== 'unreadable' ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
+    currentness_held:currentnessHeld(scanDb,user.tenantId,l.id,undefined,() => gateHeld(l.id)), window_held:leadWindowHeld(getScanDb(),user.tenantId,l.id), gate_held:gateHeld(l.id), recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
+    lookalike_fit:la && la !== 'unreadable' && !la.exclusionsOnly ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
   // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.
   const needByLead = new Map<string, string>()
   try {
     const adb = await getDb()
-    const needCtx = await needReadContext(adb, user.tenantId, job.id, windowDays ?? undefined)
-    const needRecords = new Map((await adb.all<NeedRecord>('SELECT * FROM lead_need_evidence WHERE tenant_id = ? AND job_id = ?', [user.tenantId, job.id])).map(r => [r.lead_id, r]))
-    for (const l of leads) {
-      const bn = await currentBuyingNeed(adb, user.tenantId, job.id, l.id, { context: needCtx, record: needRecords.get(l.id) ?? null })
-      needByLead.set(l.id, bn.status === 'unproven' ? bn.reason : bn.status)
-    }
+    const needs = await currentBuyingNeedsForLeads(adb, user.tenantId, job.id, leads.map(lead => lead.id), {
+      windowDays: windowDays ?? undefined,
+    })
+    for (const [id, need] of needs) needByLead.set(id, need.status === 'unproven' ? need.reason : need.status)
   } catch { /* an older store without the table simply has no buying-need column */ }
   const intentByLead = new Map(safeLeads.map(l => [l.id, l.intent]))
   for (const [id, p] of Object.entries(pri)) if (p) p.intent = intentByLead.get(id) ?? 0
@@ -105,10 +106,11 @@ export async function GET(req: NextRequest) {
   try { yields = sourceYield(await listFeedback(await getDb(), user.tenantId, { activeOnly: true })) } catch { /* no preference */ }
   const learned = new Map<string, Learned>(leads.map(l => [l.id, learnedPreference(yields, l)]))
   const ranked = rankLeads(safeLeads, pri, Object.fromEntries([...learned].map(([id, p]) => [id, p.delta])))
+  const sourceReviews = await latestLeadSourceReviews(sqliteDb(scanDb), user.tenantId, job.id, ranked.map(lead => lead.id))
   const via = gdeltAttribution(getScanDb(), user.tenantId, ranked.map(l => l.id))
   // #1238: every new-engine lead of this search by its ONE state (all of them, also the ones this list hides), and each listed lead's own
   const dStates = (await discoverStatesForDb(sqliteDb(scanDb), user.tenantId, [job.id])).get(job.id)
-  return NextResponse.json({ job_id: job.id, status: job.status, company_first: companyFirst, held, company_first_counts: results?.counts ?? null, discover_counts: dStates ? discoverCounts(dStates.values()) : null, hidden_count: includeHidden || companyFirst ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, discover_state: dStates?.get(l.id) ?? null, ...(Object.hasOwn(displayEmails, l.id) ? { company_first_published_email: displayEmails[l.id] } : {}), discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context:leadContactContext(getScanDb(),user.tenantId,l.id), source_check: sourceCheckForLead(getScanDb(), user.tenantId, l.id), sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
+  return NextResponse.json({ job_id: job.id, status: job.status, company_first: companyFirst, held, company_first_counts: results?.counts ?? null, discover_counts: dStates ? discoverCounts(dStates.values()) : null, hidden_count: includeHidden || companyFirst ? 0 : await db.countHiddenLeads(user.tenantId, job.id), repeat_count: readyRepeats(leads as { review_reason?: string | null; seen_before?: number | null }[]).repeats, work_email: workEmailPageRead(getScanDb(), user.tenantId, leads), leads: ranked.map(l => ({ ...l, discover_state: dStates?.get(l.id) ?? null, ...(Object.hasOwn(displayEmails, l.id) ? { company_first_published_email: displayEmails[l.id] } : {}), discovered_via: via.get(l.id)?.text ?? null, discovered_via_link: via.get(l.id)?.link ?? null, buying_need: needByLead.get(l.id) ?? null, contact_context: sourceReviews.get(l.id)?.contactContext ?? null, source_check: sourceReviews.get(l.id)?.check ?? null, sequence: sequences.get(l.id) ?? null, enrichments: (enr[l.id] ?? []).map(e => ({ ...e, entity_status:
           e.connector === 'signals:sec-edgar'
             ? (() => { const base = classifyEntityMatch(l.company, e.label ?? '')
                 return base === 'heuristic' && l.event_date && e.source_date && !withinEventWindow(e.source_date, l.event_date) ? 'unconfirmed' : base })()

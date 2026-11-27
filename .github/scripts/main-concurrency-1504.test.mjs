@@ -51,14 +51,10 @@ for (const [name, mainGroup] of [['web-ci', 'web-ci-main'], ['release-gate', 're
   })
 }
 
-test('web-ci shard 1 runs the full-repo type check (npm run check:unused) on pull requests too, not only changed-file lint', () => {
-  const text = wf('web-ci')
-  const step = text.match(/- name: ([^\n]*)\n {8}if: matrix\.shard == 1\n(?: {8}.*\n)*? {8}run: \|\n((?: {10}.*\n)+)/)
-  assert.ok(step, 'a shard-1 lint/typecheck step exists in sqlite-shard')
-  const body = step[2]
-  const prBranch = body.match(/if \[ "\$\{\{ github\.event_name \}\}" = pull_request \]; then\n([\s\S]*?)(?:\n {10}else|\n {10}fi)/)
-  const runsUnconditionally = /^ {10}npm run check:unused\s*$/m.test(body)
-  assert.ok(runsUnconditionally || (prBranch && /npm run check:unused/.test(prBranch[1])),
-    'npm run check:unused runs for pull_request events in shard 1')
-  assert.match(body, /npx eslint/, 'changed-file eslint still runs on pull requests')
+test('web-ci fast PR checks lint affected files and run the full-repo typecheck', () => {
+  const job = wf('web-ci').split('  fast-pr:\n')[1]?.split('  sqlite-shard:\n')[0]
+  assert.ok(job)
+  assert.match(job, /if: github\.event_name == 'pull_request'/)
+  assert.match(job, /npm run check:unused/)
+  assert.match(job, /npx eslint/)
 })

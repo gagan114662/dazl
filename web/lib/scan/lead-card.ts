@@ -6,7 +6,7 @@
 import { discoverApprove, discoverContact, discoverLinkedIn, isDiscoverLead } from '../discover/card.ts'
 import { contactIdentity, opportunityCard, type CardLead } from './opportunity.ts'
 import { classifyPurpose, publishedContact, publishedEmail } from '../outreach/published-email.ts'
-import { domainReviewFor } from '../outreach/domain-review.ts'
+import { domainReviewFor } from '../outreach/domain-review-view.ts'
 import { evidenceStateOf } from '../outreach/evidence-state.ts'
 import { contactRoute, deliverabilityBlocked, type ContactRoute } from '../outreach/contact-route.ts'
 import { titleMatches } from '../people/rank.ts'

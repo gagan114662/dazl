@@ -99,7 +99,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
   // The first play started from the ready screen, watched in place: its status and, once done, its ready leads.
   // f5: the fast first scan's view (lib/scan/first5.ts, served by the status route for a mode=first5 job): live
   // per-source progress, candidates so far and the verified leads. null for a job without it (then the leads read is used).
-  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; query: string; claudeSearch: boolean; reviewedTarget?:AcceptedTarget } | null>(null)
+  const [first, setFirst] = useState<{ id: string; status: string; leads: PreviewLead[] | null; f5: First5View | null; marketNotice?: string; query: string; claudeSearch: boolean; reviewedTarget?:AcceptedTarget } | null>(null)
 
   // Fills the step-2 buyer fields from a profile (the saved one on load, or a fresh website read). The saved profile's
   // research block comes back too: reopening the editor (?setup=brain) must keep every Add/Dismiss, hold and answer it
@@ -126,7 +126,15 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       fetch('/api/scan/jobs').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/settings/profile').then(r => r.ok ? r.json() : null).catch(() => null),
       loadUsage(),
-    ]).then(([jobs, profile]) => {
+    ]).then(async ([jobs, profile]) => {
+      if (profile && jobs?.jobs?.length === 0) {
+        await fetch('/api/settings/search-market', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ locale: navigator.language }),
+          signal: AbortSignal.timeout(2_000),
+        }).catch(() => null)
+      }
       if (profile) {
         setWebsite(String(profile.website ?? '')); setSells(String(profile.sells ?? '')); setBizName(String(profile.business_name ?? ''))
         if (profile.buyer) fillBuyer(profile.buyer)
@@ -175,11 +183,22 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
       return
     }
     if (firstStatus === 'failed') return
-    const poll = () => void fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null).then(j => { if (j?.status) setFirst(f => f && f.id === firstId ? { ...f, status: j.status, f5: j.first5 && typeof j.first5 === 'object' ? j.first5 : f.f5 } : f) })
+    let active = true
+    let issued = 0
+    let applied = 0
+    const poll = async () => {
+      const sequence = ++issued
+      const j = await fetch(`/api/scan/status?job_id=${firstId}`).then(r => r.ok ? r.json() : null).catch(() => null)
+      if (!active || sequence <= applied || !j?.status) return
+      applied = sequence
+      const report = j.run_report?.at(-1)
+      const marketNotice = report?.attempt === j.attempts ? report?.market_notice : null
+      setFirst(f => f && f.id === firstId ? { ...f, status: j.status, marketNotice, f5: j.first5 && typeof j.first5 === 'object' ? j.first5 : f.f5 } : f)
+    }
     // The first read right away (the live view should not sit empty for a whole interval), then every few seconds.
     const t0 = setTimeout(poll, 400)
     const t = setInterval(poll, POLL_MS)
-    return () => { clearTimeout(t0); clearInterval(t) }
+    return () => { active = false; clearTimeout(t0); clearInterval(t) }
   }, [firstId, firstStatus])
 
   if (ready === 'loading') return null
@@ -435,6 +454,7 @@ export default function FirstRun({ children }: { children: React.ReactNode }) {
               <div className="text-center">
                 <span className="inline-flex w-14 h-14 rounded-full bg-[var(--lav-bg)] items-center justify-center"><Icon name="spark" className="w-6 h-6 text-[var(--lav)]" /></span>
                 <h1 className="text-4xl sm:text-[52px] leading-tight font-bold tracking-tight mt-4 text-[#2a0a24]">Your brain is ready.</h1>
+                {first?.marketNotice && <p className="text-sm mt-2" role="status">{first.marketNotice}</p>}
                 <p className="text-[var(--ink-2)] text-lg mt-2" data-testid="ready-subhead">{f5 ? (f5Live ? 'dazl is finding your first leads now.' : f5Ready ? `dazl found ${f5Ready} lead${f5Ready === 1 ? '' : 's'} ready to contact.` : f5Found && ready ? `dazl found ${f5Found} lead${f5Found === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : first?.status === 'done' ? (ready?.length ? `dazl found ${ready.length} lead${ready.length === 1 ? '' : 's'} ready to contact.` : readyLeads.length ? `dazl found ${readyLeads.length} lead${readyLeads.length === 1 ? '' : 's'}; each needs a contact or more evidence before outreach.` : 'Your first play is done. See what it found.') : active ? 'dazl is finding your first leads now.' : `dazl knows ${sells ? 'what you sell and ' : ''}who buys it. Review it, then find your first leads.`}</p>
               </div>
               {error && <p className="text-sm mt-4 text-center text-[var(--pink)]" role="alert">{error}</p>}

@@ -10,7 +10,7 @@ export const slug = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\
 // Compact persisted shape inside scan_jobs.icp (no schema change; same pattern as the #379 research block):
 //   f: discriminators {d: i|s|l|k, t: value, n: support, x: lift}, p/q: positives/negatives, h: held-out numbers,
 //   k: supplied-account keys by kind (c customer/won, x competitor, n negative), each a run of 5-char hashes.
-export interface LookalikeBlock { v: 1; f: { d: 'i' | 's' | 'l' | 'k'; t: string; n: number; x: number }[]; p: number; q: number; h: { p: number; b: number; n: number }; k: { c: string; x: string; n: string } }
+export interface LookalikeBlock { exclusionsOnly?: true; v: 1; f: { d: 'i' | 's' | 'l' | 'k'; t: string; n: number; x: number }[]; p: number; q: number; h: { p: number; b: number; n: number }; k: { c: string; x: string; n: string } }
 const KEYRUN = /^(?:[0-9a-z]{5})*$/
 // Validates anything that claims to be a persisted lookalike block. Returns undefined for an absent block and null for
 // a present but malformed one: the caller refuses the whole profile then (a scan must never run without the exclusions
@@ -22,7 +22,8 @@ export function normalizeLookalike(raw: unknown): LookalikeBlock | null | undefi
   const int = (v: unknown, min: number, max: number) => typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max
   const num = (v: unknown, min: number, max: number) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
   if (r.v !== 1 || !int(r.p, MIN_POSITIVES, MAX_EXAMPLES) || !int(r.q, MIN_NEGATIVES, MAX_EXAMPLES)) return null
-  if (!Array.isArray(r.f) || r.f.length === 0 || r.f.length > MAX_FEATURES) return null
+  const exclusionsOnly = r.exclusionsOnly === true
+  if (!Array.isArray(r.f) || (exclusionsOnly ? r.f.length !== 0 : r.f.length === 0) || r.f.length > MAX_FEATURES) return null
   const f: LookalikeBlock['f'] = []
   for (const x of r.f as Record<string, unknown>[]) {
     const t = typeof x?.t === 'string' ? x.t : ''
@@ -34,7 +35,7 @@ export function normalizeLookalike(raw: unknown): LookalikeBlock | null | undefi
   const k = r.k as Record<string, unknown> | null
   const run = (v: unknown) => typeof v === 'string' && KEYRUN.test(v) && v.length <= MAX_EXAMPLES * 2 * 5
   if (!k || !run(k.c) || !run(k.x) || !run(k.n) || (k.c as string).length === 0) return null
-  return { v: 1, f, p: r.p as number, q: r.q as number, h: { p: h.p as number, b: h.b as number, n: h.n as number }, k: { c: k.c as string, x: k.x as string, n: k.n as string } }
+  return { ...(exclusionsOnly ? { exclusionsOnly: true as const } : {}), v: 1, f, p: r.p as number, q: r.q as number, h: { p: h.p as number, b: h.b as number, n: h.n as number }, k: { c: k.c as string, x: k.x as string, n: k.n as string } }
 }
 
 // The block a scan job's stored profile carries: null when it has none (or the profile is not JSON - the runner re-infers

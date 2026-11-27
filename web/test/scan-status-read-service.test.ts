@@ -49,7 +49,10 @@ bothEngines('whole scan status: tenant scope, same-id poison other store, record
       assert.deepEqual(active?.source_runs, (sourceRuns(raw, 'A', job) as Record<string, unknown>[]).map(({ job_id: omit, ...r }) => { void omit; return r }))
       assert.deepEqual(active?.run_report, runReportFor(raw, 'A', job))
     }
-    const report = { resolution: { candidates: 2, resolved: 1, unresolved: 1, by_reason: { held: 1 } } }
+    const report = {
+      resolution: { candidates: 2, resolved: 1, unresolved: 1, by_reason: { held: 1 } },
+      urls: [{ url: 'https://example.test/news', hit_date: null, walled: false, selected: true, tinyfish_text_chars: null, own_fetch: 'ok' }],
+    }
     await db.run('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)', [job, JSON.stringify(report)])
     const estimate = estimateRun({ budget: { first5: true, paid_fallback: false, credit_enrichment: false }, payer: 'you' })
     await db.run('UPDATE scan_jobs SET estimate = ?, spend_reserved_usd = 0 WHERE id = ?', [JSON.stringify(estimate), job])
@@ -129,7 +132,7 @@ bothEngines('status read: dated known model prices as the recorded-token compone
 
   // Typed numeric provenance: the recorded over_limit reason names the per-run budget control.
   const numeric = await createJob(db, 'A', { business_name: 'numeric', industry: 'software', location: 'Toronto' })
-  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [numeric])
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [numeric])
   await db.run("UPDATE scan_jobs SET status = 'failed', error = 'budget_stopped', query = 'numeric query', icp = '{}' WHERE id = ?", [numeric])
   await db.run("INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)", [numeric, JSON.stringify({ v: 1, attempt: 1, stop: { code: 'budget_stopped', spend_refusal_reason: 'over_limit' } })])
   const numericStatus = await readScanStatus(db, 'A', numeric)
@@ -139,7 +142,7 @@ bothEngines('status read: dated known model prices as the recorded-token compone
   // Fixed cap: over_cap names the service's per-scan cap and never advises a larger budget (reviewer repro:
   // run_budget NULL, default cap 3.3333 refusing cost 4).
   const capped = await createJob(db, 'A', { business_name: 'capped', industry: 'software', location: 'Toronto' })
-  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [capped])
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [capped])
   await db.run("UPDATE scan_jobs SET status = 'failed', error = 'budget_stopped', query = 'capped query', icp = '{}', run_budget = NULL WHERE id = ?", [capped])
   await db.run("INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)", [capped, JSON.stringify({ v: 1, attempt: 1, stop: { code: 'budget_stopped', spend_refusal_reason: 'over_cap' } })])
   const cappedStatus = await readScanStatus(db, 'A', capped)
@@ -149,7 +152,7 @@ bothEngines('status read: dated known model prices as the recorded-token compone
 
   // Pool origin: the typed owner_pool_limit reason names the shared day/month limit and never the per-run control.
   const pooled = await createJob(db, 'A', { business_name: 'pooled', industry: 'software', location: 'Toronto' })
-  await db.run("UPDATE scan_jobs SET status = 'running' WHERE id = ?", [pooled])
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [pooled])
   await db.run("UPDATE scan_jobs SET status = 'failed', error = 'budget_stopped', query = 'pooled query', icp = '{}', run_budget = NULL WHERE id = ?", [pooled])
   await db.run("INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)", [pooled, JSON.stringify({ v: 1, attempt: 1, stop: { code: 'budget_stopped', spend_refusal_reason: 'owner_pool_limit' } })])
   const pooledStatus = await readScanStatus(db, 'A', pooled)
