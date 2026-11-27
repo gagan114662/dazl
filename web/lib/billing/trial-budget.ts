@@ -441,7 +441,8 @@ export async function trialAllowanceLeft(db: Db, tenantId: string, o: { now?: nu
 export async function interruptedTrialAttemptRestored(db: Db, tenantId: string, jobId: string): Promise<boolean> {
   const row = await db.get(`SELECT 1 FROM trial_reservations r JOIN scan_jobs j ON j.id = r.job_id AND j.user_id = r.tenant_id
     WHERE r.tenant_id = ? AND r.job_id = ? AND r.kind = 'scan'
-      AND j.status = 'failed' AND j.error = 'accounting_uncertain' AND ${SETTLED_SQL} AND NOT ${HAS_SAVED_LEADS_SQL}`,
+      AND j.status = 'failed' AND ((j.error = 'accounting_uncertain' AND ${SETTLED_SQL})
+        OR (j.error = 'provider_rejected' AND ${SETTLED_SQL} AND COALESCE(j.spend_reserved_usd, 0) = 0 AND COALESCE(j.spend_cap_reserved_usd, 0) = 0)) AND NOT ${HAS_SAVED_LEADS_SQL}`,
     [tenantId, jobId]).catch(() => undefined)
   return row != null
 }

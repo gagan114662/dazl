@@ -95,7 +95,7 @@ export function previewSplit(leads: PreviewLead[]): PreviewSplit {
   return out
 }
 
-export interface JourneyJob { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean; empty_reason?: string | null }
+export interface JourneyJob { id: string; status: string; error: string | null; query: string | null; csv_domain: string | null; created_at: number; finished_at?: number | null; candidates: number | null; verified: number | null; needs_review: number | null; dropped: number | null; lead_count: number; test_only: boolean; empty_reason?: string | null; funded_by?: string | null; spend_usd?: number | null; settled_usd?: number | null; spend_rows?: number | null; uncertain_usd?: number | null; uncertain_steps?: number | null; trial_attempt_restored?: boolean }
 export interface JourneyInput {
   profile: { website?: string; sells?: string; buyer?: unknown } | null   // null: could not load
   jobs: JourneyJob[] | null                                                // null: could not load
