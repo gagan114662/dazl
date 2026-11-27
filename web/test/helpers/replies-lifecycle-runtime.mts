@@ -127,7 +127,9 @@ test('reply settings and consent use Postgres without a raw SQLite handle and ke
     assert.deepEqual(await pg.all('SELECT tenant_id, action FROM autopilot_audit'), [{ tenant_id: 'owner', action: 'followups_off' }])
     as('neighbor')
     assert.equal((await info()).followups_enabled, true)
-    const prev = { AUTOPILOT_ENABLED: process.env.AUTOPILOT_ENABLED, AUTOPILOT_AVAILABLE: process.env.AUTOPILOT_AVAILABLE, AUTOPILOT_KILL: process.env.AUTOPILOT_KILL }
+    const prev = { AUTOPILOT_ENABLED: process.env.AUTOPILOT_ENABLED, AUTOPILOT_AVAILABLE: process.env.AUTOPILOT_AVAILABLE, AUTOPILOT_KILL: process.env.AUTOPILOT_KILL,
+      DAZL_ENV: process.env.DAZL_ENV, DAZL_STAGING_REAL_GMAIL: process.env.DAZL_STAGING_REAL_GMAIL,
+      DAZL_STAGING_FAKE_REPLIES: process.env.DAZL_STAGING_FAKE_REPLIES }
     t.after(() => {
       for (const [key, value] of Object.entries(prev)) {
         if (value === undefined) delete process.env[key]
@@ -144,10 +146,6 @@ test('reply settings and consent use Postgres without a raw SQLite handle and ke
     await pg.run('UPDATE autopilot_settings SET enabled = 1, consent_version = ? WHERE tenant_id = ?', [CONSENT_VERSION, 'owner'])
     assert.equal((await post({ action: 'followups_on' })).status, 200)
     assert.equal((await info()).followups_enabled, true)
-    const sync = await post({ action: 'sync' })
-    assert.equal(sync.status, 503, 'Postgres sync cannot fall through to a different store')
-    assert.equal((await sync.json()).code, 'reply_sync_unavailable')
-    assert.deepEqual((await info() as Info & { inbound: { excerpt: string }[] }).inbound.map(row => row.excerpt), ['Interested'])
     assert.equal((await post({ action: 'followups_off' })).status, 200)
     const [enabled, revokedAgain] = await Promise.all([
       post({ action: 'followups_on' }),
@@ -158,6 +156,32 @@ test('reply settings and consent use Postgres without a raw SQLite handle and ke
     const final = await info()
     assert.deepEqual([final.consent.accepted, final.followups_enabled], [false, false])
     assert.equal((await post({ action: 'followups_on' })).status, 400)
+
+    // The staging reply fixture exercises the real sync without contacting Gmail.
+    process.env.DAZL_ENV = 'staging'
+    process.env.DAZL_STAGING_REAL_GMAIL = '0'
+    process.env.DAZL_STAGING_FAKE_REPLIES = '1'
+    const recipient = 'fake-optout@example.test'
+    await pg.run(
+      `INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?)`,
+      ['sent-owner', 'owner', 'lead-owner', recipient, 'A follow-up', 'A fixture message sent before the reply.',
+        Math.floor(Date.now() / 1000) - 120, 'gmail-owner', 'thread-owner'],
+    )
+    assert.equal((await post({ action: 'consent', accept: true, version: READ_CONSENT_VERSION })).status, 200)
+    const checked = await post({ action: 'sync' })
+    assert.equal(checked.status, 200, 'live sync must use the same Postgres store as GET')
+    assert.equal((await checked.json()).sync.optOuts, 1)
+    const afterSync = await info() as Info & { inbound: { excerpt: string }[] }
+    assert.ok(afterSync.inbound.some(row => row.excerpt === 'Please unsubscribe me.'))
+    assert.deepEqual(await pg.all('SELECT tenant_id, email, reason FROM suppressions'), [
+      { tenant_id: 'owner', email: recipient, reason: 'unsubscribe' },
+    ])
+    const checkedAgain = await post({ action: 'sync' })
+    assert.equal(checkedAgain.status, 200)
+    assert.equal((await checkedAgain.json()).sync.optOuts, 0)
+    as('neighbor')
+    assert.deepEqual((await info() as Info & { inbound: unknown[] }).inbound, [])
 
   } finally { setDb(null); await pg.close(); await drop() }
 })
