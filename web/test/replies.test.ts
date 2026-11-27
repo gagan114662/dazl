@@ -9,12 +9,12 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
-import { migrateOutreach } from '../lib/outreach/store.ts'
+import { migrateOutreach, READ_CONSENT_VERSION } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl, suppressInTx } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, grantConsentInTx, hasConsent, migrateLedger, revokeAll, revokeAllInTx } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, recordClassifiedReply, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, recordAuthorizedClassifiedReply, recordClassifiedReply, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
 
@@ -368,6 +368,23 @@ test('Postgres reply sync selects only the owning tenant and prioritizes due thr
       [{ revoked_at: NOW + 2, revoke_reason: 'reply_uncertain' }])
     assert.deepEqual(await db.get("SELECT stopped FROM followup_threads WHERE tenant_id = 'owner' AND thread_id = 'recent'"),
       { stopped: 'opt_out' })
+    const expected = { email: 'sender@example.test', refreshCt: 'first-generation' }
+    await db.run(
+      "INSERT INTO gmail_accounts (tenant_id, email, refresh_ct, status, read_granted) VALUES ('owner', ?, ?, 'active', 1)",
+      [expected.email, expected.refreshCt],
+    )
+    const fenced = { ...automatic, gmailId: 'fenced' }
+    assert.deepEqual(await db.tx(tx => recordAuthorizedClassifiedReply(tx, 'owner', expected, fenced, NOW)),
+      { authorized: false })
+    await db.run("INSERT INTO mail_read_consent (tenant_id, version) VALUES ('owner', ?)", [READ_CONSENT_VERSION])
+    await db.run("UPDATE gmail_accounts SET refresh_ct = 'second-generation' WHERE tenant_id = 'owner'")
+    assert.deepEqual(await db.tx(tx => recordAuthorizedClassifiedReply(tx, 'owner', expected, fenced, NOW)),
+      { authorized: false })
+    assert.equal(await db.get("SELECT 1 FROM inbound_messages WHERE gmail_id = 'fenced'"), undefined)
+    assert.deepEqual(await db.tx(tx => recordAuthorizedClassifiedReply(tx, 'owner',
+      { ...expected, refreshCt: 'second-generation' }, fenced, NOW)),
+    { authorized: true, result: { kind: 'auto' } })
+
 
 
 

@@ -12,7 +12,7 @@ import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppressInTx } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
 import { dsnProvenance } from './dsn.ts'
-import { recheckReadAuthority } from './send-authority.ts'
+import { recheckReadAuthority, recheckReadAuthorityInTx, type ReadAuthorityInput } from './send-authority.ts'
 import { applyBounceVerdict, migrateBounceLedger } from './bounce-ledger.ts'
 export { newText, messageText, htmlToText } from './reply-text.ts'
 
@@ -434,11 +434,22 @@ export function* insertReplySyncInbound(tx: Tx, tenantId: string, item: ReplySyn
   return result.changes === 1
 }
 
-export function* recordClassifiedReply(tx: Tx, tenantId: string, item: ReplySyncInbound & {
+interface ClassifiedReply extends ReplySyncInbound {
   leadId: string
   recipient: string
   bodyStatus: string
-}, now: number, hasSequences = true) {
+}
+
+export function* recordAuthorizedClassifiedReply(tx: Tx, tenantId: string, expected: ReadAuthorityInput,
+  item: ClassifiedReply, now: number, hasSequences = true,
+) {
+  const refusal = yield* recheckReadAuthorityInTx(tx, tenantId, expected)
+  if (refusal) return { authorized: false } as const
+  const result = yield* recordClassifiedReply(tx, tenantId, item, now, hasSequences)
+  return { authorized: true, result } as const
+}
+
+export function* recordClassifiedReply(tx: Tx, tenantId: string, item: ClassifiedReply, now: number, hasSequences = true) {
   if (!(yield* insertReplySyncInbound(tx, tenantId, item))) return null
   const cls = item.classification
   if (cls === 'auto') return { kind: 'auto' } as const
@@ -591,10 +602,13 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           continue
         }
         const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
-        const result = sqliteTransaction(db, tx => recordClassifiedReply(tx, tenantId, {
-          gmailId: g.id, threadId: thread, messageId: m.id, from, text, classification: cls, receivedAt: at,
-          leadId: m.lead_id, recipient: m.to_email, bodyStatus: body.status,
-        }, now, tableExists(db, 'sequences')))
+        const recorded = sqliteTransaction(db, tx => recordAuthorizedClassifiedReply(tx, tenantId,
+          { email: acct.email, refreshCt: acct.refresh_ct }, {
+            gmailId: g.id, threadId: thread, messageId: m.id, from, text, classification: cls, receivedAt: at,
+            leadId: m.lead_id, recipient: m.to_email, bodyStatus: body.status,
+          }, now, tableExists(db, 'sequences')))
+        if (!recorded.authorized) throw LOST
+        const { result } = recorded
         if (!result || result.kind === 'auto') continue
         out.replies++
         auditAt(db, tenantId, result.action, result.detail, m.lead_id, m.id, now)

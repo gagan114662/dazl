@@ -1,4 +1,4 @@
-import type { Db } from '../db/client.ts'
+import type { Db, Tx } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { hasConsent } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
@@ -95,4 +95,18 @@ export async function recheckReadAuthorityDb(db: Db, tenantId: string, expected:
   } catch {
     return 'authority_unreadable'
   }
+}
+
+
+// Writers take these locks in the same order as consent revocation and follow-up enablement.
+export function* recheckReadAuthorityInTx(tx: Tx, tenantId: string, expected: ReadAuthorityInput) {
+  const lock = tx.kind === 'pg' ? ' FOR SHARE' : ''
+  const consent = yield* tx.get<{ version: string }>(
+    'SELECT version FROM mail_read_consent WHERE tenant_id = ?' + lock, [tenantId],
+  )
+  if (consent?.version !== READ_CONSENT_VERSION) return 'read_consent_absent'
+  const account = yield* tx.get<ReadAccount>(
+    'SELECT email, status, read_granted, refresh_ct FROM gmail_accounts WHERE tenant_id = ?' + lock, [tenantId],
+  )
+  return readAccountRefusal(account, expected)
 }
