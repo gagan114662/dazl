@@ -178,25 +178,27 @@ export function sameNamedPublication(n: Name, ctx: AddressContext[] | undefined)
 }
 // #1208: the commonest team-card shape, "<h3>Maya Thornton</h3><p>Broker</p><a href="mailto:maya@...">Email</a>", pairs the address with
 // her only on all of: a plain mailto with no query (sitecrawl.ts mailtoCard); the heading is exactly her full name (the own-name rule
-// above: no hyphen, no firm word, no record break) and nothing else; the only text between heading and link is the title the crawl
-// recorded for her, or none; the link's own name is the address or words asking to write (nothing that could be a person); and no other
-// heading is stacked on hers. Only with that recorded title (`title`): without it a heading is never a pairing.
+// above: no hyphen, no firm word, no record break) and nothing else; the text between heading and link is exactly the title the crawl
+// recorded for her; the link's own name is the address or words asking to write (nothing that could be a person); and no other
+// heading is stacked on hers. The recorded title is what makes the card a pairing: a nearby heading alone, with nothing between
+// it and the link, is not a pairing (the #1036 guard: fail closed), and neither is text between that is not her recorded title.
 const squash = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
 const LINK_WORDS = new Set(['email', 'e', 'mail', 'me', 'send', 'an', 'contact', 'write', 'to', 'message'])
-function cardPairs(card: NonNullable<AddressContext['card']>, n: Name, title: string): boolean {
+function cardPairs(card: NonNullable<AddressContext['card']>, n: Name, title?: string): boolean {
   if (card.stacked) return false
   const head = withoutOwnName(card.heading, n)
   if (!head.found || head.rest.length) return false
-  if (card.between && squash(card.between) !== squash(title)) return false
+  if (!card.between || !title || squash(card.between) !== squash(title)) return false
   // the link's own name (its text, and the alt / title / aria-label of anything in it) may only be the address or words that ask to
   // write: any other word could be a person ("Ana", "Email Owen", an <img alt="Owen Pike">), so the card is then nobody's pairing
   // ... and an address in it is the link's own (another address shown as the link, "maya.ortiz@...", names someone else)
   if ((card.link.match(EMAIL_RE) ?? []).some(a => a.toLowerCase() !== card.to)) return false
   return (card.link.replace(EMAIL_RE, ' ').toLowerCase().match(/[\p{L}]+/gu) ?? []).every(w => LINK_WORDS.has(w))
 }
-// #1208: the same card pairing, as a named publication for the CA / GB display path (published-display.ts): only with the title the crawl recorded.
+// #1208: the same card pairing, as a named publication for the CA / GB display path (published-display.ts): the title the crawl
+// recorded must match the text between the heading and the link (cardPairs); a heading alone never pairs.
 export function cardNamedPublication(n: Name, ctx: AddressContext[] | undefined, title: string | undefined): boolean {
-  return !!title && plainName(n) && !!ctx?.some(c => !!c.card && cardPairs(c.card, n, title))
+  return plainName(n) && !!ctx?.some(c => !!c.card && cardPairs(c.card, n, title))
 }
 export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] | undefined, title?: string): boolean {
   if (!plainName(n) || !ctx?.length) return false
@@ -208,7 +210,7 @@ export function singleNamePairing(local: string, n: Name, ctx: AddressContext[] 
     // attribute) stands on its own; a bare mailto in someone else's card is judged by the text around it.
     if (!(c.attr && tight.found) && withoutOwnName(c.wide, n).rest.includes(local)) return false
     if (tight.found) paired = true
-    else if (title && c.card && cardPairs(c.card, n, title)) paired = true
+    else if (c.card && cardPairs(c.card, n, title)) paired = true
   }
   return paired
 }

@@ -106,15 +106,25 @@ for (const [label, team] of [
 const seenFrom = (h: string) => personalAddresses(h, 'x.com').map(a => ({ address: a.address, url: 'https://x.com/team', ctx: addressContexts(h, a.at) as AddressContext[] }))
 const maya = { first: 'maya', last: 'thornton' }
 test('#1208 the issue\'s literal shape publishes for the buyer the crawl titled; without her recorded title it stays refused', () => {
-  const h = '<h3>Maya Thornton</h3><a href="mailto:maya@x.com">Email</a>'
+  const h = '<h3>Maya Thornton</h3><p>Broker</p><a href="mailto:maya@x.com">Email</a>'
   const pub = publishedFor(maya, seenFrom(h), [maya], 'Broker')
   assert.deepEqual(pub && [pub.address, pub.url], ['maya@x.com', 'https://x.com/team'])
-  assert.equal(publishedFor(maya, seenFrom(h), [maya]), null, 'no recorded title: no heading pairing (the display-only importer path)')
   // another named person reachable by the same local part still makes it nobody's
   assert.equal(publishedFor(maya, seenFrom(h), [maya, { first: 'maya', last: 'ortiz' }], 'Broker'), null)
   // her title as the page writes it, with an entity, still matches the title the crawl recorded
   const t = publishedFor(maya, seenFrom('<h3>Maya Thornton</h3><p>Owner&#39;s Agent</p><a href="mailto:maya@x.com">Email</a>'), [maya], "Owner's Agent")
   assert.equal(t?.address, 'maya@x.com')
+})
+
+// The other half, per the #1036 guard: a nearby heading alone is not a pairing (fail closed). Without her recorded title
+// matching the text between heading and link, the card shape never pairs - not the bare shape, and not a titled card.
+test('#1208 no recorded title: the card shape never pairs - a nearby heading alone is not a pairing (fail closed)', () => {
+  const h = '<h3>Maya Thornton</h3><a href="mailto:maya@x.com">Email</a>'
+  assert.equal(publishedFor(maya, seenFrom(h), [maya]), null, 'no recorded title, nothing between: a heading alone does not pair')
+  assert.equal(publishedFor(maya, seenFrom(h), [maya], 'Broker'), null, 'a recorded title with nothing between: still not a pairing')
+  assert.equal(publishedFor(maya, seenFrom('<h3>Maya Thornton</h3><p>Broker</p><a href="mailto:maya@x.com">Email</a>'), [maya]), null, 'a line between, unvouched without her recorded title: refused')
+  assert.equal(publishedFor(maya, seenFrom('<h3>Maya Thornton</h3><p>Assistant: Ana Reyes</p><a href="mailto:maya@x.com">Email</a>'), [maya]), null, 'a line naming someone else, no recorded title: refused')
+  assert.equal(publishedFor(maya, seenFrom(h), [maya, { first: 'maya', last: 'ortiz' }]), null, 'another Maya reachable by the same local part: still nobody\'s')
 })
 
 // Differential (the issue's "Done when"): every combination of heading, line between, link text, href and neighbour, judged with
@@ -137,7 +147,7 @@ test('#1208 differential: the new rule adds only the heading + own-title + plain
     if (after && !before) {
       added++
       const intended = ['<h3>Maya Thornton</h3>', '<h3>Maya A. Thornton</h3>', '<h3>maya thornton</h3>', '<h2>Maya Thornton</h2>'].includes(h)
-        && ['', '<p>Broker</p>', '<p>broker</p>', '<div><span>Broker</span></div>'].includes(b) && ['Email', 'Email me', 'maya@x.com', '', '<img src="a.jpg" alt="Email">'].includes(l)
+        && ['<p>Broker</p>', '<p>broker</p>', '<div><span>Broker</span></div>'].includes(b) && ['Email', 'Email me', 'maya@x.com', '', '<img src="a.jpg" alt="Email">'].includes(l)
         && href === 'mailto:maya@x.com' && a !== around[1]
       if (!intended) outside.push(page)
     }
