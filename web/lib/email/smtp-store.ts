@@ -51,3 +51,7 @@ export async function loadSmtpMailbox(db: Db, workspaceId: string, id: string, m
   if (!row) return null
   return { host: row.host, port: row.port, username: row.username, password: decryptSecret(row.ciphertext, context(workspaceId, id), master) }
 }
+
+export async function disconnectSmtpMailbox(db: Db, workspaceId: string, id: string): Promise<boolean> {
+  return (await db.run(`DELETE ${SMTP_ROW} AND id = ?`, [workspaceId, id])).changes === 1
+}

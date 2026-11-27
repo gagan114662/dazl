@@ -184,6 +184,7 @@ export const ROUTES: RouteEntry[] = [
   { path: 'settings/extension', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/smtp', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/smtp', method: 'PUT', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
+  { path: 'settings/smtp', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/advanced', method: 'GET', auth: 'session', crossTenant: 'session-scope', role: 'read' },
   { path: 'settings/advanced', method: 'POST', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
   { path: 'settings/advanced', method: 'DELETE', auth: 'session', crossTenant: 'session-scope', role: 'configure', fresh: true },
