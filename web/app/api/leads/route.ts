@@ -18,7 +18,7 @@ import { fitRationale } from '@/lib/scan/score'
 import { timingProofGap } from '@/lib/scan/timing-proof'
 import { eventDayVerified, surfaceStoredIntent, timingUnconfirmedReason, TIMING_REQUESTED } from '@/lib/scan/scoreboard'
 import { jobWindowDays } from '@/lib/scan/window'
-import { currentBuyingNeed, needReadContext, type NeedRecord } from '@/lib/scan/need-evidence'
+import { currentBuyingNeedsForLeads } from '@/lib/scan/need-evidence'
 import { leadLookalikeFit, lookalikeOf } from '@/lib/scan/lookalike-discovery'
 import { classifyEntityMatch, classifyBoardMatch, qualifyEvent, withinEventWindow } from '@/lib/signals/entity-match'
 import { discoverCounts } from '@/lib/discover/card'
@@ -90,12 +90,10 @@ export async function GET(req: NextRequest) {
   const needByLead = new Map<string, string>()
   try {
     const adb = await getDb()
-    const needCtx = await needReadContext(adb, user.tenantId, job.id, windowDays ?? undefined)
-    const needRecords = new Map((await adb.all<NeedRecord>('SELECT * FROM lead_need_evidence WHERE tenant_id = ? AND job_id = ?', [user.tenantId, job.id])).map(r => [r.lead_id, r]))
-    for (const l of leads) {
-      const bn = await currentBuyingNeed(adb, user.tenantId, job.id, l.id, { context: needCtx, record: needRecords.get(l.id) ?? null })
-      needByLead.set(l.id, bn.status === 'unproven' ? bn.reason : bn.status)
-    }
+    const needs = await currentBuyingNeedsForLeads(adb, user.tenantId, job.id, leads.map(lead => lead.id), {
+      windowDays: windowDays ?? undefined,
+    })
+    for (const [id, need] of needs) needByLead.set(id, need.status === 'unproven' ? need.reason : need.status)
   } catch { /* an older store without the table simply has no buying-need column */ }
   const intentByLead = new Map(safeLeads.map(l => [l.id, l.intent]))
   for (const [id, p] of Object.entries(pri)) if (p) p.intent = intentByLead.get(id) ?? 0
