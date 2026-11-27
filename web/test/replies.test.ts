@@ -11,7 +11,7 @@ import Database from 'better-sqlite3'
 import { migrateScan, createJob } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
-import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
+import { saveSettings, getSettings, isSuppressed, cleanBookingUrl, suppressInTx } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, grantConsentInTx, hasConsent, migrateLedger, revokeAll, revokeAllInTx } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, syncReplies } from '../lib/outreach/replies.ts'
@@ -371,6 +371,55 @@ test('Postgres reply consent effects preserve tenant scope and roll back with th
       { tenant_id: 'neighbor', contact: 'buyer@example.test', channel: 'email', revoked_at: null, revoke_reason: null },
       { tenant_id: 'owner', contact: 'buyer@example.test', channel: 'email', revoked_at: NOW + 2, revoke_reason: 'opt_out' },
       { tenant_id: 'owner', contact: 'buyer@example.test', channel: 'phone', revoked_at: NOW + 2, revoke_reason: 'opt_out' },
+    ])
+  } finally {
+    await db.close()
+    await drop()
+  }
+})
+
+
+test('Postgres suppression revokes consent and stops queued sends atomically for the owning tenant', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  const contact = 'buyer@example.test'
+  try {
+    await runPgMigrations(db.pool)
+    for (const tenant of ['owner', 'neighbor']) {
+      await db.run(
+        `INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, approved_hash)
+         VALUES (?, ?, ?, ?, 'Subject', 'An approved outreach message.', 'approved', 'approval')`,
+        [tenant, tenant, tenant, contact],
+      )
+      await db.run(
+        "INSERT INTO sequences (id, tenant_id, lead_id, message_id, to_email, status) VALUES (?, ?, ?, ?, ?, 'active')",
+        [tenant, tenant, tenant, tenant, contact],
+      )
+      await db.tx(tx => grantConsentInTx(tx, tenant, contact, {
+        channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:reply', now: NOW,
+      }))
+    }
+    await assert.rejects(db.tx(function* (tx) {
+      yield* suppressInTx(tx, 'owner', contact, 'unsubscribe')
+      throw new Error('remaining reply effect failed')
+    }), /remaining reply effect failed/)
+    assert.deepEqual(await db.all('SELECT tenant_id FROM suppressions'), [])
+    assert.deepEqual(await db.get("SELECT status FROM outreach_messages WHERE tenant_id = 'owner'"), { status: 'approved' })
+    await db.tx(tx => suppressInTx(tx, 'owner', ' Buyer@Example.test ', 'unsubscribe'))
+    await db.tx(tx => suppressInTx(tx, 'owner', contact, 'manual'))
+    assert.deepEqual(await db.all('SELECT tenant_id, email, reason FROM suppressions'),
+      [{ tenant_id: 'owner', email: contact, reason: 'unsubscribe' }])
+    assert.deepEqual(await db.all('SELECT tenant_id, status, approved_hash FROM outreach_messages ORDER BY tenant_id'), [
+      { tenant_id: 'neighbor', status: 'approved', approved_hash: 'approval' },
+      { tenant_id: 'owner', status: 'skipped', approved_hash: null },
+    ])
+    assert.deepEqual(await db.all('SELECT tenant_id, status, stop_reason FROM sequences ORDER BY tenant_id'), [
+      { tenant_id: 'neighbor', status: 'active', stop_reason: null },
+      { tenant_id: 'owner', status: 'stopped', stop_reason: 'suppressed' },
+    ])
+    assert.deepEqual(await db.all('SELECT tenant_id, revoke_reason FROM consent_ledger ORDER BY tenant_id'), [
+      { tenant_id: 'neighbor', revoke_reason: null },
+      { tenant_id: 'owner', revoke_reason: 'unsubscribe' },
     ])
   } finally {
     await db.close()

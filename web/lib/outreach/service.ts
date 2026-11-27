@@ -1,3 +1,4 @@
+import { revokeAllInTx } from './ledger.ts'
 import {contactPurposeRestricted} from './contact-purpose-db.ts'
 import { carriedExcluded } from '../scan/carry-gate.ts'
 import { evidenceStateOf, type EvidenceState } from './evidence-state.ts'
@@ -7,7 +8,7 @@ import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
 import { readAccountZone } from '../account-zone.ts'
-import { asDb } from '../db/client.ts'
+import { asDb, sqliteTransaction, type Tx } from '../db/client.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { composeDraftCopy, DraftCopyError } from './draft-copy.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -150,15 +151,34 @@ export function isSuppressed(db: Database.Database, tenantId: string, email: str
   return !!db.prepare('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?').get(tenantId, norm(email))
 }
 
-export function suppress(db: Database.Database, tenantId: string, email: string, reason: 'unsubscribe' | 'manual' | 'bounce'): void {
-  db.transaction(() => {
-    db.prepare('INSERT OR IGNORE INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?)').run(tenantId, norm(email), reason)
-    // an opt-out ends every kind of automated contact with this address
-    try { db.prepare('UPDATE consent_ledger SET revoked_at = CAST(strftime(\'%s\',\'now\') AS INTEGER), revoke_reason = ? WHERE tenant_id = ? AND contact = ? AND revoked_at IS NULL').run(reason, tenantId, norm(email)) } catch { /* ledger not created yet */ }
-    if (tableExists(db, 'sequences')) db.prepare("UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved','active')").run(tenantId,norm(email))
-    // nothing waiting to go out to this address may go out
-    db.prepare("UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved')").run(tenantId, norm(email))
-  })()
+type SuppressionReason = 'unsubscribe' | 'manual' | 'bounce'
+
+export function* suppressInTx(tx: Tx, tenantId: string, email: string, reason: SuppressionReason,
+  tables = { consent: true, sequences: true },
+) {
+  const contact = norm(email)
+  yield* tx.run(
+    'INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?) ON CONFLICT (tenant_id, email) DO NOTHING',
+    [tenantId, contact, reason],
+  )
+  if (tables.consent) yield* revokeAllInTx(tx, tenantId, contact, reason)
+  if (tables.sequences) {
+    yield* tx.run(
+      "UPDATE sequences SET status = 'stopped', stop_reason = 'suppressed' WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved','active')",
+      [tenantId, contact],
+    )
+  }
+  yield* tx.run(
+    "UPDATE outreach_messages SET status = 'skipped', error = 'suppressed', approved_hash = NULL WHERE tenant_id = ? AND to_email = ? AND status IN ('draft','approved')",
+    [tenantId, contact],
+  )
+}
+
+export function suppress(db: Database.Database, tenantId: string, email: string, reason: SuppressionReason): void {
+  sqliteTransaction(db, tx => suppressInTx(tx, tenantId, email, reason, {
+    consent: tableExists(db, 'consent_ledger'),
+    sequences: tableExists(db, 'sequences'),
+  }))
 }
 
 // Public unsubscribe link: honored immediately, no login.
