@@ -80,3 +80,23 @@ test('an existing draft is held if its lead has only an index date', t => {
     .run(tenant, mailbox)
   assert.equal(approveBlockReason(db, tenant, 'saved-draft', { skipAccount: true }), 'lead_currentness_unconfirmed')
 })
+
+test('a dated lead that becomes research only cannot approve its existing draft', async t => {
+  const db = fixture(t)
+  const id = createDraft(db, tenant, 'page-dated', 'Workspace', { manual: true })
+  assert.equal(approveBlockReason(db, tenant, id, { skipAccount: true }), null)
+
+  db.prepare("UPDATE leads SET review_reason = 'public_sector_non_buyer' WHERE id = ?").run('page-dated')
+
+  const rows = listLeads(db, tenant, scan, 20, true) as (Parameters<typeof leadCardSummary>[0] & { id: string })[]
+  const enrichments = enrichmentsForLeads(db, tenant, rows.map(row => row.id))
+  const cards = rows.map(row => ({ ...row, enrichments: enrichments[row.id] ?? [] }))
+  const reclassified = cards.find(card => card.id === 'page-dated')
+  assert.ok(reclassified)
+  assert.equal(heldState(reclassified)?.state, 'research')
+  assert.equal(leadCardSummary(reclassified).approve.ok, false)
+  const counts = await discoverJobCounts(sqliteDb(db), tenant, scan)
+  assert.equal(counts?.ready, cards.filter(card => !heldState(card)).length)
+  assert.equal(counts?.research, 2)
+  assert.equal(approveBlockReason(db, tenant, id, { skipAccount: true }), 'lead_currentness_unconfirmed')
+})
