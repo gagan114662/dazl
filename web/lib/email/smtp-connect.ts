@@ -33,21 +33,25 @@ type SmtpOptions = Awaited<ReturnType<typeof smtpEndpoint>> & {
 }
 type VerificationTransport = { verify(): Promise<boolean>; close(): void }
 
+async function smtpOptions(input: SmtpMailbox, lookup?: Lookup): Promise<SmtpOptions> {
+  if (!input.username.trim() || !input.password) throw new Error('Enter your SMTP username and app password')
+  return {
+    ...await smtpEndpoint(input.host, input.port, lookup),
+    auth: { user: input.username, pass: input.password },
+    connectionTimeout: 8_000,
+    greetingTimeout: 8_000,
+    socketTimeout: 12_000,
+  }
+}
+
 export async function verifySmtpMailbox(input: SmtpMailbox, deps: {
   lookup?: Lookup
   connect?: (options: SmtpOptions) => VerificationTransport
 } = {}): Promise<void> {
-  if (!input.username.trim() || !input.password) throw new Error('Enter your SMTP username and app password')
-  const endpoint = await smtpEndpoint(input.host, input.port, deps.lookup)
+  const options = await smtpOptions(input, deps.lookup)
   let transport: VerificationTransport | undefined
   try {
-    transport = (deps.connect ?? (options => nodemailer.createTransport(options)))({
-      ...endpoint,
-      auth: { user: input.username, pass: input.password },
-      connectionTimeout: 8_000,
-      greetingTimeout: 8_000,
-      socketTimeout: 12_000,
-    })
+    transport = (deps.connect ?? (configuration => nodemailer.createTransport(configuration)))(options)
     if (await transport.verify()) return
   } catch {
     // Server and transport errors may echo authentication data.
@@ -55,4 +59,29 @@ export async function verifySmtpMailbox(input: SmtpMailbox, deps: {
     transport?.close()
   }
   throw new Error('Could not verify the SMTP mailbox')
+}
+
+type SmtpMessage = { envelope: { from: string; to: string }; raw: Buffer }
+type SendingTransport = {
+  sendMail(message: SmtpMessage): Promise<{ accepted: string[]; messageId: string }>
+  close(): void
+}
+
+export async function sendSmtpMessage(input: SmtpMailbox, message: SmtpMessage, deps: {
+  lookup?: Lookup
+  connect?: (options: SmtpOptions) => SendingTransport
+} = {}): Promise<{ id: string }> {
+  const options = await smtpOptions(input, deps.lookup)
+  let transport: SendingTransport | undefined
+  try {
+    transport = (deps.connect ?? (configuration => nodemailer.createTransport(configuration)))(options)
+    const result = await transport.sendMail(message)
+    if (result.accepted.length === 1 && result.accepted[0].toLowerCase() === message.envelope.to.toLowerCase()
+      && result.messageId.trim()) return { id: result.messageId }
+  } catch {
+    // The relay may have accepted the message before the connection failed.
+  } finally {
+    transport?.close()
+  }
+  throw new Error('SMTP delivery could not be confirmed')
 }
