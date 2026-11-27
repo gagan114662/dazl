@@ -227,22 +227,26 @@ export function postingQuote(passages: string[], title: string, company?: string
   // a posting with a level (Senior Account Executive) is not stated by a sentence naming another level (a Junior Account Executive); with no level, either is allowed
   const lv = LEVEL.exec(title)?.[1]?.toLowerCase().replace('.', '')
   const FILL = fill(lv ? LEVEL_WORDS[lv] ?? lv : String.raw`senior|sr\.?|junior|jr\.?`)
-  const names = [...new Set([company ?? '', ...also].map(n => words(n).join(String.raw`\s+`)).filter(n => n.length >= 3))]
-  const co = names.length ? `(?:${names.join('|')})` : null
-  const WE = String.raw`(?:we(?:'|’)re|we\s+are|our\s+(?:[\p{L}-]+\s+){0,2}team\s+is${co ? String.raw`|${co}\s+(?:is|are)` : ''})`
+  const names = [...new Set([company ?? '', ...also].map(n => n.trim()).filter(n => words(n).join('').length >= 3))]
+  const namePatterns = names.map(n => n.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(String.raw`\s+`))
+  const co = namePatterns.length ? `(?:${namePatterns.join('|')})` : null
+  const legalSuffix = String.raw`(?:inc|corp|ltd|co|llc|llp)`
+  const subject = co ? String.raw`|^\s*${co}(?:\s+${legalSuffix}\.?)?\s+(?:is|are)` : ''
+  const WE = String.raw`(?:\b(?:we(?:'|’)re|we\s+are|our\s+(?:[\p{L}-]+\s+){0,2}team\s+is)${subject})`
   const JOIN = String.raw`join\s+(?:us|our\s+team|the\s+team${co ? `|${co}` : ''})(?:\s+[^.!?]{0,30}?)?\s+as`
   const re = (s: string) => new RegExp(s, 'iu')
   const inSentence = [
-    re(String.raw`\b${WE}\s+${ADV}${VERB}\s+${FILL}${T}`),
-    re(String.raw`\b${WE}\s+${ADV}hiring\s+for\s+(?:the|our|an?)\s+${T}\s+(?:role|position|opening|vacancy)\b`),
+    re(String.raw`${WE}\s+${ADV}${VERB}\s+${FILL}${T}`),
+    re(String.raw`${WE}\s+${ADV}hiring\s+for\s+(?:the|our|an?)\s+${T}\s+(?:role|position|opening|vacancy)\b`),
     re(String.raw`\b${JOIN}\s+${FILL}${T}`),
     re(String.raw`^\s*as\s+(?:our|an?|the)\s+(?:new\s+)?${T}`),
     re(String.raw`^\s*about\s+the\s+role\s*:?\s*${T}`),
   ]
-  const bareHiring = re(String.raw`\b${WE}\s+${ADV}(?:hiring|recruiting)\s*[.!]+\s*$`), opensWithTitle = re(String.raw`^\s*${FILL}${T}`)
+  const bareHiring = re(String.raw`${WE}\s+${ADV}(?:hiring|recruiting)\s*[.!]+\s*$`), opensWithTitle = re(String.raw`^\s*${FILL}${T}`)
   for (const p of passages) {
-    // "Sr." / "Jr." do not end a sentence
-    const sentences = [...p.matchAll(/(?:\b(?:Sr|Jr)\.|[^.!?])+(?:[.!?]+|$)/gi)].map(m => ({ text: m[0], at: m.index ?? 0 }))
+    // A suffix before the hiring subject's verb does not end its sentence.
+    const sentence = new RegExp(String.raw`(?:\b(?:Sr|Jr)\.|\b${legalSuffix}\.(?=\s+(?:is|are)\b)|[^.!?])+(?:[.!?]+|$)`, 'gi')
+    const sentences = [...p.matchAll(sentence)].map(m => ({ text: m[0], at: m.index ?? 0 }))
     for (let i = 0; i < sentences.length; i++) {
       const { text, at } = sentences[i]
       let from = -1, to = -1
