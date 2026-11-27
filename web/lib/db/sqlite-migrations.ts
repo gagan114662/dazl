@@ -56,6 +56,7 @@ import { migrateTraceStore } from '../evals/trace-tables.ts'
 import { migrateWorkers } from '../workers/store.ts'
 import { migrateFirstParty } from '../signals/first-party.ts'
 import { migrateNeedEvidence } from '../scan/need-evidence.ts'
+import { migrateSmtpMailboxes } from '../email/smtp-store.ts'
 
 import { sqliteTransaction } from './client.ts'
 import { APOLLO_CREDIT_LEDGER_SCHEMA, APOLLO_CREDIT_TOTAL_SCHEMA } from '../enrich/apollo-credit-ledger.ts'
@@ -72,7 +73,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess, migrateWorkEmail, migratePublishedDisplay,
     migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers,
-    migrateFirstParty, migrateNeedEvidence, migrateLiTasks,
+    migrateFirstParty, migrateNeedEvidence, migrateLiTasks, migrateSmtpMailboxes,
   ]
   for (const m of migrates) m(db)
   // The queue adapter owns its tables and creates them in its constructor.
