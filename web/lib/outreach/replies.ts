@@ -1,3 +1,5 @@
+import { asDb, type Db } from '../db/client.ts'
+import { tableExists as tableExistsDb } from '../db/table-exists.ts'
 import { tableExists } from './send-budget.ts'
 import { randomBytes } from 'node:crypto'
 import type Database from 'better-sqlite3'
@@ -356,6 +358,21 @@ export function replySyncLimits(env: Record<string, string | undefined> = proces
   return { maxThreads: boundedInt(env.REPLY_SYNC_MAX_THREADS, REPLY_SYNC_DEFAULT_MAX_THREADS, 1, 1000), budgetMs: boundedInt(env.REPLY_SYNC_BUDGET_MS, REPLY_SYNC_DEFAULT_BUDGET_MS, 1000, 600_000) }
 }
 
+export async function readReplySyncCandidates(db: Db, tenantId: string, now: number) {
+  const [hasSequences, hasFollowupThreads] = await Promise.all([
+    tableExistsDb(db, 'sequences'), tableExistsDb(db, 'followup_threads'),
+  ])
+  const seq = hasSequences ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : 'FALSE'
+  const warm = hasFollowupThreads ? '(thread_id IS NOT NULL AND thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND last_lead_reply_at IS NOT NULL))' : 'FALSE'
+  const seqArgs = hasSequences ? [tenantId] : [], warmArgs = hasFollowupThreads ? [tenantId] : []
+  const windowStart = now - 120 * 86400
+  // The WHERE clause is the old selection (window OR approved/active sequence); the warm clause only orders threads
+  // inside the window, so it can never pull an older thread into the read.
+  return db.all<{ id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }>(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${seq} OR (sent_at >= ? AND ${warm}) THEN 1 ELSE 0 END AS due FROM outreach_messages
+    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${seq})
+    ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`, [...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs])
+}
+
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -379,15 +396,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   }
   const get = async (path: string) => { authority(); const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); const body = await r.json(); authority(); return body }
 
-  const seq = tableExists(db, 'sequences') ? "id IN (SELECT message_id FROM sequences WHERE tenant_id = ? AND status IN ('approved','active'))" : '0'
-  const warm = tableExists(db, 'followup_threads') ? '(thread_id IS NOT NULL AND thread_id IN (SELECT thread_id FROM followup_threads WHERE tenant_id = ? AND stopped IS NULL AND last_lead_reply_at IS NOT NULL))' : '0'
-  const seqArgs = seq !== '0' ? [tenantId] : [], warmArgs = warm !== '0' ? [tenantId] : []
-  const windowStart = now - 120 * 86400
-  // The WHERE clause is the old selection (window OR approved/active sequence); the warm clause only orders threads
-  // inside the window, so it can never pull an older thread into the read.
-  const sent = db.prepare(`SELECT id, lead_id, to_email, gmail_id, thread_id, sent_at, reply_checked_at, CASE WHEN ${seq} OR (sent_at >= ? AND ${warm}) THEN 1 ELSE 0 END AS due FROM outreach_messages
-    WHERE tenant_id = ? AND status = 'sent' AND gmail_id IS NOT NULL AND (sent_at >= ? OR ${seq})
-    ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`).all(...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs) as { id: string; lead_id: string; to_email: string; gmail_id: string; thread_id: string | null; sent_at: number; reply_checked_at: number | null; due: number }[]
+  const sent = await readReplySyncCandidates(asDb(db), tenantId, now)
+  if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) return { ...out, error: 'reading_not_enabled' }
   const { maxThreads, budgetMs } = replySyncLimits((d.env ?? process.env) as Record<string, string | undefined>)
   const clock = d.clockMs ?? Date.now
   const t0 = clock()

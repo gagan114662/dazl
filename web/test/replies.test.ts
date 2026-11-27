@@ -1,5 +1,7 @@
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, PG_URL, pgSkip } from './helpers/pg-test.ts'
 import { stagingFakeGmail } from '../lib/outreach/staging-fake-replies.ts'
-import { sqliteDb } from '../lib/db/client.ts'
+import { pgDb, sqliteDb } from '../lib/db/client.ts'
 import { threadMessages } from '../lib/outreach/inbox.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
 import { test } from 'node:test'
@@ -12,7 +14,7 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
 
@@ -272,4 +274,38 @@ test('staging Gmail reply fixture resolves asynchronous Db lookups', async () =>
   assert.equal((await response.json()).messages[0].id, 'fake-optout-thread')
   assert.equal((await fixture(base + 'messages/foreign?format=minimal')).status, 404)
   assert.equal((await fixture(base + 'threads/foreign?format=full')).status, 404)
+})
+
+
+test('Postgres reply sync selects only the owning tenant and prioritizes due threads inside the window', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    for (const [id, tenant, sentAt] of [
+      ['recent', 'owner', NOW - DAY],
+      ['warm', 'owner', NOW - 2 * DAY],
+      ['old', 'owner', NOW - 121 * DAY],
+      ['foreign', 'neighbor', NOW - DAY],
+    ] as const) {
+      await db.run(
+        `INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at, gmail_id, thread_id)
+         VALUES (?, ?, ?, 'buyer@example.test', 'Subject', 'A message sent before the reply.', 'sent', ?, ?, ?)`,
+        [id, tenant, id, sentAt, id, id],
+      )
+    }
+    for (const thread of ['warm', 'old']) {
+      await db.run(
+        `INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at, last_lead_reply_at)
+         VALUES ('owner', ?, ?, 'buyer@example.test', ?, ?, ?)`, [thread, thread, thread, NOW, NOW],
+      )
+    }
+    assert.deepEqual((await readReplySyncCandidates(db, 'owner', NOW)).map(row => [row.id, row.due]), [
+      ['warm', 1], ['recent', 0],
+    ])
+    assert.deepEqual((await readReplySyncCandidates(db, 'neighbor', NOW)).map(row => row.id), ['foreign'])
+  } finally {
+    await db.close()
+    await drop()
+  }
 })
