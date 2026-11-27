@@ -18,6 +18,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'app/api/leads/qualify/route.ts': 0,
   'app/api/leads/ranking-fixture/route.staging.ts': 0,
   'app/api/leads/route.ts': 0,
+  'app/api/leads/source-review/route.ts': 0,
   'app/api/leads/tech-fixture/route.staging.ts': 0,
   'app/api/leads/verification-fixture/route.staging.ts': 0,
   'app/api/onboarding/policy/route.ts': 0,
