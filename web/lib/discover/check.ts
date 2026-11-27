@@ -1,3 +1,4 @@
+import { atsPostingRef } from '../sources/ats-posting.ts'
 // Reads a lead's proof page ourselves and labels the lead. It never hides one (launch brief, Step 3): a page we could not
 // read, or that does not name the company, lowers what we say about the lead and is shown to the user as such.
 import type { DiscoveredLead, SeenPage } from './agent.ts'
@@ -193,7 +194,7 @@ export async function checkEmailSource<T extends Pick<DiscoveredLead, 'email' | 
   const url = source && publicUrl(source)
   if (email && url) {
     const key = emailPageKey(url)
-    if (seen.some(page => page.text && emailPageKey(page.url) === key && emailInPageText(email, page.text))) return lead
+    if (!atsPostingRef(url.href) && seen.some(page => page.text && emailPageKey(page.url) === key && emailInPageText(email, page.text))) return lead
     const page = await read(url.href).catch(() => null)
     if (page?.text && emailInPageText(email, page.text)) return lead
   }
@@ -206,8 +207,9 @@ async function readEmailPage(url: string): Promise<{ text: string } | null> {
     allow: next => emailPageKey(next) === key,
     blocked: () => {},
     includeEmailLinks: true,
+    preferLiteralAts: true,
   })
-  return 'text' in page ? page : null
+  return 'text' in page && !page.board ? page : null
 }
 
 function emailPageKey(raw: string | URL): string | null {
