@@ -1,6 +1,8 @@
 import { reserveScanSpend, unitCostUsd } from './spend-cap.ts'
 import { scanLookupAll, scanLookupCb } from '../net/scan-dns.ts' // #1463: c-ares, never a libuv pool thread
 import https from 'node:https'
+import { social } from '@crawlee/utils'
+import { revealEmails } from '../people/email-reveal.ts'
 import { isIP } from 'node:net'
 import { brregRecordRef, renderBrregRecord } from '../sources/brreg-record.ts'
 import { atsPageText, atsPostingRef, atsRecord, atsRecordUrl, isAtsRecordUrl, type BoardIdentity } from '../sources/ats-posting.ts'
@@ -65,7 +67,6 @@ export const RENDER_TIMEOUT_MS = 35_000
 export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLookup = guardedLookup, signal?: AbortSignal): Promise<{ status: number; location?: string; type: string; body: string }> {
   if (signal?.aborted) return Promise.reject(new Error('aborted'))   // cancelled before it started: no connection is made
   return new Promise((resolveRaw, rejectRaw) => {
-    let hard: NodeJS.Timeout | undefined
     const onAbort = () => { req.destroy(new Error('aborted')); reject(new Error('aborted')) }   // a cancelled / timed-out caller destroys the socket: nothing keeps running behind it
     const resolve = (v: { status: number; location?: string; type: string; body: string }) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); resolveRaw(v) }
     const reject = (e: unknown) => { clearTimeout(hard); signal?.removeEventListener('abort', onAbort); rejectRaw(e) }
@@ -99,7 +100,7 @@ export function once(url: URL, timeoutMs = TIMEOUT_MS, lookup: typeof guardedLoo
       },
     )
     req.on('timeout', () => req.destroy(new Error('timeout')))
-    hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
+    const hard = setTimeout(() => { req.destroy(new Error('timeout')); reject(new Error('timeout')) }, timeoutMs)
     req.on('error', reject)
     if (signal?.aborted) return onAbort()
     signal?.addEventListener('abort', onAbort, { once: true })
@@ -194,16 +195,14 @@ export function ldJsonBlocks(html: string): string[] {
   for (const m of html.slice(0, 600_000).matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) { if (m[1].length <= 40_000) out.push(m[1]); if (out.length >= 8) break }
   return out
 }
-export function htmlToText(html: string): { text: string; title: string; published: string | null; structured: string[] } {
+export function htmlToText(html: string, includeEmailLinks = false): { text: string; title: string; published: string | null; structured: string[] } {
   const title = decode(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '')
-  const text = decode(
-    html
-      .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<[^>]+>/g, ' '),
-  )
-    .replace(/\s+/g, ' ')
-    .trim()
+  const body = html
+    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+  const content = includeEmailLinks ? revealEmails(body) : body
+  const readable = decode(content.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+  const text = includeEmailLinks ? [readable, ...social.parseHandlesFromHtml(content).emails].join(' ') : readable
   return { text, title: title.replace(/\s+/g, ' ').trim().slice(0, 300), published: publishedDate(html), structured: ldJsonBlocks(html) }
 }
 
@@ -258,7 +257,7 @@ export async function renderViaService(rawUrl: string, fetchImpl: typeof fetch =
 }
 
 // Fetches a public https page and says why when it cannot. Private addresses are never contacted.
-export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: { allow: (url: URL) => boolean; blocked: (url: URL) => void }): Promise<Page | FetchFail> {
+export async function fetchPageDetailed(rawUrl: string, render: (url: string) => Promise<string | null> = renderViaService, signal?: AbortSignal, hopPolicy?: { allow: (url: URL) => boolean; blocked: (url: URL) => void; includeEmailLinks?: boolean }): Promise<Page | FetchFail> {
   // #533: a posting on a public ATS board is read from the board's own API record, never from the posting page
   const posting = atsPostingRef(rawUrl)
   try {
@@ -278,7 +277,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         continue
       }
       let thin: 'blocked' | 'js_required' | null = null
-      let html = r.body
+      const html = r.body
       if (r.status === 401 || r.status === 403 || r.status === 429) thin = 'blocked'
       else if (r.status === 404 || r.status === 410) return { fail: 'not_found' }
       else if (r.status < 200 || r.status >= 300) return { fail: 'error' }
@@ -300,7 +299,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
         try { rec = ref ? renderBrregRecord(JSON.parse(html), ref.id) : null } catch { rec = null }
         return rec ? { text: rec.text, title: rec.title, retrievedAt: Math.floor(Date.now() / 1000), published: null, structured: [] } : { fail: 'error' }
       } else {
-        const t = htmlToText(html)
+        const t = htmlToText(html, hopPolicy?.includeEmailLinks)
         thin = classifyThin(html, t.text)
         if (!thin) return t.text ? { ...t, retrievedAt: Math.floor(Date.now() / 1000) } : { fail: 'error' }
       }
@@ -310,7 +309,7 @@ export async function fetchPageDetailed(rawUrl: string, render: (url: string) =>
       // blocked or JavaScript-only: try the rendering service if one is configured
       const rendered = await render(url.toString())
       if (rendered) {
-        const t = htmlToText(rendered)
+        const t = htmlToText(rendered, hopPolicy?.includeEmailLinks)
         if (t.text.length >= 200 && !classifyThin(rendered, t.text)) return { ...t, retrievedAt: Math.floor(Date.now() / 1000) }
       }
       return { fail: thin }

@@ -10,12 +10,12 @@ import { atsPostingRef } from '../sources/ats-posting.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance } from './search-budget.ts'
 import { meterSignalJudge, signalJudge, type SignalJudge } from './entail.ts'
-import { checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
+import { checkEmailSource, checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
-export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean; parse_counts?: ParseDropCounts }
+export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; emailDropped: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean; parse_counts?: ParseDropCounts }
 export interface DiscoveryDeps {
   apiKey: string
   fetch?: typeof fetch
@@ -117,7 +117,14 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   const rawJudge = deps.judge === undefined ? signalJudge(api) : deps.judge
   const remaining = () => budget.maxUsd - usage.usd - (rawJudge?.usage.usd ?? 0)
   const judge = rawJudge && meterSignalJudge(rawJudge, remaining)
-  let leads = await checkRunLeads(first, deps, judge)
+  let emailDropped = 0
+  const check = async (result: { leads: DiscoveredLead[]; seen: SeenPage[] }) => {
+    const checked = await checkRunLeads(result, deps, judge)
+    emailDropped += checked.filter((lead, index) => result.leads[index].email && !lead.email).length
+    return checked
+  }
+  let leads = await check(first)
+  const seen = [...first.seen]
   const pages = first.seen.map(p => p.url)
   const model = first.model
   let stop = first.stop
@@ -130,7 +137,8 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       parseCounts = combineParseDropCounts(parseCounts, second.parse_counts)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
-      const more = (await checkRunLeads(second, deps, judge)).filter(l => !known.has(l.company.toLowerCase()))
+      const more = await check({ ...second, leads: second.leads.filter(l => !known.has(l.company.toLowerCase())) })
+      seen.push(...second.seen)
       leads = [...leads, ...more]
       passes = 2
       accountingUncertain ||= judge?.usage.accountingUncertain === true
@@ -156,13 +164,25 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       enriched = e.enriched
       accountingUncertain = e.accountingUncertain === true
       const byCompany = new Map(e.leads.map(l => [l.company, l]))
-      leads = leads.map(l => { const m = byCompany.get(l.company); return m && l.proof !== 'gone' ? { ...l, ...mergeEnriched(l, m) } : l })
+      const sourcePages = [...e.seen, ...seen]
+      // Only a new address needs rechecking. The merge keeps an already-proven address and its citation.
+      const merged = await Promise.all(leads.map(async lead => {
+        const candidate = byCompany.get(lead.company)
+        if (!candidate || lead.proof === 'gone') return { lead, dropped: false }
+        const updated = { ...lead, ...mergeEnriched(lead, candidate) }
+        if (lead.email) return { lead: updated, dropped: false }
+        const checked = await checkEmailSource(updated, sourcePages)
+        return { lead: checked, dropped: !!updated.email && !checked.email }
+      }))
+      emailDropped += merged.filter(item => item.dropped).length
+      leads = merged.map(item => item.lead)
+
     } catch { accountingUncertain = true }
   }
   if (judge) {
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
     accountingUncertain ||= judge.usage.accountingUncertain === true
   }
-  return { pages, leads, ...(parseCounts ? { parse_counts: parseCounts } : {}), usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
+  return { pages, leads, ...(parseCounts ? { parse_counts: parseCounts } : {}), usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, emailDropped, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
     note: accountingUncertain ? 'Some research could not be accounted for. Earlier evidence is kept; the full spending reservation remains held.' : note, accountingUncertain }
 }
