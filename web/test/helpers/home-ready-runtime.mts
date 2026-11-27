@@ -402,4 +402,23 @@ test('#2012 legacy Home and Leads hold a named buyer without a published email',
     publishedMailbox: true,
     leads: { ready: ['published-mailbox'], held: { 'no published email': 1 }, judged: 2 },
   })
+
+  const { markCompanyFirstBudget } = await import('../../lib/company-first/product-discovery.ts')
+  const { campaignDetail } = await import('../../lib/outreach/campaign-detail.ts')
+  const { sqliteDb } = await import('../../lib/db/client.ts')
+  db.prepare('UPDATE scan_jobs SET enrich_finished_at = ?, run_budget = ?, icp = ? WHERE id = ?')
+    .run(NOW - DAY, markCompanyFirstBudget(null), JSON.stringify({ who: ['Head of Sales'] }), id)
+  const { recordTimingProof } = await import('../../lib/scan/timing-proof.ts')
+  addEnrichment(db, 'A', 'published-mailbox', {
+    connector: 'scan:actionable', kind: 'actionability', value: 'Actionable: confirmed',
+    label: 'Dana Reyes, Head of Sales - email: buyer@published.example',
+    source_url: 'https://published.example/contact', confidence: null, source_date: recent, retrieved_at: NOW,
+  })
+  assert.deepEqual(recordTimingProof(db, { id, user_id: 'A' }), { proven: 1, held: 1 })
+  const header = await leadsGET(new NextRequest(`http://test/api/leads?job_id=${id}`))
+  assert.equal(header.status, 200)
+  const counts = (await header.json() as { company_first_counts: { ready: number } }).company_first_counts
+  assert.equal((await homeReady('A', NOW)).ready, summary.ready, 'Home Ready count for the marked scan')
+  assert.equal(counts?.ready, summary.ready, 'Leads header Ready count')
+  assert.equal((await campaignDetail(sqliteDb(db), 'A', id))?.company_first_counts?.ready, summary.ready, 'campaign scan Ready count')
 })
