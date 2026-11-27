@@ -221,7 +221,8 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   // A read page supports the signal when the quoted evidence is on it and, in ONE place where it stands, the page's own statements
   // that hold it state the signal line. Places are never added together.
   const named = companyOnPage(lead.company, body), said = quoteStatements(lead.evidence_quote, body)
-  const nearest = said.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
+  const citedStatements = said.flatMap(statements)
+  const nearest = citedStatements.map(s => signalWordsIn(lead.signal, lead.company, s)).sort((a, b) => a.missing.length - b.missing.length)[0] ?? signalWordsIn(lead.signal, lead.company, '')
   const hiring = isDiscoveryHiringLead(lead)
   const posted = hiring ? [...new Set(dateMentions(body).filter(mention =>
     /\bposted(?:\s+on)?[\s:–—-]*$/i.test(body.slice(Math.max(0, mention.index - 32), mention.index)),
@@ -245,7 +246,7 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
     if (boundDays.size === 1) day = [...boundDays][0]
   }
   return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
-    quote_on_page: said.length > 0, signal_seen: named && said.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
+    quote_on_page: said.length > 0, signal_seen: named && citedStatements.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
 }
 
 // The quote is on the page, the page names the company, and the words alone did not settle it: Claude says whether the quoted text states

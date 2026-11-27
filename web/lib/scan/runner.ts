@@ -1578,6 +1578,15 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
       }
     }
     tag.run(DISCOVER_SOURCE_KIND, l.domain, row.id)
+    if (!isShown(l) && l.quote_on_page && l.claim_lacks.length > 0) {
+      const missingWords = l.claim_lacks.join(', ')
+      const preview = missingWords.slice(0, 253)
+      const boundary = preview.lastIndexOf(', ')
+      const value = missingWords.length <= 254 ? missingWords : `${boundary > 0 ? preview.slice(0, boundary) : preview}…`
+      addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'claim_lacks',
+        value, label: 'Words missing from the cited evidence', confidence: null,
+        source_url: l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
+    }
     if (l.person) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'person', value: [l.person, l.title].filter(Boolean).join(', ').slice(0, 254), label: 'named on a public page', confidence: null,
       source_url: l.person_source_url ?? l.evidence_url, source_date: new Date(now * 1000).toISOString().slice(0, 10), retrieved_at: now })
     if (l.email && l.email_source_url) addEnrichment(db, job.user_id, row.id, { connector: 'discover', kind: 'email', value: l.email.slice(0, 254), label: 'published on a public page', confidence: null,
