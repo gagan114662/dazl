@@ -197,7 +197,9 @@ function verifyContact(lead: DiscoveredLead, candidate: Enriched, seen: Readonly
   const contact = verifiedPerson ? candidate : { ...candidate, person: null, title: null, person_source_url: null, linkedin_url: null }
   const buyer = lead.person ?? contact.person
   const email = contact.email?.toLowerCase()
-  if (buyer && isPersonName(buyer) && (!person || samePerson(buyer, contact.person)) && email && ownPage(contact.email_source_url)) {
+  // A repeat of the already established buyer need not re-prove their title.
+  // The newly fetched email page still has to bind the address to that buyer.
+  if (buyer && isPersonName(buyer) && (!person || samePerson(buyer, lead.person ? person : contact.person)) && email && ownPage(contact.email_source_url)) {
     const [local, addressDomain] = email.split('@')
     const mailbox = local.split('+')[0].replace(/[._-]/g, '').replace(/\d+$/, '')
     const source = seen.get(contact.email_source_url!)?.text
