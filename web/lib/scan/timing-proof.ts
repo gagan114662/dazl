@@ -16,7 +16,7 @@
 // (identity review, recipient purpose, suppression, launch authority, caps) still applies on top.
 import { createHash } from 'node:crypto'
 import type { Db } from '../db/client.ts'
-import { domainConfirmedDb } from '../signals/domain-basis.ts'
+import { domainConfirmedDb, domainConfirmedFromRows } from '../signals/domain-basis.ts'
 import type Database from 'better-sqlite3'
 import { addEnrichment, INTERNAL_ENRICHMENT_KIND } from '../connectors/store.ts'
 import { isHiringTrigger, proofBackedTiming, TIMING_REQUESTED } from './scoreboard.ts'
@@ -136,6 +136,7 @@ function recordedGap(b:Binding,recs:ActRow[]):TimingProofGap|null{
   if (recs.length !== 1 || recs[0].label !== TIMING_PROOF_LABEL) return 'version_mismatch'
   let rec: Partial<Binding> & { state?: unknown } = {}
   try { rec = JSON.parse(recs[0].value) as typeof rec } catch { return 'binding_changed' }
+  if (!rec || typeof rec !== 'object') return 'binding_changed'
   if (rec.v !== TIMING_PROOF_VERSION) return 'version_mismatch'
   if (rec.state !== 'proven' || rec.proof !== b.proof || rec.date !== b.date || rec.domain !== b.domain || rec.route !== b.route) return 'binding_changed'
   return null
@@ -160,4 +161,59 @@ export async function timingProofGapDb(db:Db,tenant:string,leadId:string,now:Dat
   const recs=await db.all<ActRow>('SELECT value, label FROM lead_enrichments WHERE lead_id = ? AND tenant_id = ? AND connector = ? AND kind = ?',
     [leadId,tenant,TIMING_PROOF_CONNECTOR,TIMING_PROOF_KIND])
   return recordedGap(cur.binding!,recs)
+}
+
+
+// One lead read and one evidence read for the requested page of a single job.
+export async function timingProofGapsDb(
+  db: Db, tenant: string, jobId: string, leadIds: readonly string[], now: Date,
+): Promise<Map<string, TimingProofGap | null>> {
+  const gaps = new Map<string, TimingProofGap | null>(leadIds.map(id => [id, 'no_lead']))
+  if (!gaps.size) return gaps
+
+  const idsSql = db.kind === 'pg' ? 'SELECT json_array_elements_text(CAST(? AS json))' : 'SELECT value FROM json_each(?)'
+  const scoped = `j.user_id = ? AND j.id = ? AND l.id IN (${idsSql})`
+  type BatchLead = LeadRow & { contact: string | null }
+  type Evidence = SiteRow & ActRow & { lead_id: string; retrieved_at: number | null }
+  const { rows, eligible, evidence } = await db.tx(function* (tx) {
+    const rows = yield* tx.all<BatchLead>(
+      `SELECT l.id, l.contact, l.source_url, l.company_domain, l.event_date, l.event_date_proof, l.signal,
+         l.signal_kind, l.review_reason, l.quarantined_at, l.confidence, j.query, j.icp, j.run_budget
+         FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE ${scoped}`,
+      [tenant, jobId, JSON.stringify([...gaps.keys()])],
+    )
+    const eligible = rows.filter(row => eventGap(row, now) === null)
+    const evidence = eligible.length ? yield* tx.all<Evidence>(
+      `SELECT e.lead_id, e.connector, e.kind, e.value, e.label, e.source_url, e.retrieved_at
+       FROM lead_enrichments e JOIN leads l ON l.id = e.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id
+       WHERE ${scoped} AND e.tenant_id = ? AND (
+         (e.connector = 'sitecrawl' AND e.kind IN ('email', 'domain', 'domain_check', 'person', 'phone'))
+         OR (e.connector = 'user' AND e.kind = 'domain_review')
+         OR e.connector = ? OR (e.connector = ? AND e.kind = ?)
+       ) ORDER BY e.insert_seq`,
+      [tenant, jobId, JSON.stringify(eligible.map(row => row.id)), tenant, ACTIONABLE_CONNECTOR, TIMING_PROOF_CONNECTOR, TIMING_PROOF_KIND],
+    ) : []
+    return { rows, eligible, evidence }
+  }, 'serializable')
+  for (const row of rows) gaps.set(row.id, eventGap(row, now))
+
+  const byLead = new Map<string, Evidence[]>()
+  for (const row of evidence) {
+    const group = byLead.get(row.lead_id)
+    if (group) group.push(row)
+    else byLead.set(row.lead_id, [row])
+  }
+  for (const row of eligible) {
+    const saved = byLead.get(row.id) ?? []
+    const domainRows = saved.filter(e => (e.connector === 'sitecrawl' && ['email', 'domain', 'domain_check'].includes(e.kind)) ||
+      (e.connector === 'user' && e.kind === 'domain_review'))
+    const confirmed = domainConfirmedFromRows(row, domainRows, row.company_domain)
+    const contacts = saved.filter(e => e.connector === 'sitecrawl' && ['person', 'phone', 'email'].includes(e.kind))
+    const site = siteContactFromRows(row.company_domain, confirmed, whoOf(row.icp) || 'founder', contacts)
+    const verdict = bindCurrent(row, site, saved.filter(e => e.connector === ACTIONABLE_CONNECTOR))
+    gaps.set(row.id, verdict.binding
+      ? recordedGap(verdict.binding, saved.filter(e => e.connector === TIMING_PROOF_CONNECTOR && e.kind === TIMING_PROOF_KIND))
+      : verdict.gap)
+  }
+  return gaps
 }
