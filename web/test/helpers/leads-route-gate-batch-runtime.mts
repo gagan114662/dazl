@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
+import { markCompanyFirstBudget } from '../../lib/company-first/product-discovery.ts'
 import { GET } from '../../app/api/leads/route.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { requiredGateHeld } from '../../lib/scan/held-state.ts'
@@ -69,6 +70,20 @@ test('Leads gate projection preserves scalar outcomes and bounds marker reads', 
   const failed = await projection()
   assert.equal(Object.keys(failed.holds).length, 20)
   assert.ok(Object.values(failed.holds).every(Boolean), 'unreadable markers hold every affected lead')
+
+  unreadable = false
+  db.prepare(`UPDATE scan_jobs SET status = 'done', enrich_finished_at = 1,
+    run_budget = ?, icp = ? WHERE id = ?`)
+    .run(markCompanyFirstBudget(null), JSON.stringify({ window_days: 45 }), owned)
+  const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)
+  db.prepare('UPDATE leads SET event_date = ? WHERE id = ?').run(day, 'extra-1')
+  db.prepare('INSERT INTO scan_run_report (job_id, attempt, report) VALUES (?, 1, ?)').run(owned, JSON.stringify({ held_lead_ids: ['extra-0', 'extra-1'] }))
+  const strict = await request(owned)
+  assert.equal(strict.status, 200)
+  const strictBody: { held: { id: string; hold_reason: string }[] } = await strict.json()
+  const reasons = Object.fromEntries(strictBody.held.map(row => [row.id, row.hold_reason]))
+  assert.equal(reasons['extra-1'], 'required_gate_failed')
+  assert.equal(reasons['extra-0'], 'event_date_unproven', 'window precedes the required gate')
 
   assert.equal(larger.reads, mixed.reads, 'gate marker reads must stay constant as the list grows')
   assert.ok(larger.reads <= 2, 'normal request uses a bounded number of gate marker reads')
