@@ -8,7 +8,7 @@ import { discoverLeads, type DiscoverInput, type DiscoverUsage, type DiscoveredL
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { companyKey } from '../scan/evidence.ts'
 import { configuredSearchAllowance, createSearchBudget, searchAllowance } from './search-budget.ts'
-import { signalJudge, type SignalJudge } from './entail.ts'
+import { meterSignalJudge, signalJudge, type SignalJudge } from './entail.ts'
 import { checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
 
@@ -81,8 +81,10 @@ async function checkRunLeads(result: { leads: DiscoveredLead[]; seen: SeenPage[]
     if (response.ok && recordUrls.has(String(url))) bodies.set(String(url), response.clone().json().catch(() => null))
     return response
   }
-  const rechecked = await checkLeads(alternates.map(item => item.candidate), result.seen, read)
+  const rechecked = await checkLeads(alternates.map(item => item.candidate), result.seen, read, 4, judge?.ask)
   for (const [i, lead] of rechecked.entries()) {
+    const original = checked[alternates[i].index]
+    if (lead.proof_check && !isShown(original)) original.proof_check ??= lead.proof_check
     if (lead.proof !== 'confirmed' || !isShown(lead) || !lead.date || lead.date_source !== 'page') continue
     if (!lead.date_on_page) {
       // Only the exact posting record can supply an otherwise unbound machine-readable date.
@@ -110,15 +112,16 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
-  // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
-  const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
+  const rawJudge = deps.judge === undefined ? signalJudge(api) : deps.judge
+  const remaining = () => budget.maxUsd - usage.usd - (rawJudge?.usage.usd ?? 0)
+  const judge = rawJudge && meterSignalJudge(rawJudge, remaining)
   let leads = await checkRunLeads(first, deps, judge)
   const pages = first.seen.map(p => p.url)
   const model = first.model
   let stop = first.stop
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
-  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && usage.usd + first.usage.usd + PEOPLE_PASS_USD <= budget.maxUsd) {
+  if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && first.usage.usd + PEOPLE_PASS_USD <= remaining()) {
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
@@ -142,7 +145,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   // Review of PR #1690: the pass was only checked once against the run's ceiling, before it started, so a run that had spent nearly
   // all of it could still start a full pass and settle past its reservation (now more likely, with leads in review included). The
   // number of leads the pass may take is what the money left can pay for at a lead's worst case.
-  const maxLeads = Math.min(budget.enrichLeads ?? 12, Math.floor((budget.maxUsd - usage.usd + 1e-9) / PEOPLE_LEAD_USD))
+  const maxLeads = Math.min(budget.enrichLeads ?? 12, Math.floor((remaining() + 1e-9) / PEOPLE_LEAD_USD))
   if (!accountingUncertain && enrich && todo.length && maxLeads > 0) {
     try {
       const e = await enrich(todo, { offer: input.offer ?? null, maxLeads }, api)
