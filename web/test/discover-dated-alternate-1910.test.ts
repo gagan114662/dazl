@@ -101,6 +101,23 @@ test('multiple employer postings without a matching read stay held', async () =>
   assert.deepEqual([lead.evidence_url, lead.date, isShown(lead)], [indeed, null, false])
 })
 
+test('two eligible employer postings with the cited opening stay held even with valid dates', async () => {
+  const first = 'https://ferndental.example/jobs/front-desk'
+  const second = 'https://ferndental.example/jobs/receptionist'
+  const text = `${quote}. Posted on ${posted}.`
+  const extraPages = [first, second].map(url => ({ url, title: quote, page_age: null, text }))
+
+  for (const candidate of extraPages) {
+    const { lead } = await scan({ source: indeed, status: 403, alternate: candidate.url,
+      page: `<p>${text}</p>`, seen: false, returnedAlternate: false, extraPages: [candidate] })
+    assert.deepEqual([lead.evidence_url, lead.date, isShown(lead)], [candidate.url, posted, true])
+  }
+
+  const { lead, reads } = await scan({ source: indeed, status: 403, page: `<p>${text}</p>`,
+    seen: false, returnedAlternate: false, extraPages })
+  assert.deepEqual([lead.evidence_url, lead.date, isShown(lead), reads], [indeed, null, false, [indeed]])
+})
+
 test('a date in unrelated JobPosting markup does not date an employer careers listing', async () => {
   const alternate = 'https://ferndental.example/careers'
   const page = `<p>${quote}.</p><script type="application/ld+json">{"@type":"JobPosting","title":"Bookkeeper","datePosted":"${posted}"}</script>`
