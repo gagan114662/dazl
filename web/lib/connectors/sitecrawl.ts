@@ -2179,6 +2179,11 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // 1289-F4: the waiver is for a lead with NO place at all. When the lead's own evidence names a place ("Mercury in Austin, TX"), a same-name
         // public record is not enough: the homepage must still agree with that place, so a Chicago site is refused for an Austin lead.
         const recordNoGeo = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'name_probe' && !!deps.findSites?.recordSite?.(cand, l.company)   // 1289-F2: only THIS company's own public record
+        // #2131: a lead sourced from a job board (Ashby, Greenhouse, Lever) with a domain explicitly named in the posting record
+        // (evidence_link_domain_label basis) is evidence the company is real. When there is no geography to confirm, the job board
+        // naming the domain is itself location evidence - bypass the location requirement for that specific domain.
+        // Name probes (name_probe basis) still require location confirmation even for job board leads.
+        const jobBoardRecordDomain = where.length === 0 && places.length === 0 && basisOf.get(cand) === 'evidence_link_domain_label' && !!r.homeText && !!atsPostingRef(l.source_url)
         const basis = basisOf.get(cand)
         const guessed = basis === 'name_probe'
         const vHome = r.homeText ? (guessed ? probeScopeAgreement(r.homeText, where, l.company) : placeAgreement(r.homeText, where, l.company)) : 'unconfirmed'
@@ -2190,7 +2195,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         // A site the lead's evidence LINKS to, whose domain label is the company's name, is bound to the company by that link. With no
         // requested place there is nothing to compare it against: a place the evidence page happens to name is not the request's (prod
         // run df4f657f refused linked sites "vs the requested place"). Text-only links and guessed (name_probe) sites keep every check.
-        if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && places.length > 0 && (placeRequested || basis !== 'evidence_link_domain_label')))) {
+        if (!unread(r) && !homeLocationOk && !locationProof && ((guessed && !recordNoGeo) || (!guessed && basis !== 'evidence_own_domain' && !jobBoardRecordDomain && places.length > 0 && (placeRequested || basis !== 'evidence_link_domain_label')))) {
           // Same name, but the homepage names none of the lead's places (or no place is known): not this company.
           audit(db, { tenantId, connector: 'sitecrawl', jobId, lookup: cand, status: (locationRefusal(basisOf.get(cand) === 'name_probe', places.length > 0, r.homeText, where)).slice(0, 180), results: 0 })
           // a refusal is recorded on the lead only when a homepage was actually read (an unreachable probe is not a wrong-company record)

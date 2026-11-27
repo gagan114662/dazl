@@ -2,6 +2,7 @@
 // Synthetic tenants, plays and addresses only; nothing is fetched or sent.
 import assert from 'node:assert/strict'
 import { bothEngines } from './helpers/engines.ts'
+import * as inbox from '../lib/outreach/inbox.ts'
 import { inboxPage, markThreadRead, decodeCursor, encodeCursor, InboxQueryError, type InboxThread, type InboxQuery } from '../lib/outreach/inbox.ts'
 import type { Db } from '../lib/db/client.ts'
 import { outcomes } from '../lib/outcomes.ts'
@@ -205,4 +206,18 @@ bothEngines('Outcomes and Inbox count the same conversations: the needs-you tile
   assert.equal(everything.filter(t => t.needs_owner).length, p.counts.needs_owner)
   const u = await inboxPage(db, 'U', { status: 'needs_owner', limit: 100 })
   assert.deepEqual(u.threads.map(t => [t.thread_id, t.company]).sort(), [['u-dsn', null], ['u-pos', 'Other Co']], 'U never sees T\'s lead labels')
+})
+
+bothEngines('the Inbox thread reader preserves chronology and hides another tenant’s thread', async ({ db }) => {
+  await job(db, 'owner', 'job')
+  await lead(db, 'job', 'lead', 'Synthetic Company')
+  await db.run("INSERT INTO outreach_messages (id, tenant_id, lead_id, to_email, subject, body, status, sent_at) VALUES ('message', 'owner', 'lead', 'pat@example.test', 'Question', 'An outreach message for the test.', 'sent', 10)")
+  await db.run("INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at) VALUES ('owner', 'thread', 'lead', 'pat@example.test', 'message', 10)")
+  await db.run("INSERT INTO followup_messages (tenant_id, thread_id, step, status, created_at) VALUES ('owner', 'thread', 0, 'sent', 20)")
+  await reply(db, 'owner', 'thread', 'lead', 'positive', 30)
+  assert.deepEqual((await inbox.threadMessages(db, 'owner', 'thread')).map(row => [row.kind, row.subject, row.at]), [
+    ['original', 'Question', 10], ['followup', 'Follow-up 1', 20], ['reply', null, 30],
+  ])
+  assert.deepEqual(await inbox.threadMessages(db, 'neighbor', 'thread'), [])
+  assert.deepEqual(await inbox.threadMessages(db, 'owner', 'missing'), [])
 })

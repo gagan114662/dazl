@@ -366,6 +366,9 @@ export function datesThisPosting(n: StructuredDay, pageText: string, u: URL | nu
 export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
   const posted = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
   if (posted) return validDay(Date.parse(`${posted[1]}T00:00:00Z`), now)
+  // #2004: a hiring signal is dated by JobPosting.datePosted only; Article.datePublished is a publication stamp that
+  // cannot date a posting. The bare/meta fallbacks and typed Article days apply only when !hiringOnly.
+  if (hiringOnly) return null
   // Prefer a typed Article-like JSON-LD node; retain the legacy bare datePublished fallback for non-hiring pages.
   const publishedDays: string[] = []
   const visit = (value: unknown): void => {
@@ -380,12 +383,12 @@ export function embeddedDay(html: string, now: Date, hiringOnly = false): string
     try { visit(JSON.parse(block[1])) } catch { /* malformed structured data is not date evidence */ }
   }
   const typed = publishedDays.find(day => /^\d{4}-\d{2}-\d{2}$/.test(day))
-  const bare = !hiringOnly && !typed ? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)?.[1] : null
-  const meta = !hiringOnly ? /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)?.[1] : null
+  const bare = !typed ? /"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)?.[1] : null
+  const meta = /<meta[^>]+(?:property|name)=["'](?:article:published_time|datePublished)["'][^>]+content=["'](\d{4}-\d{2}-\d{2})/i.exec(html)?.[1] ?? null
   const day = typed ?? bare ?? meta
   if (!day) return null
   const t = Date.parse(`${day}T00:00:00Z`)
-  return hiringOnly ? validDay(t, now) : Number.isFinite(t) && t <= now.getTime() + 86_400_000 && now.getTime() - t <= INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? day : null
+  return Number.isFinite(t) && t <= now.getTime() + 86_400_000 && now.getTime() - t <= INDEX_DATE_MAX_AGE_DAYS * 86_400_000 ? day : null
 }
 // A posting on Greenhouse, Lever or Ashby prints no date in its page. The board publishes the same posting as a record that carries
 // the day it was first published; that record is the proof page's own data, read from the board itself (no third party). Staging

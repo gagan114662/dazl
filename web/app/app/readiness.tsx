@@ -119,7 +119,7 @@ export default function Readiness() {
               <input className="field" aria-label="What you sell" required minLength={3} maxLength={150} placeholder="What you sell, in one line" value={site.sells} onChange={e => editSite('sells', e.target.value)} />
               <div className="flex gap-3 items-center"><button className="btn-primary text-xs px-3 py-1.5">Save</button>{siteMsg && <span className="text-xs" role="status">{siteMsg}</span>}</div>
             </form>}
-            {open === r.id && r.id === 'key' && <div className="mt-3"><KeyInline reason="Searches and website reads run on Claude, with your own Anthropic key." onSaved={() => { setOpen(null); void load() }} /></div>}
+            {open === r.id && r.id === 'key' && <div className="mt-3"><KeyInline reason="Searches and website reads run on dazl." onSaved={() => { setOpen(null); void load() }} /></div>}
             {open === r.id && r.id === 'sender' && <div className="mt-3"><SenderInline initial={input.outreach?.sender ?? null} onSaved={() => { setSenderSaved(true); setOpen(null); void load() }} /></div>}
             {r.id === 'sender' && senderSaved && <div className="mt-2"><SenderSavedNote /></div>}
           </li>
