@@ -108,7 +108,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/held-state.ts': 0,
   'lib/scan/job-feed.ts': 4,
   'lib/scan/lookalike.ts': 0,
-  'lib/scan/model-usage.ts': 1,
+  'lib/scan/model-usage.ts': 0,
   'lib/scan/preview-claim.ts': 0,
   'lib/scan/qualify-preview.ts': 0,
   'lib/scan/qualify-run.ts': 1,

@@ -2,6 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { migrateScan, createQueryJob } from '../lib/scan/store.ts'
 import { migratePlans } from '../lib/plans.ts'
@@ -158,4 +161,33 @@ test('successful scan: buyer-fit (after finish) is recorded with tenant and atte
   assert.equal(count(), before, 'a duplicate (job, attempt, seq) is ignored, never inserted twice')
   const stale = new SourceRunLedger(); stale.model(call()); stale.flushModelCalls(db, id, 99)
   assert.equal(count(), before, 'a non-owning attempt writes nothing')
+})
+
+test('Postgres telemetry deduplicates replayed job calls and retains independent pre-job calls', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    for (const [job, tenant] of [['job-a', 'owner'], ['job-b', 'neighbor']]) {
+      await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, 'Seller', 'Services', 'Region')", [job, tenant])
+    }
+    const call: ModelCall = { stage: 'profile', method: 'completeDetailed', model_requested: 'test-model', model_served: 'test-model',
+      input_tokens: 20, output_tokens: 5, outcome: 'ok', max_tokens: 100, prompt_chars: 25 }
+    assert.equal(await writeModelCalls(db, 'owner', 'job-a', 1, [call]), true)
+    assert.equal(await writeModelCalls(db, 'owner', 'job-a', 1, [{ ...call, input_tokens: 999 }]), true)
+    assert.equal(await writeModelCalls(db, 'owner', 'job-a', 1, [call], {}, 1), true)
+    assert.equal(await writeModelCalls(db, 'owner', 'job-b', 1, [call]), false)
+    assert.equal(await writeModelCalls(db, 'neighbor', 'job-b', 1, [call]), true)
+    for (let i = 0; i < 2; i++) assert.equal(await writeModelCalls(db, 'owner', null, 0, [call]), true)
+    assert.deepEqual(await db.all('SELECT tenant_id, job_id, seq, input_tokens FROM scan_model_calls ORDER BY tenant_id, job_id, seq'), [
+      { tenant_id: 'neighbor', job_id: 'job-b', seq: 0, input_tokens: 20 },
+      { tenant_id: 'owner', job_id: 'job-a', seq: 0, input_tokens: 20 },
+      { tenant_id: 'owner', job_id: 'job-a', seq: 1, input_tokens: 20 },
+      { tenant_id: 'owner', job_id: null, seq: 0, input_tokens: 20 },
+      { tenant_id: 'owner', job_id: null, seq: 0, input_tokens: 20 },
+    ])
+  } finally {
+    await db.close()
+    await drop()
+  }
 })
