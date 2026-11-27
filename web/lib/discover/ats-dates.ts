@@ -26,6 +26,10 @@ export const ATS_DATE_MAX_AGE_DAYS = 730
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? v as Record<string, unknown> : {})
 
+// Workable serves the same page under an optional locale segment ("/en/<board>/j/<code>"); the board is the first segment after it.
+const WO_LOCALE = /^[a-z]{2}(?:-[a-z]{2,4})?$/
+const withoutLocale = (seg: string[]): string[] => (seg.length > 1 && WO_LOCALE.test(seg[0]) ? seg.slice(1) : seg)
+
 export function atsPosting(url: string | URL): AtsPosting | null {
   let u: URL
   try { u = typeof url === 'string' ? new URL(url) : url } catch { return null }
@@ -48,10 +52,11 @@ export function atsPosting(url: string | URL): AtsPosting | null {
       readTitle: j => obj(j).text,
     }
 
-  if (host === 'apply.workable.com' && seg.length >= 3 && seg[1] === 'j')
+  const wseg = withoutLocale(seg)
+  if (host === 'apply.workable.com' && wseg.length >= 3 && wseg[1] === 'j')
     return {
       platform: 'workable',
-      apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(seg[0])}/jobs/${enc(seg[2])}`,
+      apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(wseg[0])}/jobs/${enc(wseg[2])}`,
       read: j => { const r = obj(j); return r.published_on ?? r.published ?? r.created_at },
       readTitle: j => obj(j).title,
     }
@@ -183,17 +188,18 @@ export function atsList(url: string | URL): AtsList | null {
     return list.map(obj)
   }
 
-  if (host === 'apply.workable.com' && seg.length === 1)
+  const lseg = withoutLocale(seg)
+  if (host === 'apply.workable.com' && lseg.length === 1)
     return {
       platform: 'workable',
-      apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(seg[0])}/jobs?details=true`,
+      apiUrl: `https://apply.workable.com/api/v1/widget/accounts/${enc(lseg[0])}?details=true`,
       read: j => ofJobs(j).map(x => ({ id: String(x.shortcode ?? lastSeg(String(x.url ?? ''))), url: String(x.url ?? ''), date: x.published_on ?? x.published ?? x.created_at })),
     }
   const wa = /^([a-z0-9-]+)\.workable\.com$/.exec(host)
   if (wa && seg.length === 0)
     return {
       platform: 'workable',
-      apiUrl: `https://apply.workable.com/api/v1/accounts/${enc(wa[1])}/jobs?details=true`,
+      apiUrl: `https://apply.workable.com/api/v1/widget/accounts/${enc(wa[1])}?details=true`,
       read: j => ofJobs(j).map(x => ({ id: String(x.shortcode ?? lastSeg(String(x.url ?? ''))), url: String(x.url ?? ''), date: x.published_on ?? x.published ?? x.created_at })),
     }
 
