@@ -21,23 +21,29 @@ export function legacyMailboxRefusals(
   db: Database.Database, tenantId: string, leads: readonly { id: string }[],
   enrichments: Record<string, PreviewLead['enrichments']>,
 ): Set<string> {
-  if (!leads.length) return new Set()
-  const candidates = db.prepare(`SELECT lead_id, address, verification, checked_at FROM email_candidates
-    WHERE tenant_id = ? AND lead_id IN (${leads.map(() => '?').join(',')})
-    AND verification IN ('undeliverable', 'verified') AND checked_at IS NOT NULL`)
-    .all(tenantId, ...leads.map(lead => lead.id)) as { lead_id: string; address: string; verification: string; checked_at: number }[]
+  const legacy = (leads as readonly (PreviewLead & { source_kind?: string | null })[])
+    .filter(lead => lead.source_kind !== 'discover')
+  if (!legacy.length) return new Set()
+
+  let candidates: { lead_id: string; address: string; verification: string; checked_at: number }[] = []
+  try {
+    candidates = db.prepare(`SELECT lead_id, address, verification, checked_at FROM email_candidates
+      WHERE tenant_id = ? AND lead_id IN (${legacy.map(() => '?').join(',')})
+      AND verification IN ('undeliverable', 'verified') AND checked_at IS NOT NULL`)
+      .all(tenantId, ...legacy.map(lead => lead.id)) as typeof candidates
+  } catch (error) {
+    // Older stores have no candidate verifier history. Their enrichment checks still apply.
+    if (!(error instanceof Error) || !/^no such (?:table: email_candidates|column: (?:verification|checked_at))$/.test(error.message)) throw error
+  }
   const checks: Record<string, NonNullable<PreviewLead['enrichments']>> = {}
   for (const row of candidates) {
     const verdict = row.verification === 'undeliverable' ? 'rejected' : 'accepted'
     ;(checks[row.lead_id] ??= []).push({ connector: 'mailbox-check', kind: 'deliverability',
       value: `${row.address}|${verdict}`, label: null, source_url: '', retrieved_at: row.checked_at })
   }
-  return new Set(leads.filter(item => {
-    const lead = item as PreviewLead & { source_kind?: string | null }
-    return lead.source_kind !== 'discover' && publishedAddressRefused({
-      ...lead, enrichments: [...(enrichments[lead.id] ?? []), ...(checks[lead.id] ?? [])],
-    })
-  }).map(lead => lead.id))
+  return new Set(legacy.filter(lead => publishedAddressRefused({
+    ...lead, enrichments: [...(enrichments[lead.id] ?? []), ...(checks[lead.id] ?? [])],
+  })).map(lead => lead.id))
 }
 
 // null = ready; otherwise the first failing check's own words.
