@@ -15,11 +15,11 @@ import { timingProofGap, timingProofGapDb } from '../scan/timing-proof.ts'
 export function currentnessHeld(db: Database.Database, tenant: string, lead: string, now: Date = new Date(), gateHeld?: () => boolean): boolean {
  const row=db.prepare('SELECT l.source_kind,l.human_confirmed_at,l.human_confirmed_from,l.review_reason,l.confidence,l.event_date,l.timing_note,j.icp,j.query,j.run_budget FROM leads l JOIN scan_jobs j ON j.id=l.scan_job_id WHERE l.id=? AND j.user_id=?').get(lead,tenant) as {source_kind:string|null;timing_note:string|null;human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null}|undefined
  if (!row) return false
+ // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
+ if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
  // Discovery dates from the search index cannot authorize email, even on an existing draft.
  if (row.source_kind === 'discover') return !hasDiscoveryEventDate(row) || signalStale(row.event_date, now)
  if (windowHeld(row, now)) return true
- // Someone else's customer, a different place, a closed opening: research only, and confirming it does not change that (#352).
- if (uncheckableCause(row.review_reason) || uncheckableCause(row.human_confirmed_from)) return true
  if (gateHeld ? gateHeld() : requiredGateHeld(db, tenant, lead)) return true   // a failed REQUIRED gate survives lead / domain confirmation
  // Marked jobs can use only their durable machine proof. Even a review
  // confirmation written by an older release cannot lift this hold or switch
