@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, pgSkip, PG_URL } from './helpers/pg-test.ts'
 import { migrateTinyfish, tfSearch, tfFetch, resetTinyfishState, queryPlan } from '../lib/search/tinyfish.ts'
 import { SearchTrace, summarizeTrace, evidenceSplit, migrateSourceStats, writeSourceStats, sourceStats, sourceStatsEnabled } from '../lib/search/trace.ts'
 
@@ -181,4 +184,26 @@ test('fetch completeness: a failed later batch makes the page count a lower boun
   const s = summarizeTrace(t); assert.equal(s.fetch_pages_with_text, 7); assert.equal(s.fetch_complete, false)
   const u = new SearchTrace(); u.fetch({ requested: 10, attempted: true, outcome: 'ok', pages: 7 })
   assert.equal(summarizeTrace(u).fetch_complete, true)
+})
+
+test('Postgres preserves unknown source counts and replaces only the selected job attempt', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(db.pool)
+    for (const [job, owner] of [['mine', 'owner'], ['other', 'neighbor']]) {
+      await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location) VALUES (?, ?, 'Seller', 'Services', 'Region')", [job, owner])
+    }
+    const stats = summarizeTrace(new SearchTrace())
+    const ownerOnly = { DAZL_SOURCE_STATS_USERS: 'owner' }
+    assert.equal(await writeSourceStats(db, 'mine', 1, 'test', stats, ownerOnly), true)
+    assert.equal(await writeSourceStats(db, 'other', 1, 'test', stats, ownerOnly), false)
+    assert.equal(await writeSourceStats(db, 'other', 1, 'test', { ...stats, hits_raw: 0 }, {}), true)
+    assert.equal(await writeSourceStats(db, 'mine', 2, 'test', stats, ownerOnly), true)
+    assert.equal(await writeSourceStats(db, 'mine', 2, 'test', { ...stats, hits_raw: 4 }, ownerOnly), true)
+    assert.equal(await writeSourceStats(db, 'mine', 2, 'test', stats, { DAZL_SOURCE_STATS: '0' }), false)
+    assert.deepEqual(await db.all('SELECT job_id, attempt, hits_raw FROM scan_source_stats ORDER BY job_id, attempt'), [
+      { job_id: 'mine', attempt: 1, hits_raw: null }, { job_id: 'mine', attempt: 2, hits_raw: 4 }, { job_id: 'other', attempt: 1, hits_raw: 0 },
+    ])
+  } finally { await db.close(); await drop() }
 })

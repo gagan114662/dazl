@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import type { Db, Param } from '../db/client.ts'
 import type { Evidence } from '../sources/types.ts'
 
 // Per-scan record of what the TinyFish collector actually did, so a low-yield scan can be explained from data
@@ -131,19 +132,69 @@ export function migrateSourceStats(db: Database.Database): void {
   )`)
 }
 
+const UPSERT_SOURCE_STATS_SQL = `INSERT INTO scan_source_stats (
+  job_id, attempt, collector, queries, query_source, searches_attempted, searches_ok, searches_failed,
+  searches_not_attempted, hits_raw, hits_unique_urls, hits_complete, fetch_complete, fetch_requested,
+  fetch_outcome, fetch_pages_with_text, per_query, distinct_hosts, urls_not_fetched, extracted_candidates,
+  model_requested, model_served, model_calls, input_tokens, output_tokens, evidence_items,
+  evidence_with_page_text, evidence_snippet_only
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (job_id, attempt, collector) DO UPDATE SET
+  queries = excluded.queries, query_source = excluded.query_source, searches_attempted =
+  excluded.searches_attempted, searches_ok = excluded.searches_ok, searches_failed = excluded.searches_failed,
+  searches_not_attempted = excluded.searches_not_attempted, hits_raw = excluded.hits_raw, hits_unique_urls =
+  excluded.hits_unique_urls, hits_complete = excluded.hits_complete, fetch_complete = excluded.fetch_complete,
+  fetch_requested = excluded.fetch_requested, fetch_outcome = excluded.fetch_outcome, fetch_pages_with_text =
+  excluded.fetch_pages_with_text, per_query = excluded.per_query, distinct_hosts = excluded.distinct_hosts,
+  urls_not_fetched = excluded.urls_not_fetched, extracted_candidates = excluded.extracted_candidates,
+  model_requested = excluded.model_requested, model_served = excluded.model_served, model_calls =
+  excluded.model_calls, input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+  evidence_items = excluded.evidence_items, evidence_with_page_text = excluded.evidence_with_page_text,
+  evidence_snippet_only = excluded.evidence_snippet_only`
+
+function statsParams(jobId: string, attempt: number, collector: string, s: SourceStats): Param[] {
+  const q = JSON.stringify(s.queries)
+  const pq = JSON.stringify(s.per_query ?? [])
+  const j = (o: Record<string, number>) => JSON.stringify(o)
+  return [
+    jobId, attempt, collector, q.length <= 2000 ? q : null, s.query_source ?? null, s.searches_attempted,
+    s.searches_ok, j(s.searches_failed), j(s.searches_not_attempted), s.hits_raw, s.hits_unique_urls,
+    s.hits_complete === null ? null : s.hits_complete ? 1 : 0, s.fetch_complete === null ? null :
+    s.fetch_complete ? 1 : 0, s.fetch_requested, s.fetch_outcome, s.fetch_pages_with_text, pq.length <= 4000 ? pq
+    : null, s.distinct_hosts ?? null, s.urls_not_fetched ?? null, s.extracted_candidates ?? null,
+    s.model_requested?.slice(0, 100) ?? null, s.model_served?.slice(0, 100) ?? null, s.model_calls ?? null,
+    s.input_tokens ?? null, s.output_tokens ?? null, s.evidence_items ?? null, s.evidence_with_page_text ?? null,
+    s.evidence_snippet_only ?? null
+  ]
+}
+
 // Best effort: a failure here must never fail or change the scan. Returns whether a row was written.
-export function writeSourceStats(db: Database.Database, jobId: string, attempt: number, collector: string, s: SourceStats, env: Record<string, string | undefined> = process.env): boolean {
-  if (!sourceStatsEnabled(env)) return false
-  // An allow-list, when the operator sets one, narrows recording to the named owners; unset means every owner.
+export function writeSourceStats(db: Database.Database, jobId: string, attempt: number, collector: string, s: SourceStats, env?: Record<string, string | undefined>): boolean
+export function writeSourceStats(db: Db, jobId: string, attempt: number, collector: string, s: SourceStats, env?: Record<string, string | undefined>): Promise<boolean>
+export function writeSourceStats(db: Db | Database.Database, jobId: string, attempt: number, collector: string, s: SourceStats, env: Record<string, string | undefined> = process.env): boolean | Promise<boolean> {
   const allowed = (env.DAZL_SOURCE_STATS_USERS ?? '').split(',').map(x => x.trim()).filter(Boolean)
+  const mayRecord = (owner: string | undefined) => owner !== undefined && (!allowed.length || allowed.includes(owner))
+  if ('kind' in db) return writeSourceStatsDb(db, jobId, attempt, collector, s, env, mayRecord)
+  if (!sourceStatsEnabled(env)) return false
   try {
-    const owner = (db.prepare('SELECT user_id FROM scan_jobs WHERE id=?').get(jobId) as { user_id: string } | undefined)?.user_id
-    if (owner === undefined || (allowed.length > 0 && !allowed.includes(owner))) return false
+    const owner = (db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string } | undefined)?.user_id
+    if (!mayRecord(owner)) return false
     migrateSourceStats(db)
-    const q = JSON.stringify(s.queries); const pq = JSON.stringify(s.per_query ?? []); const j = (o: Record<string, number>) => JSON.stringify(o)
-    db.prepare(`INSERT OR REPLACE INTO scan_source_stats (job_id,attempt,collector,queries,query_source,searches_attempted,searches_ok,searches_failed,searches_not_attempted,hits_raw,hits_unique_urls,hits_complete,fetch_complete,fetch_requested,fetch_outcome,fetch_pages_with_text,per_query,distinct_hosts,urls_not_fetched,extracted_candidates,model_requested,model_served,model_calls,input_tokens,output_tokens,evidence_items,evidence_with_page_text,evidence_snippet_only)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(jobId, attempt, collector, q.length <= 2000 ? q : null, s.query_source ?? null, s.searches_attempted, s.searches_ok, j(s.searches_failed), j(s.searches_not_attempted), s.hits_raw, s.hits_unique_urls, s.hits_complete === null ? null : s.hits_complete ? 1 : 0, s.fetch_complete === null ? null : s.fetch_complete ? 1 : 0, s.fetch_requested, s.fetch_outcome, s.fetch_pages_with_text, pq.length <= 4000 ? pq : null, s.distinct_hosts ?? null, s.urls_not_fetched ?? null, s.extracted_candidates ?? null, s.model_requested?.slice(0, 100) ?? null, s.model_served?.slice(0, 100) ?? null, s.model_calls ?? null, s.input_tokens ?? null, s.output_tokens ?? null, s.evidence_items ?? null, s.evidence_with_page_text ?? null, s.evidence_snippet_only ?? null)
+    db.prepare(UPSERT_SOURCE_STATS_SQL).run(...statsParams(jobId, attempt, collector, s))
     return true
+  } catch { return false }
+}
+
+async function writeSourceStatsDb(db: Db, jobId: string, attempt: number, collector: string, s: SourceStats, env: Record<string, string | undefined>, mayRecord: (owner: string | undefined) => boolean): Promise<boolean> {
+  if (!sourceStatsEnabled(env)) return false
+  try {
+    return await db.tx(function* (tx) {
+      const lock = tx.kind === 'pg' ? ' FOR SHARE' : ''
+      const row = yield* tx.get<{ user_id: string }>('SELECT user_id FROM scan_jobs WHERE id = ?' + lock, [jobId])
+      if (!mayRecord(row?.user_id)) return false
+      yield* tx.run(UPSERT_SOURCE_STATS_SQL, statsParams(jobId, attempt, collector, s))
+      return true
+    })
   } catch { return false }
 }
 

@@ -134,7 +134,7 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/scan/work-email-fixture.ts': 0,
   'lib/scan/worker.ts': 0,
   'lib/search/news-attribution.ts': 1,
-  'lib/search/trace.ts': 1,
+  'lib/search/trace.ts': 0,
   'lib/secrets-rewrap.ts': 1,
   'lib/shared/lease.ts': 0,
   'lib/signals/competitor-reddit.ts': 0,
