@@ -14,6 +14,8 @@ import { captureAccountMarket, readAccountMarket, writeAccountMarket } from '../
 import { browserMarket, resolveSearchMarket, tinyfishMarket, MARKET_NOTICE } from '../lib/scan/search-market.ts'
 import { userMessage } from '../lib/discover/agent.ts'
 import { buildRunReport, readRunReport, writeRunReport } from '../lib/scan/run-report.ts'
+import { readScanStatus } from '../lib/scan/status-read-service.ts'
+import { migrateSourceStats } from '../lib/search/trace.ts'
 
 test('place-free search shares a non-US account market with TinyFish and the discovery planner', () => {
   const query = 'Find manufacturers adding warehouse capacity'
@@ -187,4 +189,27 @@ test('#1719: cities in separate countries do not inherit a single transport mark
   assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near Berlin and Toronto', null, account)), {})
   assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near Berlin', null, account)), { location: 'DE' })
   assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders hiring accountants', null, account)), { location: 'CH', language: 'fr' })
+})
+
+test('#1719: a located company search ignores the destination of its exports', () => {
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find London, UK companies exporting to Canada')), { location: 'GB' })
+})
+
+test('#1719: status distinguishes a market notice from recorded fetch outcomes', async t => {
+  const raw = new Database(':memory:')
+  t.after(() => raw.close())
+  migrateScan(raw)
+  migrateSourceStats(raw)
+  const db = sqliteDb(raw)
+  const job = createQueryJob(raw, 'tenant', { query: 'Find exporters' })
+  raw.prepare('INSERT INTO scan_source_stats (job_id, attempt, collector) VALUES (?, ?, ?)').run(job, 1, 'tinyfish')
+  const report = buildRunReport({
+    market_notice: MARKET_NOTICE,
+    urls: [{ url: 'https://example.test/news', hit_date: null, walled: false, selected: true, tinyfish_text_chars: 100, own_fetch: 'ok' }],
+  }, [], [], 1)
+  assert.equal(writeRunReport(raw, job, 1, report, { DAZL_RUN_REPORT: '0' }), true)
+  assert.equal((await readScanStatus(db, 'tenant', job))?.not_recorded.includes('per_url_fetch_outcomes'), true)
+  assert.equal(writeRunReport(raw, job, 1, report, { DAZL_RUN_REPORT: '1' }), true)
+  assert.equal((await readScanStatus(db, 'tenant', job))?.not_recorded.includes('per_url_fetch_outcomes'), false)
+  assert.equal(await readScanStatus(db, 'other-tenant', job), undefined)
 })

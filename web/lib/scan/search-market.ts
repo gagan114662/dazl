@@ -1,6 +1,6 @@
 import { marketLanguage, profileMarket } from '../discover/profile-market.ts'
 import { placeIn } from '../sources/jobboards.ts'
-import { countriesIn, countryOfRegion, regionsIn } from './countries.ts'
+import { countriesIn, countryOfRegion, regionsIn, resolveSegment } from './countries.ts'
 import { isoCountry } from './icp.ts'
 
 export interface SearchMarket {
@@ -25,9 +25,10 @@ export function browserMarket(locale: unknown): SearchMarket {
 function countriesForPlace(query: string): string[] {
   const place = placeIn(query)
   const countries = countriesIn(query)
-  const placeCountry = place?.country ? [place.country] : []
+  if (countries.length > 1) return countries
+  if (place?.country && !resolveSegment(place.name, true)) return [place.country]
   const regions = place ? regionsIn(place.name).map(countryOfRegion) : []
-  return countries.length ? countries : regions.length ? regions : placeCountry
+  return countries.length ? countries : regions
 }
 
 export function resolveSearchMarket(query: string, profile?: Partial<SearchMarket> | null, account?: Partial<SearchMarket> | null): SearchMarket {
