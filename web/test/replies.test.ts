@@ -1,3 +1,4 @@
+import { stagingFakeGmail } from '../lib/outreach/staging-fake-replies.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { threadMessages } from '../lib/outreach/inbox.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -255,4 +256,20 @@ test('warm follow-up: an unverifiable handoff is uncertain, pauses autopilot, st
     assert.equal((await runFollowups(db, 'A', 'Acme', base({ sendFn }))).sent, 0)
     assert.equal(calls, 1)
   }
+})
+
+
+test('staging Gmail reply fixture resolves asynchronous Db lookups', async () => {
+  const fixture = stagingFakeGmail({
+    threadOf: async id => id === 'sent' ? { thread_id: 'thread' } : undefined,
+    sentTo: async id => id === 'thread' ? { to_email: 'fake-optout@example.test', sent_at: 100 } : undefined,
+  })
+  const base = 'https://gmail.googleapis.com/gmail/v1/users/me/'
+  const minimal = await fixture(base + 'messages/sent?format=minimal')
+  assert.deepEqual(await minimal.json(), { id: 'sent', threadId: 'thread' })
+  const response = await fixture(base + 'threads/thread?format=full')
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).messages[0].id, 'fake-optout-thread')
+  assert.equal((await fixture(base + 'messages/foreign?format=minimal')).status, 404)
+  assert.equal((await fixture(base + 'threads/foreign?format=full')).status, 404)
 })

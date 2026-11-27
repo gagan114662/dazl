@@ -18,9 +18,11 @@ const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { sta
 const local = (email: string) => (email.split('@')[0] ?? '').toLowerCase()
 
 // The caller (replies.ts syncReplies) supplies the lookups on its own store, so this file never touches the database.
+type LookupResult<T> = T | undefined | Promise<T | undefined>
+
 export interface FakeReplyLookup {
-  threadOf: (gmailId: string) => { thread_id: string | null } | undefined // undefined: no such sent message
-  sentTo: (threadOrGmailId: string) => { to_email: string; sent_at: number | null } | undefined
+  threadOf: (gmailId: string) => LookupResult<{ thread_id: string | null }> // undefined: no such sent message
+  sentTo: (threadOrGmailId: string) => LookupResult<{ to_email: string; sent_at: number | null }>
 }
 export function stagingFakeGmail(look: FakeReplyLookup): typeof fetch {
   return (async (input: RequestInfo | URL) => {
@@ -30,13 +32,13 @@ export function stagingFakeGmail(look: FakeReplyLookup): typeof fetch {
     if (path.startsWith('messages?q=')) return json({ messages: [] })
     const minimal = path.match(/^messages\/([^?/]+)\?format=minimal$/)
     if (minimal) {
-      const t = look.threadOf(decodeURIComponent(minimal[1]))
+      const t = await look.threadOf(decodeURIComponent(minimal[1]))
       return t ? json({ id: minimal[1], threadId: t.thread_id ?? minimal[1] }) : json({ error: 'not_found' }, 404)
     }
     const thread = path.match(/^threads\/([^?/]+)\?format=full$/)
     if (!thread) throw new Error('staging_fake_replies: unexpected Gmail call')
     const id = decodeURIComponent(thread[1])
-    const row = look.sentTo(id)
+    const row = await look.sentTo(id)
     if (!row) return json({ error: 'not_found' }, 404)
     const who = local(row.to_email)
     if (who.includes('fake-syncerror')) return json({ error: 'backend' }, 500)
