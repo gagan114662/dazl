@@ -62,11 +62,13 @@ export const isInboxFixtureAddress = (email: string): boolean => {
 // nothing is addressable for that tenant. Other tenants are unaffected. Code gate only.
 const isDesignatedTestTenant = (tenantId: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
-export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean => {
+const recipientAllowedWith = (tenantId: string, email: string, testApproved: () => boolean): boolean => {
   if (isInboxFixtureAddress(email)) return false
-  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email)
-  return !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+  if (!isDesignatedTestTenant(tenantId) && !CONSUMER.has(norm(email).split('@')[1])) return true
+  return norm(email) === TEST_INBOX && testApproved()
 }
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
+  recipientAllowedWith(tenantId, email, () => testRecipientApproved(db, tenantId, email))
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -330,9 +332,17 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
 // The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
 // One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
+type DiscoveryRecipientLead = { id: string; name: string | null; company_domain: string | null }
+type DiscoveryContactEvidence = { kind: string; connector: string; value: string; label: string | null; source_url: string }
+type RecipientRefusal = 'personal_email' | 'suppressed' | 'unreadable' | null
+
+const discoveryEmailFromEvidence = (lead: Omit<DiscoveryRecipientLead, 'id'>, enrichments: DiscoveryContactEvidence[]) =>
+  discoverContact({ ...lead, source_kind: 'discover', enrichments })?.email ?? null
+
 const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null, companyDomain: string | null) =>
-  discoverContact({ source_kind: 'discover', name, company_domain: companyDomain, enrichments: db.prepare("SELECT kind, connector, value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; label: string | null; source_url: string }[] })?.email ?? null
-export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
+  discoveryEmailFromEvidence({ name, company_domain: companyDomain }, db.prepare("SELECT kind, connector, value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as DiscoveryContactEvidence[])
+
+export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): RecipientRefusal {
   try {
     const lead = db.prepare('SELECT l.name, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?')
       .get(leadId, tenantId) as { name: string | null; company_domain: string | null } | undefined
@@ -345,6 +355,52 @@ export function discoverRecipientRefusal(db: Database.Database, tenantId: string
     return 'unreadable'
   }
 }
+
+// Display-only projection. The caller supplies the visible leads read from this owned job.
+export function discoverRecipientRefusalsForJob(
+  db: Database.Database, tenantId: string, jobId: string, leads: readonly DiscoveryRecipientLead[],
+): Map<string, RecipientRefusal> {
+  const verdicts = new Map<string, RecipientRefusal>()
+  if (!leads.length) return verdicts
+
+  const keys = (values: Iterable<string>) => JSON.stringify(Object.fromEntries(Array.from(values, value => [value, true])))
+  try {
+    const evidence = db.prepare(`SELECT lead_id, kind, connector, value, label, source_url
+      FROM lead_enrichments
+      WHERE tenant_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin')
+        AND lead_id IN (SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+          WHERE j.user_id = ? AND j.id = ? AND l.id IN (SELECT key FROM json_each(?)))
+      ORDER BY retrieved_at, id`).all(tenantId, tenantId, jobId, keys(leads.map(lead => lead.id))) as (DiscoveryContactEvidence & { lead_id: string })[]
+    const byLead = new Map<string, DiscoveryContactEvidence[]>()
+    for (const row of evidence) {
+      const existing = byLead.get(row.lead_id)
+      if (existing) existing.push(row)
+      else byLead.set(row.lead_id, [row])
+    }
+
+    const allowedAddresses = new Map<string, string>()
+    let testApproved: boolean | undefined
+    const approvedTestRecipient = () => testApproved ??= testRecipientApproved(db, tenantId, TEST_INBOX)
+    for (const lead of leads) {
+      const email = norm(discoveryEmailFromEvidence(lead, byLead.get(lead.id) ?? [])?.address ?? '')
+      if (!EMAIL_RE.test(email)) verdicts.set(lead.id, null)
+      else if (!recipientAllowedWith(tenantId, email, approvedTestRecipient)) verdicts.set(lead.id, 'personal_email')
+      else allowedAddresses.set(lead.id, email)
+    }
+    if (allowedAddresses.size) {
+      const rows = db.prepare(`SELECT email FROM suppressions
+        WHERE tenant_id = ? AND email IN (SELECT key FROM json_each(?))`)
+        .all(tenantId, keys(allowedAddresses.values())) as { email: string }[]
+      const suppressed = new Set(rows.map(row => row.email))
+      for (const [id, email] of allowedAddresses) verdicts.set(id, suppressed.has(email) ? 'suppressed' : null)
+    }
+  } catch (e) {
+    captureError(e, { source: 'route', where: '/api/leads', tenantId })
+    for (const lead of leads) if (!verdicts.has(lead.id)) verdicts.set(lead.id, 'unreadable')
+  }
+  return verdicts
+}
+
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
   const state = db.prepare('SELECT review_reason, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; company_domain: string | null } | undefined
