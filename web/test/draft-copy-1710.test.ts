@@ -145,6 +145,24 @@ test("the company's own name keeps its casing inside the quoted excerpt", () => 
 
 test('an all-caps source line is sentence-cased, not pasted shouting', () => {
   const d = composeDraftCopy(lead({ company: 'Peerbound, Inc.', evidence_excerpt: 'PEERBOUND IS HIRING A FOUNDING AE FOR ITS ENTERPRISE SALES TEAM' }), 'dazl', OFFER)
-  assert.match(d.body, /I saw that Peerbound is hiring a founding ae for its enterprise sales team\./)
+  assert.match(d.body, /I saw that Peerbound is hiring a founding AE for its enterprise sales team\./)
   assert.doesNotMatch(d.body, /[A-Z]{5,}/)
+})
+
+test('(Qodo) brand and country abbreviations keep their caps in an all-caps excerpt', () => {
+  const d = composeDraftCopy(lead({ company: 'IBM Canada', evidence_excerpt: 'IBM IS HIRING IN THE US' }), 'dazl', OFFER)
+  assert.match(d.body, /I saw that IBM is hiring in the US\./)
+  assert.doesNotMatch(d.body, /Ibm/)
+})
+
+test('(Qodo) an all-caps seller offer keeps its abbreviations and reads calm', () => {
+  const d = composeDraftCopy(lead(), 'dazl', 'CRM AUTOMATION FOR SALES TEAMS')
+  assert.match(d.body, /we offer CRM automation for sales teams\./)
+})
+
+test('(Qodo) a title abbreviation is never treated as the sentence end of a factual opener', () => {
+  const long = 'The dental group announced that its Oakville clinic will expand to six operatories while adding evening hours on weekdays, a change the practice says reflects demand, and the expanded team will be led by Dr. Smith, who joined from a large hospital dental department where she supervised resident dentists and taught restorative technique to new graduates for many years'
+  const d = composeDraftCopy(lead({ company: 'Peerbound, Inc.', evidence_excerpt: long }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /by Dr\.\n/)
+  assert.doesNotMatch(d.body, /led by Dr\.$/)
 })
