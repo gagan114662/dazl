@@ -21,11 +21,13 @@ export function currentnessHeld(db: Database.Database, tenant: string, lead: str
 type CurrentnessRow = { source_kind:string|null;timing_note:string|null;human_confirmed_at:number|null;human_confirmed_from:string|null;review_reason:string|null;confidence:number|null;event_date:string|null;icp:string|null;query:string|null;run_budget:string|null }
 
 export function currentnessRowsForJob(db: Database.Database, tenant: string, jobId: string, ids: readonly string[]) {
+ // JSON object keys are text on both stores; PostgreSQL json_each values are JSON.
+ const keys = JSON.stringify(Object.fromEntries(ids.map(id => [id, true])))
  const rows = db.prepare(`SELECT l.id, l.source_kind, l.human_confirmed_at, l.human_confirmed_from, l.review_reason,
    l.confidence, l.event_date, l.timing_note, j.icp, j.query, j.run_budget
    FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
-   WHERE j.user_id = ? AND j.id = ? AND l.id IN (SELECT value FROM json_each(?))`)
-   .all(tenant, jobId, JSON.stringify(ids)) as (CurrentnessRow & { id: string })[]
+   WHERE j.user_id = ? AND j.id = ? AND l.id IN (SELECT key FROM json_each(?))`)
+   .all(tenant, jobId, keys) as (CurrentnessRow & { id: string })[]
  return new Map(rows.map(row => [row.id, row]))
 }
 
