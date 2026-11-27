@@ -9,6 +9,15 @@ import { heldReason, NO_OWN_BUYER, type PreviewLead } from './journey.ts'
 import { reviewCanNameBuyer } from './people/buyer-reach.ts'
 import { discoverReady, discoverState, isDiscoverLead } from './discover/card.ts'
 
+export function isUnconfirmedTimingResearch(lead: {
+  timing?: string | null
+  review_reason?: string | null
+  quarantined_at?: unknown
+  human_confirmed_at?: number | null
+}): boolean {
+  return lead.timing === 'unconfirmed' && !lead.review_reason && !lead.quarantined_at && lead.human_confirmed_at == null
+}
+
 export type HeldState = 'review' | 'research' | 'rejected'
 // unfit, contact: discovery leads only (lib/discover/card.ts discoverState 'research' not for its date, and 'no_contact')
 export type ResearchCause = 'undated' | 'older' | 'customer' | 'place' | 'closed' | 'unsupported' | 'need' | 'unfit' | 'contact'
