@@ -395,11 +395,8 @@ export function discoverRecipientRefusalsForJob(
       for (const [id, email] of allowedAddresses) verdicts.set(id, suppressed.has(email) ? 'suppressed' : null)
     }
   } catch (e) {
-    for (const lead of leads) {
-      if (verdicts.has(lead.id)) continue
-      captureError(e, { source: 'route', where: '/api/leads', tenantId })
-      verdicts.set(lead.id, 'unreadable')
-    }
+    captureError(e, { source: 'route', where: '/api/leads', tenantId })
+    for (const lead of leads) if (!verdicts.has(lead.id)) verdicts.set(lead.id, 'unreadable')
   }
   return verdicts
 }

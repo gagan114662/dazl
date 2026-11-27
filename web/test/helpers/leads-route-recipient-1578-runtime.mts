@@ -67,7 +67,8 @@ test('#1578 GET /api/leads: an unreadable recipient check is "unreadable" on the
     assert.deepEqual([bad.own.refused, bad.free.refused], ['unreadable', 'unreadable'])
     assert.deepEqual(bad.own.approve, { ok: false, reason: 'dazl could not check this address just now, so Approve stays off. Reload the page to try again.' })
     assert.equal(bad.free.approve.ok, false)
-    assert.ok(seen.length >= 2 && seen.every(r => r.source === 'route' && r.where === '/api/leads' && r.tenant === null), `the failure is recorded for the operator: ${JSON.stringify(seen.map(r => [r.source, r.where]))}`)
+    assert.equal(seen.length, 1, 'one operator error per failed evidence batch')
+    assert.ok(seen.every(r => r.source === 'route' && r.where === '/api/leads' && r.tenant === null))
     // and it clears with the fault: no state was written by the failed read
     unreadable = false
     assert.deepEqual((await read()).own.approve, { ok: true })
