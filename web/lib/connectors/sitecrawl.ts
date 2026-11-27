@@ -1740,15 +1740,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
     // The scan's geography, for the location check on guessed domains.
     let where: string[] = []
     let legacyRequestedPlace: string | undefined
-    // Did the request name a place at all? The ICP's where, or (a legacy scan with no ICP) its stored location. Unknown counts as yes.
+    // Use the stored request location only for absent or request-derived profiles.
     let placeRequested = true
     try {
-      const j = db.prepare('SELECT icp FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null } | undefined
+      const j = db.prepare('SELECT icp, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { icp: string | null; icp_inferred: number | null } | undefined
       const w = j?.icp ? (JSON.parse(j.icp) as { where?: unknown }).where : null
       const usablePlace = (x: string) => !!x.trim() && x.trim() !== '-'
       if (Array.isArray(w)) where = w.filter((x): x is string => typeof x === 'string' && usablePlace(x))
       if (where.some(usablePlace)) placeRequested = true
-      else if (j?.icp) placeRequested = false
+      else if (j?.icp && j.icp_inferred !== 2) placeRequested = false
       else {
         try {
           const location = (db.prepare('SELECT location FROM scan_jobs WHERE id = ? AND user_id = ?').get(jobId, tenantId) as { location?: string | null } | undefined)?.location?.trim()
