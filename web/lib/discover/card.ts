@@ -197,11 +197,13 @@ export function discoverState(lead: DiscoverStateLead): DiscoverState {
   if (!discoverApprove(l).ok) return 'no_contact'
   const address = discoverContact(l)?.email?.address
   if (!address || !emailOnCompanySite(address, null, l.company_domain)) return 'no_contact'
+  const storedEmailRefused = (l.enrichments ?? []).some(row => row.kind === 'email' && row.value?.trim().toLowerCase() === address && row.suppressed === 1)
+  return storedEmailRefused || discoveryMailboxRefused(l, address) ? 'no_contact' : 'ready_email'
+}
+
+function discoveryMailboxRefused(l: DiscoverStateLead, address: string): boolean {
   const rows = l.enrichments ?? []
-  const storedEmailRefused = rows.some(row => row.kind === 'email' && row.value?.trim().toLowerCase() === address &&
-    row.suppressed === 1)
-  const failedDelivery = deliverabilityBlocked(address, rows.flatMap(row => row.value && row.kind === 'deliverability' ? [{ ...row, value: row.value, connector: row.connector ?? '' }] : []))
-  return storedEmailRefused || failedDelivery ? 'no_contact' : 'ready_email'
+  return deliverabilityBlocked(address, rows.flatMap(row => row.value && row.kind === 'deliverability' ? [{ ...row, value: row.value, connector: row.connector ?? '' }] : []))
 }
 // The words for one lead's state, the same on every page that labels a lead.
 export const DISCOVER_STATE_LABEL: Record<DiscoverState, string> = { rejected: 'Rejected', review: 'Needs your review', research: 'Research only - checking the source cannot make it ready',
@@ -213,7 +215,10 @@ export function discoverNotReady(lead: DiscoverStateLead): string | null {
   if (discoverReady(s)) return null
   if (s === 'rejected') return 'rejected'
   if (s === 'review') return 'needs your review'
-  if (s === 'no_contact') return 'no contact found yet'
+  if (s === 'no_contact') {
+    const address = discoverContact(lead)?.email?.address
+    return address && discoveryMailboxRefused(lead, address) ? "email can't receive mail" : 'no contact found yet'
+  }
   const first = (discoverProofHold(asSaved(lead)) ?? '').split('. ')[0].replace(/\.$/, '')
   return first.charAt(0).toLowerCase() + first.slice(1)
 }

@@ -5,7 +5,8 @@
 import { discoverNotReady, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review-view.ts'
-import { publishedEmail } from './outreach/published-email.ts'
+import { contactRoute } from './outreach/contact-route.ts'
+import { displayedEmailSource, PUBLISHED_EMAIL_RE, publishedEmail } from './outreach/published-email.ts'
 import { scanOutcome, type ScanOutcomeKind } from './scan/scan-outcome.ts'
 import type { CardLead } from './scan/opportunity.ts'
 import { heldState, type ResearchCause } from './lead-state.ts'
@@ -18,7 +19,25 @@ import { identityOf } from './scan/opportunity.ts'
 export const NO_OWN_BUYER = 'no buyer named on the company\'s own site'
 const ownSiteBuyer = (l: PreviewLead) => leadPerson(l.enrichments ?? [], '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
 
-export type PreviewLead = CardLead & { id: string; seen_before?: number | boolean | null }
+export type PreviewLead = CardLead & { id: string; seen_before?: number | boolean | null; email_cannot_receive_mail?: boolean }
+
+export const EMAIL_CANNOT_RECEIVE_MAIL = "email can't receive mail"
+
+export function publishedAddressRefused(lead: Pick<CardLead, 'contact' | 'source_url' | 'evidence_excerpt' | 'enrichments'>): boolean {
+  const email = publishedEmail(lead)
+  if (!email) return false
+  const verdict = (address: string) => contactRoute({ ...lead, contact: address }, null).deliverability
+  const primary = verdict(email)
+  if (primary.state !== 'mailbox_rejected' && !(primary.state === 'domain_invalid' && primary.checkedAt !== null)) return false
+  return !(lead.enrichments ?? []).some(row => {
+    if (row.connector !== 'sitecrawl' || row.kind !== 'email') return false
+    const alternate = row.value.trim().toLowerCase()
+    if (alternate === email || !PUBLISHED_EMAIL_RE.test(alternate) || !displayedEmailSource(lead, alternate)) return false
+    return publishedEmail({ ...lead, contact: alternate, evidence_excerpt: null }) !== null &&
+      verdict(alternate).state === 'mailbox_accepted'
+  })
+}
+
 
 // Why a lead is not an opportunity (first failing check), or null when it is one.
 export function heldReason(l: PreviewLead): string | null {
@@ -38,6 +57,7 @@ export function heldReason(l: PreviewLead): string | null {
   if (domainReviewFor({ id: l.id, contact: l.contact }, l.enrichments ?? []).state === 'required') return 'company website not confirmed'
   if (l.fit === 0 && l.intent === null) return 'not a fit'
   if (!ownSiteBuyer(l)) return NO_OWN_BUYER
+  if (l.email_cannot_receive_mail ?? publishedAddressRefused(l)) return EMAIL_CANNOT_RECEIVE_MAIL
   return null
 }
 

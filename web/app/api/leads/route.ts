@@ -1,3 +1,4 @@
+import { legacyMailboxRefusals } from '@/lib/outreach/lead-hold'
 import { companyFirstResults } from '@/lib/scan/company-first-results'
 import { discoverRecipientRefusal } from '@/lib/outreach/service'
 import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
@@ -69,6 +70,7 @@ export async function GET(req: NextRequest) {
     .map(l => ({ id: l.id, company: l.company, source_url: l.source_url, signal: l.signal ?? null, event_date: l.event_date, hold_reason: l.review_reason ?? finalCheckReason(l.id, l.event_date) })) : []
   const sequences = await db.sequenceStatusByLead(user.tenantId)
   const enr = await db.enrichmentsForLeads(user.tenantId, leads.map(l => l.id))
+  const mailboxRefusals = legacyMailboxRefusals(scanDb, user.tenantId, leads, enr)
   const evts = await db.eventsForLeads(user.tenantId, leads)
   const pri = await db.leadPriorities(user.tenantId, leads)
   const look = await db.lookalikeSignals(user.tenantId, leads.map(l => ({ id: l.id, signal: l.signal, industry: job.industry, location: job.location })))
@@ -81,7 +83,7 @@ export async function GET(req: NextRequest) {
   // "with event" only when the existing timing proof backs a current event, never from the lookalike fit itself.
   const la = lookalikeOf(job)
   const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l, timingOpts); const tr = timingUnconfirmedReason(l, timingOpts)
-    return {...l, stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
+    return {...l, email_cannot_receive_mail: mailboxRefusals.has(l.id), stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:timingProofGap(getScanDb(),user.tenantId,l.id),
