@@ -1,3 +1,4 @@
+import { applyBounceVerdictInTx } from '../lib/outreach/bounce-ledger.ts'
 import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { freshSchema, PG_URL, pgSkip } from './helpers/pg-test.ts'
 import { stagingFakeGmail } from '../lib/outreach/staging-fake-replies.ts'
@@ -470,6 +471,39 @@ test('Postgres suppression revokes consent and stops queued sends atomically for
     assert.deepEqual(await db.all('SELECT tenant_id, revoke_reason FROM consent_ledger ORDER BY tenant_id'), [
       { tenant_id: 'neighbor', revoke_reason: null },
       { tenant_id: 'owner', revoke_reason: 'unsubscribe' },
+    ])
+  } finally {
+    await db.close()
+    await drop()
+  }
+})
+
+
+test('Postgres bounce deduplication rolls back with suppression and survives a retry', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  const verdict = { kind: 'permanent', recipient: 'Buyer@Example.test', outreachMessageId: 'send', originalMessageId: 'original' } as const
+  try {
+    await runPgMigrations(db.pool)
+    await assert.rejects(db.tx(tx => applyBounceVerdictInTx(tx, 'owner', verdict, 'thread', 'first', NOW, function* (t, tenant, recipient) {
+      yield* suppressInTx(t, tenant, recipient, 'bounce')
+      throw new Error('bounce side effect failed')
+    })), /bounce side effect failed/)
+    assert.deepEqual(await db.all('SELECT tenant_id FROM bounce_records'), [])
+    assert.deepEqual(await db.all('SELECT tenant_id FROM suppressions'), [])
+    const record = (tenant: string, source: string, gmailId: string) => db.tx(tx =>
+      applyBounceVerdictInTx(tx, tenant, verdict, source, gmailId, NOW, (t, owner, recipient) =>
+        suppressInTx(t, owner, recipient, 'bounce')))
+    assert.equal(await record('owner', 'thread', 'first'), 'recorded')
+    assert.equal(await record('owner', 'dsn', 'different'), 'duplicate')
+    assert.equal(await record('neighbor', 'dsn', 'neighbor-gmail'), 'recorded')
+    assert.deepEqual(await db.all('SELECT tenant_id, recipient, source_gmail_id FROM bounce_records ORDER BY tenant_id'), [
+      { tenant_id: 'neighbor', recipient: 'buyer@example.test', source_gmail_id: 'neighbor-gmail' },
+      { tenant_id: 'owner', recipient: 'buyer@example.test', source_gmail_id: 'first' },
+    ])
+    assert.deepEqual(await db.all('SELECT tenant_id, email, reason FROM suppressions ORDER BY tenant_id'), [
+      { tenant_id: 'neighbor', email: 'buyer@example.test', reason: 'bounce' },
+      { tenant_id: 'owner', email: 'buyer@example.test', reason: 'bounce' },
     ])
   } finally {
     await db.close()

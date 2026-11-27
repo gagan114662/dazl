@@ -3,6 +3,7 @@
 // multiple MTAs) and must increment bounce accounting exactly once; the in-thread notice path shares the same
 // ledger so a notice seen in both places still counts once. Only a first-time record suppresses: recordBounce
 // (suppression, audit, pause thresholds) runs exactly once per send+recipient.
+import type { Tx, TxBody } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { recordBounce } from './autopilot.ts'
 import type { DsnVerdict } from './dsn.ts'
@@ -19,6 +20,28 @@ export function migrateBounceLedger(db: Database.Database): void {
 
 export type BounceApplication = 'recorded' | 'duplicate' | 'held' | 'ignored'
 
+const INSERT_BOUNCE_SQL = `INSERT INTO bounce_records
+  (tenant_id, outreach_message_id, recipient, status, source, source_gmail_id, created_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (tenant_id, outreach_message_id, recipient) DO NOTHING`
+
+function bounceParameters(tenantId: string, verdict: Extract<DsnVerdict, { kind: 'permanent' }>,
+  source: string, sourceGmailId: string | null, now: number,
+) {
+  return [tenantId, verdict.outreachMessageId, verdict.recipient.toLowerCase(), '5xx', source, sourceGmailId, now]
+}
+
+export function* applyBounceVerdictInTx(tx: Tx, tenantId: string, verdict: DsnVerdict, source: string,
+  sourceGmailId: string | null, now: number, record: (tx: Tx, tenantId: string, recipient: string, now: number) => TxBody<void>,
+): TxBody<BounceApplication> {
+  if (verdict.kind === 'hold') return 'held'
+  if (verdict.kind !== 'permanent') return 'ignored'
+  const result = yield* tx.run(INSERT_BOUNCE_SQL, bounceParameters(tenantId, verdict, source, sourceGmailId, now))
+  if (result.changes !== 1) return 'duplicate'
+  yield* record(tx, tenantId, verdict.recipient, now)
+  return 'recorded'
+}
+
 // Applies a DSN verdict to the ledger. 'source' names the ingestion path ('thread' for in-thread notices,
 // 'dsn' for separate-thread notices in syncReplies). Soft, held and ignored verdicts never write: a soft failure is
 // not a bounce, and a held notice is evidence for a person, not an account.
@@ -30,8 +53,7 @@ export function applyBounceVerdict(db: Database.Database, tenantId: string, verd
   // the row as a duplicate and never repair it). On any failure the whole write rolls back and a replay
   // of the same DSN records and suppresses as it should. 'record' is injectable for failure tests only.
   return db.transaction((): BounceApplication => {
-    const r = db.prepare('INSERT OR IGNORE INTO bounce_records (tenant_id, outreach_message_id, recipient, status, source, source_gmail_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(tenantId, verdict.outreachMessageId, verdict.recipient.toLowerCase(), '5xx', source, sourceGmailId, now)
+    const r = db.prepare(INSERT_BOUNCE_SQL).run(...bounceParameters(tenantId, verdict, source, sourceGmailId, now))
     if (r.changes !== 1) return 'duplicate'
     record(db, tenantId, verdict.recipient, now)
     return 'recorded'
