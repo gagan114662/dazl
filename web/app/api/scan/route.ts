@@ -17,7 +17,8 @@ import { applyReviewedDraft } from '@/lib/scan/seller-research'
 import { countActiveJobs, createJob, createQueryJob, pinAdmittedStrictJob } from '@/lib/scan/store'
 import { hasKey } from '@/lib/llm/key-store'
 import { planQuota, readPlan, scansThisMonth } from '@/lib/plans'
-import { getDb } from '@/lib/db/client'
+import { getDb, sqliteDb } from '@/lib/db/client'
+import { admitScan } from '@/lib/db/admit-scan'
 import { companyFirstDiscoveryEnabled, markCompanyFirstBudget } from '@/lib/company-first/product-discovery'
 import { normalizeSources } from '@/lib/sources'
 import { reserveStrictLocalSlot, runStrictLocalJob } from '@/lib/scan/strict-local-launch'
@@ -275,11 +276,16 @@ export async function POST(req: NextRequest) {
     // that creates the job, taken IMMEDIATE so it holds the database write lock from its first statement: concurrent requests in
     // this process or in another process sharing the store serialize here, and exactly one sees the slot free. A refusal throws
     // before any write, so no job, no trial count, and (below) the linked reservation is released.
-    launched = db.transaction(() => {
-      if ((nativeSearch || companyFirst) && pickVendor(db, user.tenantId) !== 'anthropic') { refused = nativeKeyRefusal(); throw new AdmissionRefused() }
-      if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
-      const q2 = planQuota(plan, scansThisMonth(db, user.tenantId))
-      if (!q2.allowed && !quotaLifted) { refused = NextResponse.json({ error: 'quota_exceeded', plan: q2.plan, used: q2.used, limit: q2.limit }, { status: 402 }); throw new AdmissionRefused() }
+    // Keep the legacy scan writers on the same SQLite connection while the
+    // scan store is being ported. The Db adapter owns the admission transaction.
+    const admission = await admitScan(sqliteDb(db), user.tenantId, {
+      plan,
+      quotaLifted,
+      check() {
+        if ((nativeSearch || companyFirst) && pickVendor(db, user.tenantId) !== 'anthropic') { refused = nativeKeyRefusal(); throw new AdmissionRefused() }
+        if (countActiveJobs(db, user.tenantId) >= 1) { refused = NextResponse.json({ error: 'scan_active', message: 'A scan is still running or finishing. Wait for it to end before starting another.' }, { status: 409 }); throw new AdmissionRefused() }
+      },
+    }, function* () {
       if (query.length >= 3) {
         const snapshot = completeOffer(recordedOffer)
         // Previously admitted short positioning is valid as a seller snapshot, below the offer field's review minimum.
@@ -300,7 +306,13 @@ export async function POST(req: NextRequest) {
         recordTrialScan(db, user.tenantId, jid, ip)
       }
       return claudeOnly ? pinAdmittedStrictJob(db, user.tenantId, jid, runBudget) : null
-    }).immediate()
+    })
+    if (!admission.ok) {
+      const { quota } = admission
+      refused = NextResponse.json({ error: 'quota_exceeded', plan: quota.plan, used: quota.used, limit: quota.limit }, { status: 402 })
+      throw new AdmissionRefused()
+    }
+    launched = admission.value
     void searchStarted(getDb(), user.tenantId, jid, funded === 'trial') // #1616: never rejects, never awaited
     if (claudeOnly) return NextResponse.json({ job_id, provider_policy: QA_CLAUDE_ONLY, execution: QA_LOCAL_EXECUTION, ...(nativeSearch ? { web_search_policy: QA_NATIVE_WEB_SEARCH_POLICY } : {}), ...(manualTarget && sized?.ok ? { accepted_target: target(sized.icp) } : {}) }, { status: 202 })
     after(() => kickRunner(db))
