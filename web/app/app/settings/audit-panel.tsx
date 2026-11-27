@@ -25,6 +25,14 @@ const LABEL: Record<string, string> = {
   'monitor.created': 'Created a monitor', 'monitor.enabled': 'Resumed a monitor', 'monitor.disabled': 'Paused a monitor',
   'connector.enabled': 'Turned a channel on', 'connector.disabled': 'Turned a channel off', 'data.deleted': 'Deleted data', 'audit.read': 'Tried to read the audit trail',
   'onboarding.site_read': 'Read the website for a business profile',
+  // Recorded actions the panel had been printing raw (#1955); each one verified at the route that writes it.
+  'account.email_changed': 'Changed the account email', 'credential.device_paired': 'Paired a social account', 'credential.pairing_started': 'Started pairing a social account',
+  'credential.password_reset': 'Reset a password', 'data.erased': 'Erased data',
+  'invitation.accepted': 'Accepted an invite', 'invitation.created': 'Invited a member', 'invitation.revoked': 'Revoked an invite',
+  'member.left': 'Left the workspace', 'member.removed': 'Removed a member', 'member.role_changed': 'Changed a member role',
+  'outreach.test_send': 'Sent a test message', 'pipeline.accepted': 'Accepted a lead', 'pipeline.feedback_reset': 'Reset lead feedback',
+  'play.run_now': 'Ran a play now', 'reopen.send': 'Reopened sending',
+  'session.revoked': 'Signed out a session', 'session.revoked_all': 'Signed out all sessions', 'worker.enqueue': 'Queued a worker job',
 }
 const label = (a: string) => LABEL[a] ?? (a.startsWith('autopilot.') ? `Autopilot: ${a.slice(10)}` : a)
 const when = (s: number) => new Date(s * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -33,12 +41,23 @@ export default function AuditPanel() {
   const [events, setEvents] = useState<Ev[] | null>(null)
   const [filter, setFilter] = useState('')
   const [hidden, setHidden] = useState(false)
+  const [names, setNames] = useState<Record<string, string>>({})
 
   useEffect(() => {
     void fetch(`/api/workspace/audit?limit=50${filter ? `&action=${encodeURIComponent(filter)}` : ''}`)
       .then(r => (r.ok ? r.json() : null)).then(j => { if (j) setEvents(j.events); else setHidden(true) })
       .catch(() => setHidden(true))
   }, [filter])
+  useEffect(() => {
+    // #1955: name the actor instead of a raw member id. Every member can read the workspace member list
+    // (GET /api/workspace/members); an unknown or since-removed actor falls back to the raw id.
+    void fetch('/api/workspace/members').then(r => (r.ok ? r.json() : null)).then(j => {
+      if (!j?.members) return
+      const m: Record<string, string> = {}
+      for (const x of j.members) if (x.member_id) m[x.member_id] = x.name || x.email
+      setNames(m)
+    }).catch(() => { /* the names are an extra; the trail keeps the ids it already had */ })
+  }, [])
 
   if (hidden || !events) return null
   return (
@@ -61,7 +80,7 @@ export default function AuditPanel() {
             <li key={e.id} className="py-2 flex flex-col gap-0.5">
               <span className={e.decision === 'denied' ? 'text-[#a00]' : ''}>{label(e.action)}{e.decision === 'denied' ? ' (refused)' : ''}</span>
               <span className="text-xs text-[#555] break-words">
-                {when(e.at)} · {e.actor_kind === 'service' ? `${e.actor_id} (automatic)` : e.actor_id} · {e.resource_type}{e.resource_id ? ` ${e.resource_id}` : ''}
+                {when(e.at)} · {e.actor_kind === 'service' ? `${e.actor_id} (automatic)` : names[e.actor_id] || e.actor_id} · {e.resource_type}{e.resource_id ? ` ${e.resource_id}` : ''}
               </span>
             </li>
           ))}

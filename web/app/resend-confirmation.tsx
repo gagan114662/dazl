@@ -50,3 +50,27 @@ export function ResendConfirmation({ email: preset = '' }: { email?: string }) {
     </form>
   )
 }
+
+// #1955: the check-email screen's resend, for the address the page already knows: no second email input.
+// Same route, states and copy as ResendConfirmation, so every line stays conditional: none of them says whether an account exists.
+export function ResendConfirmationButton({ email }: { email: string }) {
+  const [state, setState] = useState<ResendState>('idle')
+  async function resend() {
+    if (state === 'sending' || !email) return
+    setState('sending')
+    let status: number | undefined
+    try {
+      const r = await fetch('/api/auth/email/send-verification', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: email.trim().toLowerCase() }) })
+      status = r.status
+    } catch { /* the server could not be reached; the answer stays uncertain */ }
+    setState(resendResult(status))
+  }
+  return (
+    <span className="flex flex-col items-center gap-2 text-sm">
+      <button type="button" onClick={resend} disabled={state === 'sending'} className="underline underline-offset-4 min-h-11 min-w-11 inline-flex items-center">
+        {state === 'sending' ? 'Sending…' : 'Resend the email'}
+      </button>
+      {(state !== 'idle' && state !== 'sending') && <p role="status" className="text-[#555] text-sm">{resendCopy[state]}</p>}
+    </span>
+  )
+}
