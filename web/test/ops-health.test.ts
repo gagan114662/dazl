@@ -10,7 +10,10 @@ import { setErrorSinks, type ErrorRecord } from '../lib/ops/errors.ts'
 import { bothEngines } from './helpers/engines.ts'
 
 const shipped = () => loadMigrations().map(m => m.version)
-const okSqlite = () => new Database(':memory:')
+const okSqlite = () => {
+  const db = new Database(':memory:')
+  try { return db.prepare('SELECT 1').get() } finally { db.close() }
+}
 
 function capturing<T>(f: (got: ErrorRecord[]) => Promise<T>): Promise<T> {
   const got: ErrorRecord[] = []
@@ -19,7 +22,7 @@ function capturing<T>(f: (got: ErrorRecord[]) => Promise<T>): Promise<T> {
 }
 
 bothEngines('readiness: ready when the store, its schema and the SQLite file answer', async ({ db, kind }) => {
-  const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped })
+  const r = await readiness({ db: async () => db, sqliteProbe: okSqlite, migrations: shipped })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.checks.store.engine, kind)
   assert.equal(r.checks.store.ok, true)
@@ -30,7 +33,7 @@ bothEngines('readiness: ready when the store, its schema and the SQLite file ans
 
 bothEngines('readiness: a store without a reachable scan queue is not ready, and the body says only which check failed', async ({ db }) => capturing(async got => {
   await db.run('DROP TABLE work_queue')
-  const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped })
+  const r = await readiness({ db: async () => db, sqliteProbe: okSqlite, migrations: shipped })
   assert.equal(r.ok, false)
   assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: false, ms: 0, reason: 'error' })
   assert.equal(r.checks.store.ok, true, 'the store itself still answers')
@@ -40,7 +43,7 @@ bothEngines('readiness: a store without a reachable scan queue is not ready, and
 
 bothEngines('readiness: a Postgres schema missing a migration this build ships is not ready', async ({ db, kind }) => {
   if (kind === 'sqlite') return // the SQLite schema is migrated in-process at open
-  const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: () => [...shipped(), 9999] })
+  const r = await readiness({ db: async () => db, sqliteProbe: okSqlite, migrations: () => [...shipped(), 9999] })
   assert.equal(r.ok, false)
   assert.deepEqual({ ...r.checks.schema, ms: 0 }, { ok: false, ms: 0, reason: 'behind' })
 })
@@ -48,7 +51,7 @@ bothEngines('readiness: a Postgres schema missing a migration this build ships i
 test('readiness: Postgres unreachable (closed loopback port) is not ready, and the response carries no error text', () => capturing(async got => {
   const db = pgDb({ connectionString: 'postgres://dazl:secret-pw@127.0.0.1:1/none' })
   try {
-    const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped })
+    const r = await readiness({ db: async () => db, sqliteProbe: okSqlite, migrations: shipped })
     assert.equal(r.ok, false)
     assert.equal(r.checks.store.engine, 'pg')
     assert.deepEqual({ ...r.checks.store, ms: 0 }, { ok: false, ms: 0, reason: 'error', engine: 'pg' })
@@ -66,7 +69,7 @@ test('readiness: Postgres unreachable (closed loopback port) is not ready, and t
 test('readiness: a store that hangs times out instead of hanging the probe', () => capturing(async got => {
   const hung = { kind: 'pg', get: () => new Promise(() => {}) } as unknown as Db
   const t0 = Date.now()
-  const r = await readiness({ db: async () => hung, sqlite: okSqlite, migrations: shipped, timeoutMs: 50 })
+  const r = await readiness({ db: async () => hung, sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 50 })
   assert.ok(Date.now() - t0 < 1000)
   assert.equal(r.ok, false)
   assert.equal(r.checks.store.ok === false && r.checks.store.reason, 'timeout')
@@ -74,12 +77,12 @@ test('readiness: a store that hangs times out instead of hanging the probe', () 
 }))
 
 test('readiness: opening the store failing, or the SQLite file failing, is not ready', () => capturing(async () => {
-  const r1 = await readiness({ db: async () => { throw new Error('bad DATABASE_URL') }, sqlite: okSqlite, migrations: shipped })
+  const r1 = await readiness({ db: async () => { throw new Error('bad DATABASE_URL') }, sqliteProbe: okSqlite, migrations: shipped })
   assert.equal(r1.ok, false)
   assert.equal(r1.checks.store.engine, 'unknown')
   const sqliteDb = { kind: 'sqlite', get: async () => ({ x: 1 }) } as unknown as Db
   const closed = new Database(':memory:'); closed.close()
-  const r2 = await readiness({ db: async () => sqliteDb, sqlite: () => closed, migrations: shipped })
+  const r2 = await readiness({ db: async () => sqliteDb, sqliteProbe: () => closed.prepare('SELECT 1').get(), migrations: shipped })
   assert.equal(r2.ok, false)
   assert.equal(r2.checks.store.ok, true)
   assert.equal(r2.checks.sqlite.ok === false && r2.checks.sqlite.reason, 'error')
@@ -89,13 +92,13 @@ test('readiness: opening the store failing, or the SQLite file failing, is not r
 // reports the check failed once it returns over budget, instead of {ok:true, ms:100}.
 test('readiness: a synchronous SQLite check over budget blocks the probe until it returns, then reports timeout', () => capturing(async got => {
   const sqliteDb = { kind: 'sqlite', get: async () => ({ x: 1 }), all: async () => [] } as unknown as Db
-  const slow = () => ({ prepare: () => ({ get: () => { const end = Date.now() + 100; while (Date.now() < end) { /* busy: holds the thread like a locked SQLite call */ } return 1 } }) })
+  const slow = () => { const end = Date.now() + 100; while (Date.now() < end) { /* busy: holds the thread like a locked SQLite call */ } return 1 }
   const t0 = Date.now()
-  const r = await readiness({ db: async () => sqliteDb, sqlite: slow, migrations: shipped, timeoutMs: 10 })
+  const r = await readiness({ db: async () => sqliteDb, sqliteProbe: slow, migrations: shipped, timeoutMs: 10 })
   assert.ok(Date.now() - t0 >= 100, 'the probe could not return before the synchronous call did')
   assert.equal(r.ok, false)
   assert.equal(r.checks.sqlite.ok === false && r.checks.sqlite.reason, 'timeout')
-  assert.ok(r.checks.sqlite.ms >= 100)
+  assert.ok('ms' in r.checks.sqlite && r.checks.sqlite.ms >= 100)
   assert.equal(r.checks.store.ok, true)
   assert.deepEqual(got.map(g => g.where), ['readiness:sqlite'])
 }))
@@ -111,7 +114,7 @@ const later = <T,>(ms: number, v: T) => new Promise<T>(res => setTimeout(() => r
 const oneOldReplyCheck = () => [{ kind: 'reply-check', pending: 1, claimed: 0, failed: 0, oldest: Math.floor(Date.now() / 1000) - 3600, expired: 0 }]
 
 test('readiness boundary: statistics that throw leave a reachable queue ready; the body says alerts null, reason error', () => capturing(async got => {
-  const r = await readiness({ db: async () => statsDb(async () => { throw new Error('stats exploded') }), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  const r = await readiness({ db: async () => statsDb(async () => { throw new Error('stats exploded') }), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 25 })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: true, ms: 0 })
   assert.deepEqual(r.queue, { alerts: null, reason: 'error' })
@@ -121,7 +124,7 @@ test('readiness boundary: statistics that throw leave a reachable queue ready; t
 
 test('readiness boundary: statistics that hang leave a reachable queue ready; the probe returns within budget, alerts null, reason timeout', () => capturing(async got => {
   const t0 = Date.now()
-  const r = await readiness({ db: async () => statsDb(hang), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  const r = await readiness({ db: async () => statsDb(hang), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 25 })
   assert.ok(Date.now() - t0 < 1000, 'the hanging read did not hold the probe')
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: true, ms: 0 }, 'the mandatory check is not the one that timed out')
@@ -130,31 +133,31 @@ test('readiness boundary: statistics that hang leave a reachable queue ready; th
 }))
 
 test('readiness boundary: statistics over their own budget but under the readiness deadline: ready, alerts null, reason timeout', () => capturing(async got => {
-  const r = await readiness({ db: async () => statsDb(() => later(60, oneOldReplyCheck())), sqlite: okSqlite, migrations: shipped, timeoutMs: 2000, statsTimeoutMs: 20 })
+  const r = await readiness({ db: async () => statsDb(() => later(60, oneOldReplyCheck())), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 2000, statsTimeoutMs: 20 })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.checks.queue.ok, true)
   assert.deepEqual(r.queue, { alerts: null, reason: 'timeout' })
   assert.deepEqual(got.map(g => [g.where, g.error.name]), [['readiness:queue:stats', 'Timeout']])
   // the same read within its budget is reported
-  const ok = await readiness({ db: async () => statsDb(() => later(5, oneOldReplyCheck())), sqlite: okSqlite, migrations: shipped, timeoutMs: 2000, statsTimeoutMs: 1000 })
+  const ok = await readiness({ db: async () => statsDb(() => later(5, oneOldReplyCheck())), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 2000, statsTimeoutMs: 1000 })
   assert.deepEqual(ok.queue?.alerts?.map(a => [a.kind, a.alert]), [['reply-check', 'queue_age']])
 }))
 
 test('readiness boundary: statistics read in time: the alerts are in the body and the instance is ready', () => capturing(async got => {
-  const r = await readiness({ db: async () => statsDb(async () => oneOldReplyCheck()), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  const r = await readiness({ db: async () => statsDb(async () => oneOldReplyCheck()), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 25 })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(r.checks.queue.ok, true)
   assert.deepEqual(r.queue?.alerts?.map(a => [a.kind, a.alert, a.limit]), [['reply-check', 'queue_age', 15 * 60]])
   assert.ok((r.queue?.alerts?.[0].value ?? 0) >= 3600)
   assert.ok(got.every(g => g.where === 'readiness:queue'), 'at most the alert set change is reported, never a statistics failure')
-  const none = await readiness({ db: async () => statsDb(async () => []), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  const none = await readiness({ db: async () => statsDb(async () => []), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 25 })
   assert.deepEqual([none.ok, none.queue], [true, { alerts: [] }])
 }))
 
 test('readiness boundary: the mandatory queue SELECT failing is not ready (error) and the statistics are never read', () => capturing(async got => {
   let statsReads = 0
   const get = async (sql: string) => { if (/work_queue/.test(sql)) throw new Error('relation "work_queue" does not exist'); return { x: 1 } }
-  const r = await readiness({ db: async () => statsDb(async () => { statsReads++; return [] }, get), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  const r = await readiness({ db: async () => statsDb(async () => { statsReads++; return [] }, get), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 25 })
   assert.equal(r.ok, false)
   assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: false, ms: 0, reason: 'error' })
   assert.equal(r.checks.store.ok, true, 'the store itself answers')
@@ -168,7 +171,7 @@ test('readiness boundary: the mandatory queue SELECT hanging is not ready (timeo
   let statsReads = 0
   const get = (sql: string) => /work_queue/.test(sql) ? hang() : Promise.resolve({ x: 1 })
   const t0 = Date.now()
-  const r = await readiness({ db: async () => statsDb(async () => { statsReads++; return [] }, get), sqlite: okSqlite, migrations: shipped, timeoutMs: 25 })
+  const r = await readiness({ db: async () => statsDb(async () => { statsReads++; return [] }, get), sqliteProbe: okSqlite, migrations: shipped, timeoutMs: 25 })
   assert.ok(Date.now() - t0 < 1000)
   assert.equal(r.ok, false)
   assert.deepEqual({ ...r.checks.queue, ms: 0 }, { ok: false, ms: 0, reason: 'timeout' })
@@ -180,7 +183,7 @@ test('readiness boundary: the mandatory queue SELECT hanging is not ready (timeo
 // The store summary a deploy is verified with (docs/PLATFORM.md "Postgres cutover"), and the split-store guard.
 bothEngines('readiness reports the engine and migration version; on Postgres, modules left on raw SQLite make it not ready', async ({ db, kind }) => {
   const want = Math.max(...shipped())
-  const r = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped, rawSqliteModules: () => 3 })
+  const r = await readiness({ db: async () => db, sqliteProbe: okSqlite, migrations: shipped, rawSqliteModules: () => 3 })
   assert.deepEqual(r.store, { engine: kind, migrations: { shipped: want, applied: kind === 'pg' ? want : null }, raw_sqlite_modules: 3 })
   if (kind === 'sqlite') {
     // today's production: the raw modules share the one SQLite file, nothing is split
@@ -189,7 +192,8 @@ bothEngines('readiness reports the engine and migration version; on Postgres, mo
   } else {
     assert.equal(r.ok, false, 'Postgres with raw-SQLite modules left would split the data between two stores')
     assert.deepEqual(r.checks.split, { ok: false, raw_sqlite_modules: 3 })
-    const clean = await readiness({ db: async () => db, sqlite: okSqlite, migrations: shipped, rawSqliteModules: () => 0 })
+    const clean = await readiness({ db: async () => db, sqliteProbe: () => { throw new Error('Postgres must not open SQLite') },
+      migrations: shipped, rawSqliteModules: () => 0, env: () => ({ ...goodEnv(), DB_PATH: undefined }) })
     assert.equal(clean.ok, true)
     assert.deepEqual(clean.checks.split, { ok: true, raw_sqlite_modules: 0 })
   }
@@ -208,7 +212,7 @@ test('readiness: required environment present and well-formed is ready; missing 
   const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
   const { sqliteDb } = await import('../lib/db/client.ts')
   migrateAllSqlite(lite)
-  const run = (env: Record<string, string | undefined>) => readiness({ db: async () => sqliteDb(lite), sqlite: okSqlite, migrations: shipped, env: () => env })
+  const run = (env: Record<string, string | undefined>) => readiness({ db: async () => sqliteDb(lite), sqliteProbe: okSqlite, migrations: shipped, env: () => env })
   const good = await run(goodEnv())
   assert.equal(good.ok, true, JSON.stringify(good))
   assert.deepEqual(good.checks.env, { ok: true, missing: 0 })
@@ -230,7 +234,7 @@ test('readiness: required environment present and well-formed is ready; missing 
   assert.equal(got.length, 2)
   assert.match(got[1].error.message, /DAZL_MASTER_KEY$/)
   // unwired (unit callers): skipped, does not affect the result
-  assert.deepEqual((await readiness({ db: async () => sqliteDb(lite), sqlite: okSqlite, migrations: shipped })).checks.env, { ok: true, skipped: 'not_wired' })
+  assert.deepEqual((await readiness({ db: async () => sqliteDb(lite), sqliteProbe: okSqlite, migrations: shipped })).checks.env, { ok: true, skipped: 'not_wired' })
 }))
 
 // Review on #308: the URL must parse as a usable absolute http(s) base, and the master key check is the key consumer's
@@ -265,20 +269,20 @@ test('dbHealth: each configured database must answer; Postgres unset is not_conf
   const { setErrorSinks } = await import('../lib/ops/errors.ts')
   const restore = setErrorSinks([])
   try {
-    const lite = { prepare: () => ({ get: () => ({ x: 1 }) }) }
-    const brokenLite = { prepare: () => { throw new Error('SQLITE_CANTOPEN /var/lib/secret.db') } }
+    const lite = async () => ({ get: async () => ({ x: 1 }) } as unknown as Db)
+    const brokenLite = async () => { throw new Error('SQLITE_CANTOPEN /var/lib/secret.db') }
     const pg = (get: () => Promise<unknown>) => async () => ({ get } as never)
     const strip = (h: { ok: boolean; checks: Record<string, Record<string, unknown>> }) =>
       ({ ok: h.ok, checks: Object.fromEntries(Object.entries(h.checks).map(([k, v]) => [k, { ...v, ms: undefined }])) })
-    assert.deepEqual(strip(await dbHealth({ sqlite: () => lite, postgres: null }) as never),
+    assert.deepEqual(strip(await dbHealth({ sqlite: lite, postgres: null }) as never),
       { ok: true, checks: { sqlite: { ok: true, ms: undefined }, postgres: { ok: true, skipped: 'not_configured', ms: undefined } } })
-    assert.equal((await dbHealth({ sqlite: () => lite, postgres: pg(async () => ({ x: 1 })) })).ok, true)
-    const down = await dbHealth({ sqlite: () => lite, postgres: pg(async () => { throw new Error('ECONNREFUSED 10.0.0.5:5432') }) })
+    assert.equal((await dbHealth({ sqlite: lite, postgres: pg(async () => ({ x: 1 })) })).ok, true)
+    const down = await dbHealth({ sqlite: lite, postgres: pg(async () => { throw new Error('ECONNREFUSED 10.0.0.5:5432') }) })
     assert.deepEqual([down.ok, down.checks.postgres.ok, (down.checks.postgres as { reason: string }).reason], [false, false, 'error'])
     assert.ok(!JSON.stringify(down).includes('ECONNREFUSED'))
-    const hang = await dbHealth({ sqlite: () => lite, postgres: pg(() => new Promise(() => {})), timeoutMs: 50 })
+    const hang = await dbHealth({ sqlite: lite, postgres: pg(() => new Promise(() => {})), timeoutMs: 50 })
     assert.deepEqual([hang.ok, (hang.checks.postgres as { reason: string }).reason], [false, 'timeout'])
-    const badLite = await dbHealth({ sqlite: () => brokenLite, postgres: null })
+    const badLite = await dbHealth({ sqlite: brokenLite, postgres: null })
     assert.deepEqual([badLite.ok, badLite.checks.sqlite.ok], [false, false])
     assert.ok(!JSON.stringify(badLite).includes('secret.db'))
   } finally { restore() }

@@ -56,8 +56,6 @@ export const RAW_SQLITE_MODULES: Record<string, number> = {
   'lib/linkedin-tasks/store.ts': 2,
   'lib/llm/key-store.ts': 1,
   'lib/memory.ts': 0,
-  'lib/ops/health-route.ts': 0,
-  'lib/ops/health.ts': 0,
   'lib/ops/scheduler-runs.ts': 0,
   'lib/outreach/attribution.ts': 1,
   'lib/outreach/autopilot.ts': 3,

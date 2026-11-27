@@ -127,7 +127,7 @@ test('launch reporting: a healthy start raises nothing; a settled failure raises
   const raw = new Database(':memory:'); migrateAllSqlite(raw)
   const got: ErrorRecord[] = []; const restore = setErrorSinks([r => got.push(r)])
   let mail: MailCheck = { ok: false, reason: 'verify_pending', port: 465 }, deletion: DeletionCheck = { ok: true }
-  const probe = () => readiness({ db: async () => sqliteDb(raw), sqlite: () => raw, migrations: () => loadMigrations().map(m => m.version), mail: () => mail, deletion: () => deletion })
+  const probe = () => readiness({ db: async () => sqliteDb(raw), sqliteProbe: () => raw.prepare('SELECT 1').get(), migrations: () => loadMigrations().map(m => m.version), mail: () => mail, deletion: () => deletion })
   const launch = () => got.filter(r => r.where === 'readiness:launch').map(r => r.error.message)
   try {
     resetLaunchReport()
@@ -159,7 +159,7 @@ test('launch reporting: an outbox failure while mail is pending still raises one
   const got: ErrorRecord[] = []; const restore = setErrorSinks([r => got.push(r)])
   let mail: MailCheck = { ok: false, reason: 'verify_pending', port: 465 }
   const outbox = { ok: false, reason: 'stale', stored: 2, oldest_age_s: 9999 } as const
-  const probe = () => readiness({ db: async () => sqliteDb(raw), sqlite: () => raw, migrations: () => loadMigrations().map(m => m.version), mail: () => mail, deletion: () => ({ ok: true }), outbox: async () => outbox })
+  const probe = () => readiness({ db: async () => sqliteDb(raw), sqliteProbe: () => raw.prepare('SELECT 1').get(), migrations: () => loadMigrations().map(m => m.version), mail: () => mail, deletion: () => ({ ok: true }), outbox: async () => outbox })
   const launch = () => got.filter(r => r.where === 'readiness:launch').map(r => r.error.message)
   try {
     resetLaunchReport()
