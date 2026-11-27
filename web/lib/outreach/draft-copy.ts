@@ -10,6 +10,8 @@
 //   pain, no personal detail the page did not publish (the template's standing rules).
 // - One ask and the same sign-off contract as the template ("Thanks," — the send
 //   footer adds the sender's name).
+// - Quoted text is cut at a sentence end when one fits the budget, never mid-clause, and an
+//   all-caps source line is sentence-cased, so no paste dangles unfinished or shouts.
 //
 import { eventDayVerified } from '../scan/scoreboard.ts'
 import { evidenceStateOf } from './evidence-state.ts'
@@ -42,17 +44,39 @@ export class DraftCopyError extends Error {
 // A record can carry diagnostic lines alongside real evidence or offer text.
 // Omit the entire contaminated line so a fragment cannot become a new claim.
 const SYSTEM_LINE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|\b(?:HTTP(?:\/\d(?:\.\d)?)?\s+|(?:status|error)\s*[:=]\s*)[1-5]\d\d\b|[{}]|^\s*\[\s*["\d\]]|saved excerpt|contact address published|^\s*about [^:]+:/i
-const clean = (s: string, max: number) => s.replace(/https?:\/\/\S+/gi, ' ').replace(/\bwww\.\S+/gi, ' ')
-  .split(/\r\n?|\n/).filter(line => !SYSTEM_LINE.test(line)).join(' ')
+// A source line shouted in full caps pastes a log into the inbox. When a line is entirely
+// uppercase, sentence-case it: tokens with digits (B2B) are kept, everything else is lowercased,
+// and the line keeps one initial capital. A line with any lowercase letter is left alone, so
+// mixed-case text (proper nouns, acronyms) survives untouched.
+const shouty = (line: string): string => {
+  const letters = line.replace(/[^a-zA-Z]/g, '')
+  if (letters.length < 6 || letters !== letters.toUpperCase()) return line
+  const out = line.split(/\s+/).map(w => (/\d/.test(w) ? w : w.toLowerCase())).join(' ')
+  const i = out.search(/[a-zA-Z]/)
+  return i === -1 ? out : out.slice(0, i) + out[i].toUpperCase() + out.slice(i + 1)
+}
+const clean = (s: string, max: number, prose = false) => s.replace(/https?:\/\/\S+/gi, ' ').replace(/\bwww\.\S+/gi, ' ')
+  .split(/\r\n?|\n/).map(line => prose ? shouty(line) : line).filter(line => !SYSTEM_LINE.test(line)).join(' ')
   .replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s:;,.-]+/, '').trim().slice(0, max)
-const takeWords = (s: string, n: number) => { const w = s.split(/\s+/).filter(Boolean); return w.length <= n ? s : `${w.slice(0, n).join(' ')}...` }
-// Trim at a word boundary and mark the cut, so a quoted prefix is never presented as the whole text.
-const trimWords = (s: string, max: number) => {
-  if (s.length <= max) return s
-  const cut = s.lastIndexOf(' ', max)
-  return `${s.slice(0, cut > 40 ? cut : max).trimEnd()}...`
+// Cut quoted prose at a sentence end when one fits the word budget, so a fragment never dangles
+// mid-clause in the draft ("...founders who have sold."). Only when no sentence end fits does it
+// fall back to a word-boundary cut with an ellipsis, which the caller strips with the trailing dots.
+const cutProse = (s: string, maxWords: number): string => {
+  const w = s.split(/\s+/).filter(Boolean)
+  if (w.length <= maxWords) return s
+  const budget = w.slice(0, maxWords).join(' ')
+  let end = Math.max(budget.lastIndexOf('. '), budget.lastIndexOf('! '), budget.lastIndexOf('? '))
+  if (/[.!?]$/.test(budget)) end = Math.max(end, budget.length - 1)
+  return end > budget.length * 0.4 ? budget.slice(0, end + 1).trim() : `${budget}...`
 }
 const lowerFirst = (s: string) => /^[A-Z](?:[a-z]|\s|$)/.test(s) ? s[0].toLowerCase() + s.slice(1) : s
+// lowerFirst softens a quoted sentence that starts mid-thought, but it must never lowercase the
+// company's own name ("Peerbound announced..." must not become "peerbound announced...").
+const lowerFirstSafe = (s: string, company: string): string => {
+  const word = (t: string) => (t.split(/[\s,]+/)[0] ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const first = word(s)
+  return first && first === word(company) ? s : lowerFirst(s)
+}
 
 // Offer lines that open with a verb read as "we <verb> ..."; a noun phrase forced into that frame reads
 // broken ("we sales prospecting software"), so only a known offer verb takes the verb frame. The set
@@ -71,7 +95,7 @@ const baseVerb = (w: string): string | null => {
 // "we ..." stays a we-sentence; a verb-led line becomes "we <verb> ..."; anything else is something the
 // seller offers ("we offer <line>").
 function offerSentence(name: string, offer: string): string {
-  const o = takeWords(trimWords(offer, 200), 35).replace(/\.+$/, '')
+  const o = cutProse(offer, 35).replace(/\.+$/, '')
   if (/^we\b/i.test(o)) return `At ${name}, ${lowerFirst(o)}.`
   if (/^(a|an|the)\b/i.test(o)) return `At ${name}, we offer ${lowerFirst(o)}.`
   const [firstRaw, ...rest] = o.split(' ')
@@ -87,7 +111,7 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
   // the offer input, then apply the same diagnostic filter to the remaining text.
   const heading = `about ${name.toLowerCase()}:`
   const profile = positioning.trimStart()
-  const offer = clean(profile.toLowerCase().startsWith(heading) ? profile.slice(heading.length) : profile, 600)
+  const offer = clean(profile.toLowerCase().startsWith(heading) ? profile.slice(heading.length) : profile, 600, true)
   if (!offer) throw new DraftCopyError('seller_offer_required')
   const contactName = clean(lead.name ?? '', 150)
   const who = contactName.split(' ')[0] || 'there'
@@ -99,17 +123,17 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
     human_confirmed_at: lead.human_confirmed_at ?? null,
   }
   const excerpt = !lead.review_reason && evidenceStateOf(evidence) === 'machine' ? evidence.evidence_excerpt ?? '' : ''
-  const seen = takeWords(trimWords(clean(excerpt, 400), 140), 40).replace(/\.+$/, '')
+  const seen = cutProse(clean(excerpt, 400, true), 40).replace(/\.+$/, '')
   const signalDay = seen && lead.event_date && eventDayVerified(lead)
     ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(lead.event_date))
     : null
   const opener = !seen
     ? `I came across ${company || 'your company'} and thought it was worth writing directly.`
     : signalDay
-      ? `I saw that on ${signalDay}, ${company && seen.startsWith(company) ? seen : lowerFirst(seen)}.`
+      ? `I saw that on ${signalDay}, ${company && seen.startsWith(company) ? seen : lowerFirstSafe(seen, company)}.`
       : company && seen.startsWith(company)
         ? `I saw ${seen}.`
-        : `I saw that ${lowerFirst(seen)}.`
+        : `I saw that ${lowerFirstSafe(seen, company)}.`
   return {
     subject: `Quick question for ${company || contactName || 'you'}`.slice(0, 150),
     body: `Hi ${who},\n\n${opener}\n\n${offerSentence(name, offer)}\n\nOpen to a quick chat?\n\nThanks,`,

@@ -123,3 +123,28 @@ test('unverified, future and held signal days stay out of the draft', () => {
     assert.doesNotMatch(composeDraftCopy({ ...lead(), ...fields }, 'dazl', OFFER).body, /November 12/)
   }
 })
+
+test('control: an excerpt with no machine check and no human confirmation still stays out of the draft', () => {
+  const d = composeDraftCopy(lead({ confidence: null }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /hiring|SDR/)
+  assert.match(d.body, /I came across MadeThis and thought it was worth writing directly\./)
+})
+
+test('a long excerpt is cut at a sentence end, never mid-clause', () => {
+  const long = 'Peerbound announced today that it has opened its Founding Account Executive search with a strong preference for founders who have sold developer tools before. The posting says the company plans to double the go-to-market team by spring, and the hire will own the entire outbound motion end to end.'
+  const d = composeDraftCopy(lead({ company: 'Peerbound, Inc.', evidence_excerpt: long }), 'dazl', OFFER)
+  assert.match(d.body, /sold developer tools before\./)
+  assert.doesNotMatch(d.body, /who have sold\.\n/)
+})
+
+test("the company's own name keeps its casing inside the quoted excerpt", () => {
+  const d = composeDraftCopy(lead({ company: 'Peerbound, Inc.', evidence_excerpt: 'Peerbound announced today that it is hiring a founding account executive.' }), 'dazl', OFFER)
+  assert.match(d.body, /I saw that Peerbound announced today/)
+  assert.doesNotMatch(d.body, /peerbound announced/)
+})
+
+test('an all-caps source line is sentence-cased, not pasted shouting', () => {
+  const d = composeDraftCopy(lead({ company: 'Peerbound, Inc.', evidence_excerpt: 'PEERBOUND IS HIRING A FOUNDING AE FOR ITS ENTERPRISE SALES TEAM' }), 'dazl', OFFER)
+  assert.match(d.body, /I saw that Peerbound is hiring a founding ae for its enterprise sales team\./)
+  assert.doesNotMatch(d.body, /[A-Z]{5,}/)
+})
