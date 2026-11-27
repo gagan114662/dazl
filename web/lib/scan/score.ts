@@ -2,7 +2,7 @@
 // The verifier proves the quoted evidence is real; this stage answers "is this lead worth the
 // user's time, and why now". Every grade must cite the lead's already-verified evidence.
 import type { Provider } from '../llm/provider.ts'
-import type { Icp } from './icp.ts'
+import { fallbackIcp, type Icp } from './icp.ts'
 import { eventDayVerified, proofBackedTiming } from './scoreboard.ts'
 
 // Key-free signal taxonomy. Each signal is observable on public pages (news, jobs boards,
@@ -265,7 +265,8 @@ function structuredIcpCriteria(icp: Icp): string[] {
 
 export function icpTextFor(icp: Icp | null, fallback: string): string {
   if (!icp) return fallback
-  return [icp.summary, ...structuredIcpCriteria(icp)].filter(Boolean).join('\n')
+  const summary = fallback && icp.summary === fallbackIcp(fallback).summary ? fallback : icp.summary
+  return [summary, ...structuredIcpCriteria(icp)].filter(Boolean).join('\n')
 }
 
 // The native first-play UI reuses the saved buyer narrative. Grade the explicit play

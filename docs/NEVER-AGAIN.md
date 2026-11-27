@@ -144,3 +144,10 @@ Times are US Eastern unless marked Z.
 - **Date:** 2026-11-25.
 - **Rule:** let active main runs finish and keep only the newest pending run per workflow. Pull requests still cancel stale runs.
 - **Enforced by (automated):** `web/test/main-ci-concurrency-1895.test.ts` parses the workflows and checks their concurrency settings.
+
+## 13. Full CI on routine pull requests exhausting the runner queue
+
+- **Mistake:** full test and browser jobs ran on routine pull requests, delaying merge and deploy checks.
+- **Date:** 2026-11-25.
+- **Rule:** run lint, typecheck and affected unit tests on routine pull requests. Run the full suite for approved or ready-to-merge pull requests, the merge queue and main. The `ready-to-merge` and `quest-approved` labels replace `full-suite-ci`. The required `full-suite` check blocks merges until the full tier passes.
+- **Enforced by (automated):** `web/test/pr-ci-tiers-1906.test.ts` checks the workflow triggers, required check names and deferral rules.

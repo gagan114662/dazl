@@ -138,7 +138,7 @@ test('#841 forgot password and verification resend: same answer known vs unknown
   await scenario(await getDb(), 'sqlite')
 })
 
-test('#841 the same on Postgres', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
+test('[pg] #841 the same on Postgres', { skip: PG_URL ? false : 'DAZL_TEST_PG_URL not set' }, async () => {
   const s = await freshSchema()
   const db = pgDb({ connectionString: PG_URL!, searchPath: s.schema })
   try {

@@ -177,3 +177,41 @@ test('#1726: a search-count stop explains exhausted web searches', () => {
     'This search reached its web search limit before finding a lead that passed.')
   assert.equal(zeroResultReason({ ...limitInput, stop: 'quota_reached' }).code, 'unknown')
 })
+
+test('#1726: a terminal no-candidates search shows the recorded source gap and a next step', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    status: 'failed',
+    error: 'no_candidates',
+    query: 'Commercial cleaning firms opening new offices',
+    outcome: {
+      kind: 'none_extracted',
+      label: 'No candidates - a source was unavailable',
+      detail: 'The search did not record enough source evidence to identify a matching company.',
+      next: { text: 'See what the scan read', href: '/app/leads?job_id=example' },
+    },
+  }, true, true)
+  assert.match(html, /a source was unavailable/)
+  assert.match(html, /did not record enough source evidence/)
+  assert.match(html, /Try rewording it with a clear buyer and signal/)
+  assert.doesNotMatch(html, /Nothing matched this search/)
+})
+
+test('#1726: terminal no-candidates with a source error keeps the failure view', () => {
+  const { html } = renderHelp({
+    ...emptyScan,
+    status: 'failed',
+    error: 'no_candidates',
+    outcome: { kind: 'failed', label: 'A source failed' },
+  }, true, true)
+  assert.equal(html, '')
+})
+
+test('the Leads client with the terminal empty branch has valid JSX', () => {
+  const { diagnostics } = ts.transpileModule(source.getFullText(), {
+    fileName: source.fileName,
+    reportDiagnostics: true,
+    compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  })
+  assert.deepEqual(diagnostics?.filter(d => d.category === ts.DiagnosticCategory.Error).map(d => ts.flattenDiagnosticMessageText(d.messageText, ' ')), [])
+})

@@ -8,12 +8,19 @@ const lead = (company: string, o: Partial<DiscoveredLead> = {}): DiscoveredLead 
 const result = (leads: DiscoveredLead[], usd: number, unseen: string[] = []): DiscoverResult => ({ leads, seen: leads.filter(l => !unseen.includes(l.company)).map(l => ({ url: l.evidence_url, title: l.company, page_age: null, text: `On 14 October 2026 ${l.company} said it is opening a new site.` })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 1, usd }, stop: 'end_turn', model: 'm', note: null })
 const never = (() => { throw new Error('no network in this test') }) as unknown as typeof fetch
 
+const proofJudge: typeof fetch = async (input, init) => {
+  assert.equal(String(input), 'https://api.anthropic.com/v1/messages')
+  assert.equal(JSON.parse(String(init?.body)).model, 'claude-haiku-5-5')
+  return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+    usage: { input_tokens: 0, output_tokens: 0 } })
+}
+
 test('five shown leads on the first pass: no second pass; the people pass gets the shown leads that lack something, then the one in review', async () => {
   const calls: string[][] = []
   const names = ['A Co', 'B Co', 'C Co', 'D Co', 'E Co', 'Ghost Co']
-  const run = await runDiscovery({ query: 'q' }, { maxUsd: 1 }, { apiKey: 'k', fetch: never,
+  const run = await runDiscovery({ query: 'q' }, { maxUsd: 1 }, { apiKey: 'k', fetch: proofJudge,
     discover: async () => result(names.map(n => lead(n)), 0.3, ['Ghost Co']),
-    enrich: async leads => { calls.push(leads.map(l => l.company)); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team', email: 'pat@x.example', email_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 5, usd: 0.05 }, seen: [], enriched: leads.length } } })
+    enrich: async leads => { calls.push(leads.map(l => l.company)); return { leads: leads.map(l => ({ ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://x.example/team', email: 'pat@x.example', email_source_url: 'https://x.example/team' })), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 5, requests: 5, usd: 0.05 }, seen: [{ url: 'https://x.example/team', title: 'Team', page_age: null, text: 'Pat Lee: pat@x.example' }], enriched: leads.length } } })
   assert.equal(run.passes, 1)
   assert.deepEqual(calls, [['A Co', 'B Co', 'C Co', 'D Co', 'E Co', 'Ghost Co']], 'shown leads first, then the lead that waits for review')
   assert.equal(run.usd, 0.35)
@@ -25,11 +32,11 @@ test('five shown leads on the first pass: no second pass; the people pass gets t
 test('fewer than five shown: a second pass for different companies, when a pass of the same size still fits the budget', async () => {
   const asked: (string[] | undefined)[] = []
   const discover = async (i: { exclude?: string[] }) => { asked.push(i.exclude); return asked.length === 1 ? result([lead('A Co'), lead('B Co')], 0.4) : result([lead('B Co'), lead('C Co')], 0.4) }
-  const fits = await runDiscovery({ query: 'q' }, { maxUsd: 1 }, { apiKey: 'k', fetch: never, discover, enrich: null })
+  const fits = await runDiscovery({ query: 'q' }, { maxUsd: 1 }, { apiKey: 'k', fetch: proofJudge, discover, enrich: null })
   assert.deepEqual([fits.passes, fits.usd, fits.leads.map(l => l.company)], [2, 0.8, ['A Co', 'B Co', 'C Co']], 'a company both passes return is kept once')
   assert.deepEqual(asked, [undefined, ['A Co', 'B Co']])
   asked.length = 0
-  const tight = await runDiscovery({ query: 'q' }, { maxUsd: 0.6 }, { apiKey: 'k', fetch: never, discover, enrich: null })
+  const tight = await runDiscovery({ query: 'q' }, { maxUsd: 0.6 }, { apiKey: 'k', fetch: proofJudge, discover, enrich: null })
   assert.deepEqual([tight.passes, tight.usd], [1, 0.4], 'no room for a second pass: the first stands')
 })
 
@@ -42,7 +49,7 @@ test('#1037: a first-pass LinkedIn profile is kept only when the run saw it for 
   first.seen.push({ url: 'https://www.linkedin.com/in/dana-ruiz-a', title: 'Dana Ruiz - Owner - A Co | LinkedIn', page_age: null, text: null })
   first.seen.push({ url: 'https://www.linkedin.com/in/somebody', title: 'Somebody Else | LinkedIn', page_age: null, text: null })
   const sent: (string | null)[][] = []
-  const run = await runDiscovery({ query: 'q' }, { maxUsd: 1, wantShown: 1 }, { apiKey: 'k', fetch: never, discover: async () => first,
+  const run = await runDiscovery({ query: 'q' }, { maxUsd: 1, wantShown: 1 }, { apiKey: 'k', fetch: proofJudge, discover: async () => first,
     enrich: async leads => { sent.push(leads.map(l => l.linkedin_url)); return { leads: leads.map(l => l.company === 'C Co' ? { ...l, person: 'Pat Lee', title: 'Owner', person_source_url: 'https://c.example/team' } : l), usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, searches: 0, requests: 1, usd: 0.01 }, seen: [], enriched: 1 } } })
   const of = (c: string) => run.leads.find(l => l.company === c)!
   assert.equal(of('A Co').linkedin_url, 'https://www.linkedin.com/in/dana-ruiz-a/', 'seen for this person: kept')

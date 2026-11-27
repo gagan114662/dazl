@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
+import { getDb, sqliteDb } from '@/lib/db/client'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
-import { createReopenDraft, editReopen, listReopens, resolveReopen, sendReopen, skipReopen, warmAgain } from '@/lib/outreach/reopen'
+import { createReopenDraft, editReopen, readReopenOverview, resolveReopen, sendReopen, skipReopen } from '@/lib/outreach/reopen'
 import { OutreachError } from '@/lib/outreach/service'
 import { denied } from '@/lib/workspace-access'
 import { audit } from '@/lib/audit-route'
@@ -12,8 +13,7 @@ const STATUS: Record<string, number> = { not_found: 404, already_created: 409, p
 export async function GET() {
   const user = await requireUser()
   if (!user) return NextResponse.json({ error: 'Not signed in' }, { status: 401 })
-  const db = getScanDb()
-  return NextResponse.json({ warm: warmAgain(db, user.tenantId), reopens: listReopens(db, user.tenantId) })
+  return NextResponse.json(await readReopenOverview(await getDb(), user.tenantId))
 }
 
 // Actions: {action:'draft', thread_id} | {action:'edit', thread_id, body} |
@@ -59,5 +59,5 @@ export async function POST(req: NextRequest) {
   }
   // skip, mark sent and retry throw when they change nothing, so reaching here means they changed the re-open
   if (action === 'skip' || action === 'mark_sent' || action === 'retry') await audit(user, req, { action: `reopen.${action}`, resource: 'thread', id: threadId })
-  return NextResponse.json({ warm: warmAgain(db, user.tenantId), reopens: listReopens(db, user.tenantId) })
+  return NextResponse.json(await readReopenOverview(sqliteDb(db), user.tenantId))
 }

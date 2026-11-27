@@ -13,7 +13,7 @@ import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
 import { enrichmentsForLeads, type Enrichment } from '../connectors/store.ts'
 import { sameSite } from '../connectors/sitecrawl.ts'
 import { publishedDisplayCountry, publishedDisplayRows } from './published-display.ts'
-import { publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow } from './email-pattern.ts'
+import { emailGuessEnabled, publishedCandidateRowsForLeads, publishedNameKey, selectPublishedCandidate, type PublishedCandidateRow } from './email-pattern.ts'
 import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
@@ -64,10 +64,10 @@ export interface WorkEmailRow { target: string; status: WorkEmailStatus; provide
 
 // What the Leads page needs for every work-email block on it, read once with the list (#1182): the published address the company prints
 // for each buyer, rebuilt on every read (#1036 / #1250: no stored provider answer, no guess).
-export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]>; guesses: Record<string, never[]> }
+export interface WorkEmailPageRead { providers: WorkEmailProviders; providers_by_lead: Record<string, WorkEmailProviders>; lookups: Record<string, WorkEmailRow[]>; guesses: Record<string, never[]>; guessing_enabled?: true }
 export function workEmailPageRead(db: Database.Database, tenantId: string, leads: { id: string }[]): WorkEmailPageRead {
   const ids = [...new Set(leads.map(l => l.id).filter(id => /^[a-f0-9]{24}$/.test(id)))]
-  return { providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS, providers_by_lead: Object.fromEntries(ids.map(id => [id, PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS])), lookups: strictPublishedWorkEmailsForLeads(db, tenantId, ids), guesses: {} }
+  return { providers: PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS, providers_by_lead: Object.fromEntries(ids.map(id => [id, PUBLISHED_ONLY_WORK_EMAIL_PROVIDERS])), lookups: strictPublishedWorkEmailsForLeads(db, tenantId, ids), guesses: {}, ...(emailGuessEnabled() ? { guessing_enabled: true as const } : {}) }
 }
 
 // The same durable owner/job machine proof as ordinary Leads/Ready. Older

@@ -71,6 +71,17 @@ export async function readTrialScanCap(db: Db, tenantId: string, jobId: string):
 
 // #1157: the amount still reserved for this job's paid calls that never got an answer (status 'reserved', any attempt) and how
 // many they are, owner-scoped. null when unreadable or nothing is reserved: the stopped scan then names neither, never a made-up one.
+// #1727/#1862: everything the scan's spend rows record, owner-scoped: the still-reserved paid steps that actually
+// started (a $0 hold is no billed step) and what the settled calls actually cost. null only when the read itself
+// fails - the caller then makes no claim from spend at all.
+export async function readRecordedSpend(db: Db, tenantId: string, jobId: string): Promise<{ reservedUsd: number; reservedSteps: number; settledUsd: number; spendRows: number } | null> {
+  try {
+    const row = await db.get<{ r: number | string | null; n: number | string | null; s: number | string | null; rows: number | string | null }>("SELECT SUM(CASE WHEN c.status = 'reserved' AND c.reserve_usd > 0 THEN c.reserve_usd ELSE 0 END) AS r, COUNT(CASE WHEN c.status = 'reserved' AND c.reserve_usd > 0 THEN 1 END) AS n, SUM(CASE WHEN c.status = 'settled' THEN COALESCE(c.actual_usd, 0) ELSE 0 END) AS s, COUNT(*) AS rows FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ?", [tenantId, jobId])
+    if (!row) return null
+    const reservedUsd = Number(row.r ?? 0), reservedSteps = Number(row.n ?? 0), settledUsd = Number(row.s ?? 0), spendRows = Number(row.rows ?? 0)
+    return [reservedUsd, reservedSteps, settledUsd].every(v => Number.isFinite(v) && v >= 0) && Number.isSafeInteger(reservedSteps) && Number.isSafeInteger(spendRows) && spendRows >= 0 ? { reservedUsd, reservedSteps, settledUsd, spendRows } : null
+  } catch { return null }
+}
 export async function readUncertainHold(db: Db, tenantId: string, jobId: string): Promise<{ usd: number; steps: number } | null> {
   try {
     const row = await db.get<{ s: number | string | null; n: number | string | null }>("SELECT SUM(c.reserve_usd) AS s, COUNT(*) AS n FROM scan_spend_calls c JOIN scan_jobs j ON j.id = c.scan_job_id AND j.user_id = c.user_id WHERE j.user_id = ? AND j.id = ? AND c.status = 'reserved' AND c.reserve_usd > 0", [tenantId, jobId])   // a $0 hold (a free call) is no billed step

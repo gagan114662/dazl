@@ -4,8 +4,9 @@ import { readProviderIssues } from './provider-issues.ts'
 import { costPerVerificationPass, COST_PER_PASS_SCOPE } from './cost-per-verification-pass.ts'
 import { getJob } from './store-db.ts'
 import { MAX_ATTEMPTS } from './store.ts'
-import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readHeldPaidSteps, readRefusedModelCalls, readLastActivity, readTrialScanCap, readUncertainHold } from './status-reads.ts'
+import { numbers, readSourceRuns, readSourceStats, readModelUsage, readJobCost, readHeldPaidSteps, readRefusedModelCalls, readLastActivity, readTrialScanCap, readRecordedSpend } from './status-reads.ts'
 import { interruptedTrialAttemptRestored, trialCaps } from '../billing/trial-budget.ts'
+import { settleReapedTrialForJob } from '../billing/trial-reap.ts'
 import { clampToCap, compareActual, trialCapLine, trialScanCap, type RunEstimate } from './price-estimate.ts'
 import { readRunReportRows } from './run-report.ts'
 import { effectiveStatus, enrichState } from './enrichment.ts'
@@ -40,18 +41,33 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const run_report = reportRows?.map(row => row.report) ?? null
   // A report from an older claim cannot describe the current attempt.
   const currentStatus = effectiveStatus(job)
+  // Z2 (#1921): a terminal failed scan that died before the runner's finalizer can still hold an unsettled
+  // trial reservation, so the outcome copy below would promise the free search back while the trial counter
+  // still counts it. Settle and release this job first, so the copy, the counter and the allowance all read
+  // the same settled state.
+  if (currentStatus === 'failed' && (job.error === 'accounting_uncertain' || job.error === 'provider_rejected' || job.error === 'timeout')) await settleReapedTrialForJob(db, job.id)
   const pipeline_diagnostic = currentScanPipelineDiagnostic(reportRows, job.attempts, job.error, currentStatus === 'done' || currentStatus === 'failed' ? job.lead_count : null, currentStatus === 'done' || currentStatus === 'failed' || currentStatus === 'cancelled')
   // Why a scan that searched and read pages still extracted nothing (counts only). null when extraction produced candidates or was not recorded.
   const empty_reason = emptyExtractionReason((run_report as { extraction?: never }[] | null)?.at(-1)?.extraction)
-  const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
+  const fetchOutcomesRecorded = (run_report as { urls?: { own_fetch?: unknown }[]; candidates?: { own_fetch?: unknown }[] }[] | null)
+    ?.some(report => report.urls?.some(url => typeof url.own_fetch === 'string') || report.candidates?.some(candidate => typeof candidate.own_fetch === 'string'))
+  const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && fetchOutcomesRecorded))
   // Live per-source progress (pollable while the scan runs) and the one honest outcome: failed (which source) / rejected (counts per reason) / zero-match / yielded N leads.
   const progress = progressOf(source_runs, effectiveStatus(job))
   const saved = await readJobCost(db, tenantId, job.id)
   // Spend for the "Nothing was charged" claim is the job's one recorded cost (job-cost.ts, #1517): the cap ledger, or the run guard for a job from before it; never the two added, never 0 for an unreadable column.
-  const trial_attempt_restored = job.error === 'accounting_uncertain' && await interruptedTrialAttemptRestored(db, tenantId, job.id)
-  const uncertainHold = job.error === 'accounting_uncertain' ? await readUncertainHold(db, tenantId, job.id) : null
-  const uncertain_usd = uncertainHold?.usd ?? null, uncertain_steps = uncertainHold?.steps ?? null
-  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, trial_attempt_restored, spend_usd: saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason, ...outcomeInputs((run_report as unknown[] | null)?.at(-1) ?? null, source_runs, effectiveStatus(job)) } as never)
+  const trial_attempt_restored = (job.error === 'accounting_uncertain' || job.error === 'provider_rejected') && await interruptedTrialAttemptRestored(db, tenantId, job.id)
+  // #1727/#1862: the recorded spend (still-reserved started steps + settled actuals) phrases the billed claim; a
+  // failed read passes nothing, so the outcome falls back to the #1157 definite answer instead of inventing one.
+  const recordedSpend = job.error === 'accounting_uncertain' || job.error === 'provider_rejected' ? await readRecordedSpend(db, tenantId, job.id) : null
+  const uncertain_usd = recordedSpend ? (recordedSpend.reservedSteps > 0 ? recordedSpend.reservedUsd : null) : undefined
+  const uncertain_steps = recordedSpend ? (recordedSpend.reservedSteps > 0 ? recordedSpend.reservedSteps : null) : undefined
+  const settled_usd = recordedSpend ? recordedSpend.settledUsd : undefined
+  const spend_rows = recordedSpend ? recordedSpend.spendRows : undefined
+  const currentReport = reportRows?.findLast(row => Number(row.attempt) === job.attempts)?.report ?? null
+  const currentSourceRuns = source_runs.filter(row => row.attempt === job.attempts)
+  const currentEmptyReason = emptyExtractionReason((currentReport as { extraction?: never } | null)?.extraction)
+  const outcome = scanOutcome({ ...(job as object), uncertain_usd, uncertain_steps, settled_usd, spend_rows, trial_attempt_restored, spend_usd: saved.read ? recordedJobCostUsd(saved.raw.run, saved.raw.cap) ?? undefined : undefined, id: job.id, status: effectiveStatus(job), error: job.error ?? null, empty_reason: currentEmptyReason, ...outcomeInputs(currentReport, currentSourceRuns, currentStatus) } as never)
   // Code-decided completion: how many candidates are resolved (dated, company confirmed, contact attached) and the specific reason for each that is not.
   const resolution = (run_report as { resolution?: { candidates: number; resolved: number; unresolved: number; by_reason: Record<string, number> } }[] | null)?.findLast(r => r.resolution)?.resolution ?? null
   // The fast first scan: verified leads so far, live per-source progress, "finding more" and the distinct stop reason; never an empty state. Only for a job started with mode=first5.
@@ -98,6 +114,6 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   // #1082: the platform's fair share of the operator search budget limited this run: say so instead of a normal-looking run
   const cap = (run_report as { capacity?: { searches?: number; fetches?: number } | null }[] | null)?.at(-1)?.capacity ?? null
   const capacity_note = cap && ((cap.searches ?? 0) > 0 || (cap.fetches ?? 0) > 0) ? 'Platform search capacity reached today: results are thinner.' : null
-  return { ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, stop_refusal_reason, capacity_note, last_progress_at, running_since, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, pipeline_diagnostic, empty_reason, not_recorded: notRecorded, query: job.query, icp: shownIcp(job.icp), icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 ? 'carried' : job.icp_inferred === 0 ? 'user' : null }
+  return { ...(first5 ? { first5 } : {}), cost, provider_issues, progress, outcome, resolution, stop_refusal_reason, capacity_note, last_progress_at, running_since, job_id: job.id, status: effectiveStatus(job), enrichment: { state: enrichState(job), started_at: job.enrich_started_at ?? null, finished_at: job.enrich_finished_at ?? null }, created_at: job.created_at, claimed_at: job.claimed_at, attempts: job.attempts, max_attempts: MAX_ATTEMPTS, lead_count: job.lead_count, quality: job.candidates === null ? null : { candidates: job.candidates, passed: job.verified, needs_review: job.needs_review, dropped: job.dropped, drop_reasons: job.drop_reasons ? JSON.parse(job.drop_reasons) : {} }, error: job.error === 'key_rejected' && (job as { funded_by?: string }).funded_by === 'trial' ? 'trial_key_invalid' : job.error, source_runs, source_stats, model_usage, run_report, pipeline_diagnostic, empty_reason, not_recorded: notRecorded, query: job.query, icp: shownIcp(job.icp), icp_source: job.icp_inferred === 1 ? 'inferred' : job.icp_inferred === 2 ? 'request_only' : job.icp_inferred === 3 || job.icp_inferred === 0 ? 'carried' : job.icp_inferred === 4 ? 'user' : null }
 
 }

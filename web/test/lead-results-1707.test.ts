@@ -4,13 +4,20 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
+import { createRequire, register } from 'node:module'
+import ts from 'typescript'
+import { discoverContact, isDiscoverLead } from '../lib/discover/card.ts'
+import { displayedEmailSource, emailsInText, publishedEmail } from '../lib/outreach/published-email.ts'
+import { renderToStaticMarkup } from 'react-dom/server'
+
+register('./helpers/tsx-loader.mjs', import.meta.url)
 
 const leads = readFileSync(new URL('../app/app/leads/leads-client.tsx', import.meta.url), 'utf8')
 const checked = readFileSync(new URL('../app/app/leads/checked/checked-client.tsx', import.meta.url), 'utf8')
 
 test('the result approval hold includes the reason in visible text', () => {
-  assert.match(leads, /data-testid="approve-hold"[^>]*>[\s\S]*?<span[^>]*>\{c\.approve\.reason\}<\/span>/)
-  assert.match(leads, /data-testid="linkedin-ready"[^>]*>[\s\S]*?<span[^>]*>\{c\.approve\.reason\}<\/span>/)
+  assert.match(leads, /data-testid="approve-hold"[^>]*>[\s\S]*?<span[^>]*>\{approval\.reason\}<\/span>/)
+  assert.match(leads, /data-testid="linkedin-ready"[^>]*>[\s\S]*?<span[^>]*>\{approval\.reason\}<\/span>/)
 })
 
 test('campaign and CSV links wait for results or a resolved scan', () => {
@@ -30,7 +37,7 @@ test('campaign and CSV links wait for results or a resolved scan', () => {
 })
 
 test('hold copy states the reason and LinkedIn guidance is visible', () => {
-  assert.match(leads, /data-testid="approve-hold"[^>]*>Can&apos;t approve yet\. <span>\{c\.approve\.reason\}/)
+  assert.match(leads, /data-testid="approve-hold"[^>]*>Can&apos;t approve yet\. <span>\{approval\.reason\}/)
   assert.match(leads, /data-testid="linkedin-ready"[^>]*>[^<]*\{c\.linkedin\.name\}&apos;s profile and send the first message yourself\./)
 })
 
@@ -49,6 +56,7 @@ test('the ready response attaches details from the winning lead without crossing
     import { migrateAllSqlite } from './lib/db/sqlite-migrations.ts'
     import { addEnrichment } from './lib/connectors/store.ts'
     import { homeReady } from './lib/outreach/home-ready.ts'
+    import { PAGE_PROVEN_EMAIL_LABEL } from './lib/discover/card.ts'
     import { ownSiteBuyerRows } from './test/helpers/own-site-buyer.ts'
 
     const db = new Database(':memory:')
@@ -59,13 +67,13 @@ test('the ready response attaches details from the winning lead without crossing
     const company = randomUUID(), domain = company + '.example'
     const name = 'Sample Buyer', title = 'Director', email = 'sample.buyer@' + domain
     const job = db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, ?, '-', '-', 'running', ?)")
-    const lead = db.prepare("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url, event_date, date_status, event_date_proof, source_kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', 'page_bound', 'discover', ?)")
+    const lead = db.prepare("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url, event_date, date_status, event_date_proof, source_kind, intent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', 'page_bound', 'discover', 4, ?)")
     for (const [id, owner, age, signal] of [['ready', 'tenant', 2, 'A dated event'], ['held', 'tenant', 1, 'Unrelated detail'], ['other', 'private', 1, 'Private detail']]) {
       job.run(id, owner, company, at - age)
       lead.run(id, id, company, domain, signal, 'https://' + domain + '/signal', date, at - age)
     }
     for (const [kind, value] of [['person', name + ', ' + title], ['email', email]]) {
-      addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind, value, label: null, confidence: null, source_url: 'https://' + domain + '/' + kind, source_date: date, retrieved_at: at })
+      addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind, value, label: kind === 'email' ? PAGE_PROVEN_EMAIL_LABEL : null, confidence: null, source_url: 'https://' + domain + '/' + kind, source_date: date, retrieved_at: at })
     }
     db.prepare("UPDATE scan_jobs SET status = 'done'").run()
     const result = await homeReady('tenant', at)
@@ -80,14 +88,14 @@ test('the ready response attaches details from the winning lead without crossing
 
     addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/sample-buyer', label: null, confidence: null, source_url: 'https://' + domain + '/person', source_date: date, retrieved_at: at })
     db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, 'manual')").run('tenant', email)
-    const suppressed = (await homeReady('tenant', at)).companies.find(row => row.lead_id === 'ready')
-    assert.equal(suppressed?.ready, true)
-    assert.equal(suppressed?.details?.email, null, 'a suppressed address stays hidden on a LinkedIn-ready row')
+    const suppressed = (await homeReady('tenant', at)).companies.find(row => row.company === company)
+    assert.equal(suppressed?.ready, false)
+    assert.equal(suppressed?.details, undefined, 'a suppressed address keeps the company out of Ready even with a profile')
     db.prepare("UPDATE lead_enrichments SET value = ? WHERE tenant_id = ? AND lead_id = ? AND kind = 'email'")
       .run('sample.buyer@gmail.com', 'tenant', 'ready')
-    const personal = (await homeReady('tenant', at)).companies.find(row => row.lead_id === 'ready')
-    assert.equal(personal?.ready, true)
-    assert.equal(personal?.details?.email, null, 'a personal mailbox stays hidden even if published on the company site')
+    const personal = (await homeReady('tenant', at)).companies.find(row => row.company === company)
+    assert.equal(personal?.ready, false)
+    assert.equal(personal?.details, undefined, 'a personal mailbox keeps the company out of Ready even if published on the company site')
 
     const legacy = randomUUID(), site = legacy + '.example', legacyEmail = 'inquiries@' + site
     job.run(legacy, 'tenant', legacy, at - 3)
@@ -112,4 +120,54 @@ test('the ready response attaches details from the winning lead without crossing
     '--loader', './test/helpers/scan-route-loader.mjs', '--input-type=module', '--eval', fixture,
   ], { cwd: fileURLToPath(new URL('../', import.meta.url)), encoding: 'utf8', timeout: 30_000 })
   assert.equal(child.status, 0, child.stdout + child.stderr)
+})
+
+test('lead cards show sourced email or label it unavailable, never both', async () => {
+  const { PublishedEmailProvenance } = await import('../app/app/leads/field-provenance.tsx')
+  const { EmailSourceLink } = await import('../app/app/leads/contact-status.tsx')
+  const card = leads.slice(leads.indexOf('data-testid="lead-card"'), leads.indexOf('data-testid="card-actions"'))
+  const rows = card.split('\n').filter(line => line.includes('visibleLine') || line.includes('<PublishedEmailProvenance lead={l} />'))
+  assert.ok(rows.length)
+  const declarations = leads.slice(leads.indexOf('              const contactLine ='), leads.indexOf('              const recipient ='))
+  const compiled = ts.transpileModule(`${declarations}\nexports.row = <>
+${rows.join('\n')}
+</>`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText
+  const proof = { display_only: true as const, address: 'buyer@example.com', source_url: 'https://example.com/contact' }
+  const render = (lead: { contact?: string; [key: string]: unknown }) => {
+    const exports = { row: null }
+    runInNewContext(compiled, {
+      exports, require: createRequire(import.meta.url), PublishedEmailProvenance, EmailSourceLink,
+      l: { company_domain: 'example.com', contact: null, ...lead },
+      c: { contactNoPerson: lead.contact }, lp: null,
+      discoverContact, isDiscoverLead, displayedEmailSource, emailsInText, publishedEmail,
+    })
+    return renderToStaticMarkup(exports.row)
+  }
+  const link = /href="https:\/\/example\.com\/contact"[^>]*>Email source<\/a>/
+  const displayOnly = render({ company_first_published_email: proof })
+  assert.match(displayOnly, /Published work email \(display only\): buyer@example\.com/)
+  assert.match(displayOnly, link)
+  assert.doesNotMatch(displayOnly, /email unavailable/i)
+
+  const sourced = render({ contact: proof.address, source_url: proof.source_url, evidence_excerpt: `Contact ${proof.address}` })
+  assert.match(sourced, /buyer@example\.com/)
+  assert.match(sourced, link)
+  assert.doesNotMatch(sourced, /email (?:source )?unavailable/i)
+
+  const savedCitation = render({
+    contact: proof.address,
+    source_url: 'https://example.com/signal',
+    evidence_excerpt: 'The company is opening a new site.',
+    contact_context: { source_url: proof.source_url, excerpt: `Contact ${proof.address}` },
+  })
+  assert.match(savedCitation, /buyer@example\.com/)
+  assert.match(savedCitation, link)
+  assert.doesNotMatch(savedCitation, /email (?:source )?unavailable/i)
+
+  const missing = render({ contact: proof.address })
+  assert.match(missing, /Published work email unavailable/)
+  assert.doesNotMatch(missing, /Email source|buyer@example\.com/)
+  assert.doesNotMatch(render({ quarantined_at: 1, company_first_published_email: proof }), /Email source|buyer@example\.com/)
 })

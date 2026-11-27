@@ -62,13 +62,13 @@ test('PR selection excludes base-only advances, but retains genuine PR changes a
 })
 
 
-test('both PR test jobs use the verified merge base rather than the event snapshot', () => {
+test('fast PR checks use the verified merge base rather than the event snapshot', () => {
   const workflow = readFileSync(new URL('../workflows/web-ci.yml', import.meta.url), 'utf8')
   for (const fragment of [
     'pr-merge-base.mjs "$GITHUB_SHA" "$PR_HEAD_SHA" "$PR_EVENT_BASE_SHA"',
     'affected-tests.mjs "$PR_BASE_SHA" "$GITHUB_SHA"',
   ]) {
-    assert.equal(workflow.split(fragment).length - 1, 2, fragment)
+    assert.equal(workflow.split(fragment).length - 1, 1, fragment)
   }
-  assert.match(workflow, /git diff --name-only "\$PR_BASE_SHA\.\.\.\$GITHUB_SHA"/)
+  assert.match(workflow, /git diff --relative --name-only --find-renames --diff-filter=AMR -z "\$PR_BASE_SHA\.\.\.\$GITHUB_SHA"/)
 })

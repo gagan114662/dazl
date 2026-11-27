@@ -43,6 +43,7 @@ import { GET as keyGET } from '../../app/api/settings/llm-key/route.ts'
 import { GET as memoryGET } from '../../app/api/settings/memory/route.ts'
 import { GET as monitorsGET } from '../../app/api/monitors/route.ts'
 import { GET as conversionGET } from '../../app/api/outreach/conversion/route.ts'
+import { GET as playRunsGET } from '../../app/api/plays/[kind]/[id]/runs/route.ts'
 import { GET as campaignGET } from '../../app/api/campaigns/[id]/route.ts'
 
 // Local synthetic fixture: two tenants with unique per-tenant markers, the real GET handlers, session switched per call.
@@ -69,7 +70,9 @@ async function build() {
     const lead = hex()
     db.prepare("INSERT INTO leads(id,scan_job_id,company,name,contact,signal,source_url,evidence_excerpt,confidence,human_confirmed_at,score) VALUES(?,?,?,'Pat',?,'Hiring','https://x.invalid/jobs',?,80,1,70)").run(lead, job, m.co, email, `${m.co} is hiring`)
     db.prepare("INSERT INTO outreach_messages(id,tenant_id,lead_id,to_email,subject,body,status) VALUES(?,?,?,?,?,?,'draft')").run(hex(), t, lead, email, m.subj, 'Fixture body text long enough for the guard, twenty chars plus.')
-    await createMonitor(sqliteDb(db), t, { query: m.mon })
+    const monitor = await createMonitor(sqliteDb(db), t, { query: m.mon })
+    assert.ok('id' in monitor, 'fixture monitor was created')
+    db.prepare('INSERT INTO monitor_runs (id, monitor_id, job_id) VALUES (?, ?, ?)').run(hex(), monitor.id, job)
     saveMemory(db, t, { positioning: m.mem })
     saveKey(db, t, 'anthropic', m.key, master)
     if (thread) db.prepare("INSERT INTO followup_threads(tenant_id,thread_id,lead_id,to_email,root_message_id,last_activity_at,last_lead_reply_at,followups_sent) VALUES(?,?,?,?,'r@x',?,?,0)").run(t, thread, lead, email, now, now)
@@ -77,14 +80,14 @@ async function build() {
     db.prepare("UPDATE outreach_messages SET status='sent', sent_at=? WHERE tenant_id=? AND lead_id=?").run(now, t, lead)
     db.prepare("INSERT INTO outreach_signal_context(message_id,tenant_id,lead_id,scan_job_id,signal_kind,source_kind,captured_at) SELECT id,tenant_id,lead_id,?,?,'query',? FROM outreach_messages WHERE tenant_id=? AND lead_id=?").run(job, m.sig, now, t, lead)
     if (thread) db.prepare("INSERT INTO followup_messages(tenant_id,thread_id,step,status,created_at) VALUES(?,?,0,'sent',?)").run(t, thread, now)
-    return { job, lead }
+    return { job, lead, monitor: monitor.id }
   }
   const a = await seed('A', MA, MA.email, MA.thread)
   const b = await seed('B', MB, 'bmarker7h2m@b.invalid', MB.thread)
   return { db, a, b }
 }
 
-test('all 12 read routes: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
+test('tenant read route inventory: A and B each get their own content, never the other tenant\'s; A ids look nonexistent to B; GETs do not mutate; unauth is 401 for every route', async () => {
   const { db, a, b } = await build()
   // rate_limits and app_leases are global platform tables (no tenant data); rateLimit() writes there through getDb().
   const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('rate_limits', 'app_leases') ORDER BY name").all() as { name: string }[]).map(r => r.name)
@@ -94,9 +97,13 @@ test('all 12 read routes: A and B each get their own content, never the other te
   // [name, call for a tenant, markers that tenant's own response must contain, id-lookup route?]
   type R = { name: string; call: (t: 'A' | 'B') => Promise<Response>; own: { A: string[]; B: string[] }; id?: (hexId: string) => Promise<Response> }
   const j = (t: 'A' | 'B') => (t === 'A' ? a : b).job
+  const exportFor = (id: string) => exportGET(get(`/api/leads/export?job_id=${id}`))
+  const monitorRuns = (id: string) => playRunsGET(get(`/api/plays/monitor/${id}/runs`), {
+    params: Promise.resolve({ kind: 'monitor', id }),
+  })
   const routes: R[] = [
     { name: 'GET /api/leads', call: t => leadsGET(get(`/api/leads?job_id=${j(t)}`)), own: { A: [MA.co], B: [MB.co] }, id: h => leadsGET(get(`/api/leads?job_id=${h}`)) },
-    { name: 'GET /api/leads/export', call: t => exportGET(get(`/api/leads/export?job_id=${j(t)}`)), own: { A: [MA.co, MA.email], B: [MB.co] } },
+    { name: 'GET /api/leads/export', call: t => exportFor(j(t)), own: { A: [MA.co, MA.email], B: [MB.co] }, id: exportFor },
     { name: 'GET /api/scan/jobs', call: () => jobsGET(), own: { A: [MA.biz], B: [MB.biz] } },
     { name: 'GET /api/scan/latest', call: () => latestGET(), own: { A: [MA.q], B: [MB.q] } },
     { name: 'GET /api/scan/status', call: t => statusGET(get(`/api/scan/status?job_id=${j(t)}&passive=1`)), own: { A: [a.job], B: [b.job] }, id: h => statusGET(get(`/api/scan/status?job_id=${h}&passive=1`)) },
@@ -108,6 +115,7 @@ test('all 12 read routes: A and B each get their own content, never the other te
     { name: 'GET /api/settings/llm-key', call: () => keyGET(), own: { A: ['Q9ZK'], B: ['W4XJ'] } },
     { name: 'GET /api/settings/memory', call: () => memoryGET(), own: { A: [MA.mem], B: [MB.mem] } },
     { name: 'GET /api/outreach/conversion', call: () => conversionGET(), own: { A: [MA.sig], B: [MB.sig] } },
+    { name: 'GET /api/plays/monitor/[id]/runs', call: t => monitorRuns(t === 'A' ? a.monitor : b.monitor), own: { A: [a.job], B: [b.job] }, id: monitorRuns },
     { name: 'GET /api/monitors', call: () => monitorsGET(), own: { A: [MA.mon], B: [MB.mon] } },
   ]
   const U = { A, B }
@@ -136,6 +144,21 @@ test('all 12 read routes: A and B each get their own content, never the other te
     if (r.name === 'GET /api/leads/export') assert.ok(!ct.includes(MA.co), `${r.name}: B with A's job exports no A row`)
     for (const m of AMARKS) assert.ok(!ct.includes(m), `${r.name}: cross call leaks A marker ${m}`)
   }
+  const latestFor = (id: string) => latestGET(get(`/api/scan/latest?job_id=${id}`))
+  setUser(A)
+  const ownedLatest = await latestFor(a.job)
+  assert.equal(ownedLatest.status, 200)
+  assert.equal((await ownedLatest.json()).query, MA.q)
+
+  setUser(B)
+  const foreignLatest = await latestFor(a.job)
+  const missingLatest = await latestFor(hex())
+  assert.equal(foreignLatest.status, 404)
+  assert.equal(missingLatest.status, 404)
+  assert.equal(foreignLatest.headers.get('content-type'), missingLatest.headers.get('content-type'))
+  assert.deepEqual(await foreignLatest.json(), { error: 'not_found' })
+  assert.deepEqual(await missingLatest.json(), { error: 'not_found' })
+
   assert.equal(snap(), before, 'GET cohort left every table byte-unchanged')
   // Unauthenticated: every route, enumerated.
   setUser(null)
