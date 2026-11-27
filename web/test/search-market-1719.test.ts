@@ -180,3 +180,11 @@ test('#1719: a bare built-in city beats the saved market without overriding a qu
   assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near New York City', null, account)), { location: 'US' })
   assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find manufacturers near London, Ontario', null, account)), { location: 'CA' })
 })
+
+test('#1719: cities in separate countries do not inherit a single transport market', () => {
+  const account = { country: 'CH', language: 'fr' }
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near London and New York City', null, account)), {})
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near Berlin and Toronto', null, account)), {})
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders near Berlin', null, account)), { location: 'DE' })
+  assert.deepEqual(tinyfishMarket(resolveSearchMarket('Find builders hiring accountants', null, account)), { location: 'CH', language: 'fr' })
+})

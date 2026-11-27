@@ -90,10 +90,10 @@ function nonUkLondon(q: string): boolean {
 // #1205: a city that shares its name with a built-in city place (London) is that other city only when a posting names its own state,
 // province or country, and never for a remote posting: "London EC2A 2BB", "City of London", "Remote - London" are the UK's London.
 const namesakeOfBuiltIn = (city: string): boolean => CITY_PLACES.some(c => norm(c.name) === norm(city))
-const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; country: string; shared?: true; ok: (l: string) => boolean }[] = [
-  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', country: 'GB', shared: true, ok: l => LONDON_OK.test(l) },
+const CITY_PLACES: { ask: { test: (q: string) => boolean }; name: string; shared?: true; ok: (l: string) => boolean }[] = [
+  { ask: { test: q => /\blondon\b/i.test(q) && !nonUkLondon(q) }, name: 'London', shared: true, ok: l => LONDON_OK.test(l) },
   // "New York" alone is the state (stateIn). "New York, NY" / "New York, New York" / "New York City" / "NYC" / a borough name the city.
-  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', country: 'US', ok: l => NYC_OK.test(l) },
+  { ask: /\b(?:new york city|nyc|manhattan|brooklyn|queens|bronx|staten island|new york,\s*(?:ny|new york))\b/i, name: 'New York City', ok: l => NYC_OK.test(l) },
 ]
 const COUNTRY_PLACES: { ask: RegExp; name: string; ok: (l: string) => boolean }[] = [
   { ask: /\b(?:united kingdom|great britain|england|uk)\b/i, name: 'United Kingdom', ok: l => /\b(?:united kingdom|england|scotland|wales|great britain|u\.k\.|uk|gb)\b/i.test(l) },
@@ -261,7 +261,13 @@ export function absorbStates(places: string[]): string[] {
   return places.filter(p => { const abbr = Object.keys(STATES).find(a => STATES[a] === p); return !(abbr && places.some(q => q !== p && q.endsWith(`, ${abbr}`))) })
 }
 export function placeIn(query: string): Place | null {
-  for (const c of CITY_PLACES) if (c.ask.test(query)) return placeOf(c)
+  for (const c of CITY_PLACES) if (c.ask.test(query)) {
+    const state = stateIn(c.name)
+    const region = state ? regionOf(state) : null
+    const countryPlace = COUNTRY_PLACES.find(candidate => c.ok(`${c.name}, ${candidate.name}`))
+    const country = region ? countryOfRegion(region) : countryFromField(countryPlace?.name)
+    return placeOf({ ...c, country: country ?? undefined })
+  }
   const us = usCityPlace(query); if (us) return us
   const st = stateIn(query)
   if (st) return { name: st, ok: (...l) => locationInState(st, ...l) }

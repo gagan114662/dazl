@@ -22,12 +22,19 @@ export function browserMarket(locale: unknown): SearchMarket {
   return { country: null, language: null }
 }
 
-export function resolveSearchMarket(query: string, profile?: Partial<SearchMarket> | null, account?: Partial<SearchMarket> | null): SearchMarket {
+function countriesForPlace(query: string): string[] {
   const place = placeIn(query)
   const countries = countriesIn(query)
   const placeCountry = place?.country ? [place.country] : []
   const regions = place ? regionsIn(place.name).map(countryOfRegion) : []
-  const queryCountries = [...new Set(countries.length ? countries : regions.length ? regions : placeCountry)]
+  return countries.length ? countries : regions.length ? regions : placeCountry
+}
+
+export function resolveSearchMarket(query: string, profile?: Partial<SearchMarket> | null, account?: Partial<SearchMarket> | null): SearchMarket {
+  // Keep comma-qualified cities together. A conjunction only separates places if both sides resolve.
+  const coordinated = query.split(/\s+\b(?:and|or)\b\s+/i).map((part, i) => countriesForPlace(i ? `near ${part}` : part))
+  const namedPlaces = coordinated.filter(countries => countries.length > 0)
+  const queryCountries = [...new Set(namedPlaces.length > 1 ? namedPlaces.flat() : countriesForPlace(query))]
   if (queryCountries.length > 1) return { country: null, language: null }
   const savedProfile = profileMarket(profile)
   const profileCountry = savedProfile.country
