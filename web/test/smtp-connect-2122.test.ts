@@ -49,3 +49,32 @@ test('SMTP verifies authentication without sending and closes its transport', as
     connect: () => assert.fail('invalid endpoints must never open an SMTP connection'),
   }), /TLS port/)
 })
+
+test('SMTP sends only the authorized envelope and requires relay acceptance', async () => {
+  const { sendSmtpMessage } = await import('../lib/email/smtp-connect.ts')
+  const lookup = async () => [{ address: '8.8.8.8', family: 4 }]
+  const mailbox = { host: 'mail.example.net', port: 465, username: 'owner@example.net', password: 'test credential' }
+  const envelope = { from: mailbox.username, to: 'buyer@example.org' }
+  const raw = Buffer.from('Subject: Fixture\r\n\r\nHello')
+  let closes = 0
+  const close = () => { closes++ }
+  const result = await sendSmtpMessage(mailbox, { envelope, raw }, {
+    lookup,
+    connect: options => {
+      assert.equal(options.secure, true)
+      return {
+        sendMail: async message => {
+          assert.deepEqual(message, { envelope, raw })
+          return { accepted: [envelope.to], messageId: '<fixture@example.net>' }
+        },
+        close,
+      }
+    },
+  })
+  assert.deepEqual(result, { id: '<fixture@example.net>' })
+  await assert.rejects(sendSmtpMessage(mailbox, { envelope, raw }, {
+    lookup,
+    connect: () => ({ sendMail: async () => ({ accepted: [], messageId: '<fixture@example.net>' }), close }),
+  }), { message: 'SMTP delivery could not be confirmed' })
+  assert.equal(closes, 2)
+})
