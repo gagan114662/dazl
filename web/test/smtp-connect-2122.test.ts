@@ -60,6 +60,7 @@ test('SMTP sends only the authorized envelope and requires relay acceptance', as
   const close = () => { closes++ }
   const result = await sendSmtpMessage(mailbox, { envelope, raw }, {
     lookup,
+    assertAuthorized: () => {},
     connect: options => {
       assert.equal(options.secure, true)
       return {
@@ -74,6 +75,7 @@ test('SMTP sends only the authorized envelope and requires relay acceptance', as
   assert.deepEqual(result, { id: '<fixture@example.net>' })
   await assert.rejects(sendSmtpMessage(mailbox, { envelope, raw }, {
     lookup,
+    assertAuthorized: () => {},
     connect: () => ({ sendMail: async () => ({ accepted: [], messageId: '<fixture@example.net>' }), close }),
   }), { message: 'SMTP delivery could not be confirmed' })
   assert.equal(closes, 2)

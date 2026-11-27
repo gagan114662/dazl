@@ -70,8 +70,10 @@ type SendingTransport = {
 export async function sendSmtpMessage(input: SmtpMailbox, message: SmtpMessage, deps: {
   lookup?: Lookup
   connect?: (options: SmtpOptions) => SendingTransport
-} = {}): Promise<{ id: string }> {
+  assertAuthorized: () => void
+}): Promise<{ id: string }> {
   const options = await smtpOptions(input, deps.lookup)
+  deps.assertAuthorized()
   let transport: SendingTransport | undefined
   try {
     transport = (deps.connect ?? (configuration => nodemailer.createTransport(configuration)))(options)
