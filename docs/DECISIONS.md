@@ -111,8 +111,7 @@ Contacts may include a pattern-guessed business address (for example first.last@
 - it is shown labelled "guessed, verified", never as "published";
 - the recipient is in the United States (CAN-SPAM: opt-out regime, unsubscribe already enforced).
 
-Canada (CASL) and EU/UK recipients keep the earlier rule: only addresses the person or company published.
-Unknown country counts as "not US". This replaces, for US recipients only, the 2026-10-21 contact-crawl rule
+The US-only rule applies to guesses. A company-published address may be stored worldwide when the page is on the confirmed company site and the address binds to exactly one named person. The stored country basis records the available geography evidence. Unknown country counts as "not US" for guesses. Pattern guessing remains off. This replaces, for US recipients only, the 2026-10-21 contact-crawl rule
 "no guessed or pattern-built addresses" (see `web/docs/CONTACT-CRAWL.md` and `docs/AUTOPILOT.md`).
 
 ## 2026-10-26: no paid data APIs
