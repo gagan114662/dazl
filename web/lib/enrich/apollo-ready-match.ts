@@ -1,7 +1,8 @@
+import { SpendRefused } from '../llm/spend-guard.ts'
 import type { DbLike } from '../db/client.ts'
 import { CreditRefused, refundCredits, reserveCredits, settleCredits, type CreditHold } from './credit-pool.ts'
 import { apolloPersonMatch, type ApolloMatch } from './apollo.ts'
-import { planApolloReservations, recordApolloResult, reserveApolloLead } from './apollo-credit-ledger.ts'
+import { planApolloReservations, recordApolloResult, releaseUnsentApolloLead, reserveApolloLead } from './apollo-credit-ledger.ts'
 
 export interface ApolloBuyerEvidence {
   first: string
@@ -55,17 +56,26 @@ export async function matchReadyApolloBuyer(
     await refundCredits(db, workspaceHold)
     return null
   }
+  let dispatched = false
   let match: ApolloMatch | null
   try {
     const dispatch = options.fetchImpl ?? fetch
-    match = await apolloPersonMatch(key, query, (input, init) => dispatch(input, { ...init, redirect: 'error' }))
+    match = await apolloPersonMatch(key, query, (input, init) => {
+      dispatched = true
+      return dispatch(input, { ...init, redirect: 'error' })
+    })
   } catch (error) {
+    if (!dispatched && error instanceof SpendRefused) {
+      await releaseUnsentApolloLead(db, tenantId, leadId, options.scanId)
+      await refundCredits(db, workspaceHold)
+      throw error
+    }
     await recordApolloResult(db, tenantId, leadId, 'uncertain').catch(() => {
       // The durable reservation still accounts for this credit.
     })
     throw error
   }
-  if (match) await settleCredits(db, workspaceHold, 1)
+  await settleCredits(db, workspaceHold, 1)
   await recordApolloResult(db, tenantId, leadId, match ? 'matched' : 'empty')
   return match
 }

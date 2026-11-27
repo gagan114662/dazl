@@ -102,12 +102,13 @@ if (flag('apollo-plan-db') || flag('apollo-plan-input')) {
     const { default: Database } = await import('better-sqlite3')
     const { planApolloBuyerMatches } = await import('../lib/enrich/apollo-ready-match.ts')
     const snapshot = JSON.parse(readFileSync(expand(inputPath), 'utf8')) as {
+      complete: true
       tenantId: string
       scanId: string
       scanLimit: number
       candidates: Parameters<typeof planApolloBuyerMatches>[2]
     }
-    if (typeof snapshot.tenantId !== 'string' || !snapshot.tenantId ||
+    if (snapshot.complete !== true || typeof snapshot.tenantId !== 'string' || !snapshot.tenantId ||
       typeof snapshot.scanId !== 'string' || !snapshot.scanId ||
       !Number.isSafeInteger(snapshot.scanLimit) || snapshot.scanLimit < 1 ||
       !Array.isArray(snapshot.candidates) || snapshot.candidates.some(({ leadId, evidence }) =>
@@ -174,7 +175,7 @@ let crashed = false
 for (const c of cases) {
   const tenantId = tenantOf(c)
   let scanId: string | undefined
-  let candidates: Parameters<NonNullable<RunDeps['onApolloEvidence']>>[0] = []
+  let candidates: Parameters<NonNullable<RunDeps['onApolloEvidence']>>[0] | undefined
   let run: typeof runJob | undefined
   if (evidenceOutput) {
     const runner = await import('../lib/scan/runner.ts')
@@ -184,10 +185,15 @@ for (const c of cases) {
     }
   }
   const r = await runCase(db, c, { tenant: tenantId, cap, timeoutS, thresholds, deps: { master }, contacts, run })
-  if (evidenceOutput && scanId && !r.error && r.status === 'done') {
-    const snapshot = { tenantId, scanId, scanLimit: apolloBudget, candidates }
-    writeFileSync(expand(evidenceOutput), JSON.stringify(snapshot), { flag: 'wx', mode: 0o600 })
-    console.error(`Apollo evidence saved: ${candidates.length} eligible lead(s); no Apollo requests sent`)
+  if (evidenceOutput) {
+    if (scanId && candidates && !r.error && r.status === 'done') {
+      const snapshot = { complete: true, tenantId, scanId, scanLimit: apolloBudget, candidates }
+      writeFileSync(expand(evidenceOutput), JSON.stringify(snapshot), { flag: 'wx', mode: 0o600 })
+      console.error(`Apollo evidence saved: ${candidates.length} eligible lead(s); no Apollo requests sent`)
+    } else {
+      crashed = true
+      console.error('Apollo evidence collection incomplete. No snapshot written.')
+    }
   }
   if (r.error?.startsWith('crashed')) crashed = true
   results.push(r)

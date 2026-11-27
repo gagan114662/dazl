@@ -62,6 +62,22 @@ export async function reserveApolloLead(
   }
 }
 
+// Only the caller that proved its request was never dispatched may release it.
+export async function releaseUnsentApolloLead(
+  store: DbLike, tenantId: string, leadId: string, scanId: string,
+): Promise<void> {
+  await asDb(store).tx(function* (tx) {
+    if (tx.kind === 'pg') yield* tx.get("SELECT pg_advisory_xact_lock(hashtext('apollo-credit-ledger')) AS locked")
+    const receipt = yield* tx.run(
+      "DELETE FROM apollo_credit_ledger WHERE tenant_id = ? AND lead_id = ? AND scan_id = ? AND result = 'reserved'",
+      [tenantId, leadId, scanId],
+    )
+    if (receipt.changes !== 1) return
+    const tally = yield* tx.run('UPDATE apollo_credit_total SET used = used - 1 WHERE singleton = 1 AND used > 0')
+    if (tally.changes !== 1) throw new Error('Apollo lifetime release was not recorded')
+  })
+}
+
 export async function recordApolloResult(
   store: DbLike, tenantId: string, leadId: string, result: 'matched' | 'empty' | 'uncertain',
 ): Promise<void> {

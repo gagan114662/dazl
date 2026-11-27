@@ -1654,6 +1654,8 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     } finally {
       endEnrichment(db, job.id, job.attempts)
     }
+  } else if (!needsContactCrawl.length && onApolloEvidence) {
+    try { onApolloEvidence([]) } catch { /* evidence observation never changes the scan result */ }
   }
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
