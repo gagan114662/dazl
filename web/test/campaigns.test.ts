@@ -260,3 +260,27 @@ test('discovery leads with only a personal or company LinkedIn profile do not co
   finish(db, 'jl')
   assert.equal(listCampaigns(db, 'A').find(x => x.id === 'jl')!.contact.withContact, 0)
 })
+
+test('#2012 checklist counts eligible published email, including crawled contacts', () => {
+  const db = setup()
+  try {
+    job(db, 'A', 'email-check', 'Businesses opening a new office')
+    lead(db, 'email-check', 'restricted', { confirmed: 5, contact: 'support@one.example' })
+    lead(db, 'email-check', 'refused', { confirmed: 5, contact: 'buyer@two.example' })
+    lead(db, 'email-check', 'published', { confirmed: 5 })
+    lead(db, 'email-check', 'also-published', { confirmed: 5, contact: 'buyer@four.example' })
+    const evidence = { label: null, confidence: null, source_date: '2026-11-20', retrieved_at: 1 }
+    addEnrichment(db, 'A', 'refused', {
+      ...evidence, connector: 'scan:deliverability', kind: 'deliverability',
+      value: 'buyer@two.example|rejected', source_url: 'https://two.example/contact',
+    })
+    addEnrichment(db, 'A', 'published', {
+      ...evidence, connector: 'sitecrawl', kind: 'email',
+      value: 'buyer@three.example', source_url: 'https://three.example/contact',
+    })
+    finish(db, 'email-check')
+    assert.equal(listCampaigns(db, 'A')[0].contact.readyWithContact, 2)
+  } finally {
+    db.close()
+  }
+})

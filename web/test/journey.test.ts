@@ -16,6 +16,8 @@ test('a verified, dated, in-window lead needs a published email to be an opportu
   const s = previewSplit([lead(), lead({ id: 'l2', contact: null })])
   assert.deepEqual(s.opportunities.map(l => [l.id, l.contactReady]), [['l1', true]])
   assert.deepEqual(s.held.map(({ lead, reason }) => [lead.id, reason]), [['l2', 'no published email']])
+  assert.deepEqual(s.noContact.map(l => l.id), ['l2'])
+  assert.deepEqual(s.research, [])
 })
 
 test('wrong-company, undated, out-of-window, unverified, rejected and in-review leads never enter the preview', () => {

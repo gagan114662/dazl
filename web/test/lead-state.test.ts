@@ -146,7 +146,7 @@ test('#1176 the cause label fails closed on a row with no day_verified flag: a d
   const dated = { event_date: '2026-10-01', date_status: 'unverified' }
   assert.equal(researchCause(lead({ ...dated, day_verified: undefined, review_reason: null })), 'undated', 'no flag: never read as proven')
   assert.equal(researchCause(lead({ ...dated, day_verified: false, review_reason: null })), 'undated')
-  assert.equal(researchCause(lead({ ...dated, day_verified: true, review_reason: null })), 'unsupported', 'a proven day: the cause is something else')
+  assert.equal(researchCause(withPublishedEmail(lead({ ...dated, day_verified: true, review_reason: null }))), 'unsupported', 'a proven day: the cause is something else')
 })
 
 test('#352 the original gap: a visible no_event_evidence lead is actionable review on Home (not "cannot make it ready"); sales_hiring_check_failed is research on both', () => {
@@ -237,7 +237,7 @@ test('#1176 reader 2 controls: the timing gate alone never makes a day "verified
   assert.equal(researchCause({ ...z, review_reason: 'event_timing_unconfirmed' }), 'undated')
   assert.equal(researchCause({ ...z, review_reason: 'counterparty_signal' }), 'customer')
   assert.equal(researchCause({ ...z, gate_held: true }), 'unsupported', 'a required check that has not passed is named first')
-  assert.equal(researchCause({ ...z, currentness_held: false }), 'unsupported', 'not held by the timing gate: some other cause')
+  assert.equal(researchCause(withPublishedEmail({ ...z, currentness_held: false })), 'unsupported', 'not held by the timing gate: some other cause')
 })
 
 // #1176, the live check on prod 66449147 (issue comment 6888738347): Home's "4 research only" chip InfoTip said "No verified, dated event, outside your time

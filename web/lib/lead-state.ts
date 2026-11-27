@@ -5,7 +5,7 @@
 // time-window hold (undated or older than the window), someone else's customer, a different place, a closed opening, a
 // required check that could not run - is "research": kept for reading, never counted as reviewable, and never offered a
 // "widen the window" fix unless a dated lead was only too old. Unknown reasons fail closed to research.
-import { heldReason, NO_OWN_BUYER, type PreviewLead } from './journey.ts'
+import { heldReason, NO_OWN_BUYER, NO_PUBLISHED_EMAIL, type PreviewLead } from './journey.ts'
 import { reviewCanNameBuyer } from './people/buyer-reach.ts'
 import { discoverReady, discoverState, isDiscoverLead } from './discover/card.ts'
 
@@ -69,7 +69,9 @@ export function researchCause(l: PreviewLead & { review_reason?: string | null }
   // machine, and no confirmation by the user). It stays research, as the Leads card says ("Quote-backed research only"); only its words change.
   if (l.currentness_held) return 'need'
   // #1037: dated, sourced and otherwise ready; only the buyer the company's own site must name is missing - the rest of the lead is not confirmed yet
-  if (heldReason(l) === NO_OWN_BUYER) return 'need'
+  const reason = heldReason(l)
+  if (reason === NO_OWN_BUYER) return 'need'
+  if (reason === NO_PUBLISHED_EMAIL) return 'contact'
   return 'unsupported'
 }
 
