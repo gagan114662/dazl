@@ -54,8 +54,15 @@ test('#1571 the card header names the website a discovery lead carries; no websi
     usage: { input_tokens: 1000, output_tokens: 500, cache_read_tokens: 0, cache_write_tokens: 0, searches: 3, requests: 1, usd: 0.044 }, stop: 'end_turn', model: 'claude-opus-5-5', note: null }
   canned.seen.push({ url: 'https://northwind-dental.example/contact', title: 'Contact', page_age: null, text: 'Dana Ruiz: dana@northwind-dental.example' })
   let asked = 0
-  const blocked = (async () => new Response('no', { status: 403 })) as unknown as typeof fetch
-  assert.equal(await runJob(db, job!, { master, fetchImpl: blocked, discover: true, enrichImpl: null, discoverImpl: async () => (asked++ === 0 ? canned : { ...canned, leads: [], seen: [] }) }), 'done')
+  const fixtureFetch: typeof fetch = async (input, init) => {
+    if (String(input) === 'https://api.anthropic.com/v1/messages' && init?.body &&
+        JSON.parse(String(init.body)).model === 'claude-haiku-5-5') {
+      return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+        usage: { input_tokens: 0, output_tokens: 0 } })
+    }
+    return new Response('no', { status: 403 })
+  }
+  assert.equal(await runJob(db, job!, { master, fetchImpl: fixtureFetch, discover: true, enrichImpl: null, discoverImpl: async () => (asked++ === 0 ? canned : { ...canned, leads: [], seen: [] }) }), 'done')
 
   // a lead of the older engine in another search of the same workspace: a contact, no recorded website
   const old = 'f'.repeat(24)
