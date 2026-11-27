@@ -27,9 +27,10 @@ on:
 permissions:
   contents: read
 concurrency:
-  # PRs cancel stale runs. Main pushes share a group so the active run finishes
-  # and GitHub replaces older pending runs with the newest one.
-  group: ${{ github.event_name == 'push' && 'release-gate-main' || format('release-gate-{0}', github.event.pull_request.number || github.run_id) }}
+  # PRs cancel stale runs. Main pushes and merge-queue runs share a group so the
+  # active run finishes and GitHub replaces older pending runs with the newest one.
+  # cancel-in-progress is false for main to prevent new merges from aborting running CI.
+  group: ${{ (github.event_name == 'push' || github.event_name == 'merge_group') && 'release-gate-main' || format('release-gate-{0}', github.event.pull_request.number || github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   FULL_CI: ${{ github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'ready-to-merge') || contains(github.event.pull_request.labels.*.name, 'quest-approved') }}
