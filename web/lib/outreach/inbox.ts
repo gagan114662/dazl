@@ -9,7 +9,7 @@
 // Its table (inbox_thread_reads) is created with the other reply tables in migrateReplies (lib/outreach/replies.ts).
 // On the Db layer (both engines). Tenant scope: every row is the tenant's own inbound_messages; the lead and play come
 // from leads joined through the tenant's own scan_jobs, so another tenant's lead id never labels or filters a row.
-import { asDb, type DbLike, type Param } from '../db/client.ts'
+import { asDb, type Db, type DbLike, type Param } from '../db/client.ts'
 import { NEEDS_OWNER_CLASSES, NOT_A_PERSON, PERSON_REPLY, SETTLED_STOPS, sqlList } from './needs-owner.ts'
 import { displayStopReason } from './lifecycle.ts'
 
@@ -136,4 +136,23 @@ export function parseInboxQuery(sp: URLSearchParams): InboxQuery {
     jobId: sp.get('job_id') || null, threadId: sp.get('thread') || null, status, classification: sp.get('class') || null, cursor: sp.get('cursor') || null,
     limit: Number.isFinite(limit) ? limit : 50,
   }
+}
+
+// Full original outreach and captured reply excerpts, oldest first.
+export interface ThreadMsg { dir: 'out' | 'in'; kind: 'original' | 'followup' | 'reply'; subject: string | null; body: string; at: number; classification: string | null }
+export async function threadMessages(db: Db, tenantId: string, threadId: string): Promise<ThreadMsg[]> {
+  const params = [tenantId, threadId]
+  const root = await db.get<{ subject: string; body: string; at: number }>(
+    `SELECT m.subject, m.body, COALESCE(m.sent_at, m.created_at) AS at FROM followup_threads t
+     JOIN outreach_messages m ON m.lead_id = t.lead_id AND m.tenant_id = t.tenant_id
+     WHERE t.tenant_id = ? AND t.thread_id = ?`, params)
+  if (!root) return []
+  const followups = await db.all<{ step: number; created_at: number }>(
+    "SELECT step, created_at FROM followup_messages WHERE tenant_id = ? AND thread_id = ? AND status = 'sent'", params)
+  const replies = await db.all<{ excerpt: string; classification: string; received_at: number }>(
+    'SELECT excerpt, classification, received_at FROM inbound_messages WHERE tenant_id = ? AND thread_id = ?', params)
+  const out: ThreadMsg[] = [{ dir: 'out', kind: 'original', subject: root.subject, body: root.body, at: Number(root.at), classification: null }]
+  for (const row of followups) out.push({ dir: 'out', kind: 'followup', subject: `Follow-up ${Number(row.step) + 1}`, body: '', at: Number(row.created_at), classification: null })
+  for (const row of replies) out.push({ dir: 'in', kind: 'reply', subject: null, body: row.excerpt, at: Number(row.received_at), classification: row.classification })
+  return out.sort((a, b) => a.at - b.at)
 }
