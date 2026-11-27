@@ -13,19 +13,20 @@ export default function GmailPanel() {
   const [msg, setMsg] = useState('')
   const [justConnected, setJustConnected] = useState(false) // back from Google's grant: offer the way back to the emails
 
-  const latest = useRef(0)
+  const requests = useRef({ latest: 0 })
   async function load() {
-    const request = ++latest.current
+    const request = ++requests.current.latest
     const r = await fetch('/api/outreach/settings')
     if (!r.ok) return
     const j: State = await r.json()
-    if (request !== latest.current) return
+    if (request !== requests.current.latest) return
     setS(j)
     setName(n => n || j.sender?.sender_name || '')
     setAddr(a => a || j.sender?.postal_address || '')
     setBooking(b => b || j.sender?.booking_url || '')
   }
   useEffect(() => {
+    const sequence = requests.current
     void Promise.resolve().then(load) // after the effect, as the other panels load (react-hooks/set-state-in-effect)
     const refreshReplyReading = () => void load()
     window.addEventListener('reply-reading-updated', refreshReplyReading)
@@ -49,7 +50,7 @@ export default function GmailPanel() {
       else if (q) setMsg('Gmail was not connected. Try again.')
     })
     return () => {
-      latest.current++
+      sequence.latest++
       window.removeEventListener('reply-reading-updated', refreshReplyReading)
     }
   }, [])
