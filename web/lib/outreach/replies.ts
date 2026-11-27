@@ -373,6 +373,25 @@ export async function readReplySyncCandidates(db: Db, tenantId: string, now: num
     ORDER BY due DESC, reply_checked_at IS NOT NULL, reply_checked_at ASC, sent_at DESC`, [...seqArgs, windowStart, ...warmArgs, tenantId, windowStart, ...seqArgs])
 }
 
+export async function recordReplySyncThread(db: Db, tenantId: string, messageId: string, threadId: string, rootMessageId: string, now: number): Promise<void> {
+  await db.run(
+    `INSERT INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at)
+     SELECT tenant_id, ?, lead_id, to_email, ?, COALESCE(sent_at, ?) FROM outreach_messages
+     WHERE tenant_id = ? AND id = ? AND status = 'sent'
+     ON CONFLICT (tenant_id, thread_id) DO NOTHING`,
+    [threadId, rootMessageId, now, tenantId, messageId],
+  )
+}
+
+export async function checkpointReplySync(db: Db, tenantId: string, messageId: string, now: number): Promise<void> {
+  await db.run(
+    `UPDATE outreach_messages SET reply_checked_at = ?
+     WHERE tenant_id = ? AND id = ? AND status = 'sent'
+       AND (reply_checked_at IS NULL OR reply_checked_at < ?)`,
+    [now, tenantId, messageId, now],
+  )
+}
+
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -396,7 +415,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
   }
   const get = async (path: string) => { authority(); const r = await f(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }); if (!r.ok) throw new Error(`gmail_${r.status}`); const body = await r.json(); authority(); return body }
 
-  const sent = await readReplySyncCandidates(asDb(db), tenantId, now)
+  const store = asDb(db)
+  const sent = await readReplySyncCandidates(store, tenantId, now)
   if (recheckReadAuthority(db, tenantId, { email: acct.email, refreshCt: acct.refresh_ct })) return { ...out, error: 'reading_not_enabled' }
   const { maxThreads, budgetMs } = replySyncLimits((d.env ?? process.env) as Record<string, string | undefined>)
   const clock = d.clockMs ?? Date.now
@@ -413,7 +433,8 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
       const t = (await get(`threads/${thread}?format=full`)) as { messages?: GMsg[] }
       out.threads++
       const root = `dazl.${m.id}@${acct.email.split('@')[1]}`
-      db.prepare('INSERT OR IGNORE INTO followup_threads (tenant_id, thread_id, lead_id, to_email, root_message_id, last_activity_at) VALUES (?, ?, ?, ?, ?, ?)').run(tenantId, thread, m.lead_id, m.to_email, root, m.sent_at ?? now)
+      await recordReplySyncThread(store, tenantId, m.id, thread, root, now)
+      authority()
       for (const g of t.messages ?? []) {
         const at = Math.floor(Number(g.internalDate ?? 0) / 1000) || now
         const from = addr(header(g, 'from'))
@@ -491,7 +512,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
         } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
       }
-      db.prepare('UPDATE outreach_messages SET reply_checked_at = ? WHERE id = ? AND tenant_id = ?').run(now, m.id, tenantId) // read and processed: checkpoint
+      await checkpointReplySync(store, tenantId, m.id, now)
       readNow.add(m.id)
     } catch (e) {
       if (e === LOST) return { ...out, error: 'reading_not_enabled' } // nothing more is read or stored
