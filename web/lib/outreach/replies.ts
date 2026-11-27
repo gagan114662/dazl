@@ -1,4 +1,4 @@
-import { asDb, type Db } from '../db/client.ts'
+import { asDb, sqliteTransaction, type Db, type Tx } from '../db/client.ts'
 import { tableExists as tableExistsDb } from '../db/table-exists.ts'
 import { tableExists } from './send-budget.ts'
 import { randomBytes } from 'node:crypto'
@@ -413,6 +413,25 @@ export async function checkpointReplySync(db: Db, tenantId: string, messageId: s
   )
 }
 
+export function* insertReplySyncInbound(tx: Tx, tenantId: string, item: {
+  gmailId: string
+  threadId: string
+  messageId: string
+  from: string
+  text: string
+  classification: string
+  receivedAt: number
+}) {
+  const result = yield* tx.run(
+    `INSERT INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id)
+     SELECT ?, tenant_id, ?, lead_id, ?, ?, ?, ?, id FROM outreach_messages
+     WHERE tenant_id = ? AND id = ? AND status = 'sent'
+     ON CONFLICT (tenant_id, gmail_id) DO NOTHING`,
+    [item.gmailId, item.threadId, item.from, item.text.slice(0, 200), item.classification, item.receivedAt, tenantId, item.messageId],
+  )
+  return result.changes === 1
+}
+
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
   const out: SyncResult = { threads: 0, replies: 0, optOuts: 0, bounces: 0, consents: 0, reviews: 0 }
   const now = d.now ?? Math.floor(Date.now() / 1000)
@@ -469,7 +488,9 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
         if (db.prepare('SELECT 1 FROM inbound_messages WHERE tenant_id = ? AND gmail_id = ?').get(tenantId, g.id)) continue
         const body = messageText(g.payload)
         const text = body.text
-        const log = (cls: string) => db.prepare('INSERT OR IGNORE INTO inbound_messages (gmail_id, tenant_id, thread_id, lead_id, from_email, excerpt, classification, received_at, outreach_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(g.id, tenantId, thread, m.lead_id, from, text.slice(0, 200), cls, at, m.id)
+        const log = (classification: string) => sqliteTransaction(db, tx => insertReplySyncInbound(tx, tenantId, {
+          gmailId: g.id, threadId: thread, messageId: m.id, from, text, classification, receivedAt: at,
+        }))
         // Delivery-failure notice: only a permanent (5.x.x) failure suppresses.
         if (/^(mailer-daemon|postmaster)@/.test(from)) {
           // Same bar as the separate-thread branch (#415/#928): a bounce is recorded ONLY from a structured delivery-status
@@ -516,7 +537,7 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           continue
         }
         const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
-        log(cls)
+        if (!log(cls)) continue
         if (cls === 'auto') continue
         out.replies++
         if (tableExists(db,'sequences')) db.prepare("UPDATE sequences SET status = 'replied', stop_reason = 'reply' WHERE tenant_id = ? AND lead_id = ? AND status IN ('approved','active')").run(tenantId,m.lead_id)

@@ -14,7 +14,7 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
 
@@ -324,6 +324,20 @@ test('Postgres reply sync selects only the owning tenant and prioritizes due thr
     await checkpointReplySync(db, 'owner', 'recent', NOW)
     await checkpointReplySync(db, 'owner', 'recent', NOW - 1)
     assert.equal((await readReplySyncCandidates(db, 'owner', NOW)).find(row => row.id === 'recent')?.reply_checked_at, NOW)
+    const inbound = {
+      gmailId: 'inbound', threadId: 'recent', messageId: 'recent', from: 'buyer@example.test',
+      text: 'x'.repeat(210), classification: 'opt_out', receivedAt: NOW,
+    }
+    assert.equal(await db.tx(tx => insertReplySyncInbound(tx, 'neighbor', inbound)), false)
+    const duplicateResults = await Promise.all([
+      db.tx(tx => insertReplySyncInbound(tx, 'owner', inbound)),
+      db.tx(tx => insertReplySyncInbound(tx, 'owner', inbound)),
+    ])
+    assert.deepEqual(duplicateResults.sort(), [false, true])
+    assert.equal(await db.tx(tx => insertReplySyncInbound(tx, 'owner', { ...inbound, classification: 'positive' })), false)
+    assert.deepEqual(await db.all('SELECT tenant_id, classification, length(excerpt) AS length FROM inbound_messages'),
+      [{ tenant_id: 'owner', classification: 'opt_out', length: 200 }])
+
 
   } finally {
     await db.close()
