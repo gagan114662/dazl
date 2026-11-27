@@ -235,7 +235,17 @@ test('status is read-only: none, in_progress, unknown and done from the durable 
   assert.deepEqual(await status(), { state: 'none', external_id: null })
   assert.equal(calls.length, 0, 'status never sends')
   as('B')
-  assert.equal((await post({ action: 'status', lead_id: 'lead-A' })).status, 404)
+  const readsBefore = reads.length
+  const bLead = db.prepare('SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE j.user_id = ?').pluck().get('B')
+  assert.equal(typeof bLead, 'string')
+  const own = await post({ action: 'status', lead_id: bLead })
+  assert.deepEqual(own, { status: 200, json: { state: 'none', external_id: null } })
+  const foreign = await post({ action: 'status', lead_id: 'lead-A' })
+  const missing = await post({ action: 'status', lead_id: randomBytes(12).toString('hex') })
+  assert.deepEqual(missing, { status: 404, json: { error: 'Not found' } })
+  assert.deepEqual(foreign, missing)
+  assert.equal(calls.length, 0, 'status never sends for either workspace')
+  assert.equal(reads.length, readsBefore, 'status performs no CRM reads')
 })
 
 // Instinct's HOLD on 17ee4c5: a lead the CRM already has (recorded success, or the user found it there) is never created
