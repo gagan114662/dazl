@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { afterSignIn, keepInvite } from '@/lib/invite-return'
 import { ClaimContextBanner, useClaimContext } from '../preview/claim/context-banner'
+import { ResendConfirmationButton } from '../resend-confirmation'
 
 // sentWithoutScript / errorWithoutScript (#1116): the outcome of a NATIVE post of this form (it was submitted before or
 // without its script; the route redirected back with a code). Rendered on the server, so they show with no script.
@@ -50,7 +51,8 @@ export default function SignUpForm({ trialRule = '', sentWithoutScript = false, 
           <Link href="/" className="text-xl font-medium tracking-tight block mb-6">dazl<span className="text-[#111]">.</span></Link>
           <h1 className="text-2xl font-medium mb-3">Check your email</h1>
           <p className="text-[#555] text-sm mb-4">If {sent ? <span className="text-[#111]">{sent}</span> : 'the address you entered'} can receive mail from us, a link to confirm it is on its way. Open it, then sign in. The link works once, for 24 hours.</p>
-          <p className="text-[#555] text-sm mb-4">Nothing arrived? Sign in with your password and we&apos;ll try to send a new link.</p>
+          <p className="text-[#555] text-sm mb-4">Nothing arrived? {sent ? 'Resend the email, or ' : ''}sign in with your password and we&apos;ll try to send a new link.</p>
+          {sent ? <ResendConfirmationButton email={sent} /> : null}
           <a href="/sign-in" className="btn-primary inline-block !py-3 px-6">Sign in</a>
         </div>
       </main>
