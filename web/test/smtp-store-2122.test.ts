@@ -32,3 +32,17 @@ test('SMTP storage isolates workspaces, encrypts credentials and invalidates rep
     raw.close()
   }
 })
+
+test('the application SQLite loader creates and preserves the SMTP mailbox table', async () => {
+  const { migrateAllSqlite } = await import('../lib/db/sqlite-migrations.ts')
+  const raw = new Database(':memory:')
+  try {
+    migrateAllSqlite(raw)
+    raw.prepare("INSERT INTO users (id, email, password_hash, salt, created_at) VALUES ('a', 'a@example.net', 'hash', 'salt', 1)").run()
+    raw.prepare("INSERT INTO mailbox_connections (id, workspace_id, provider, created_at, updated_at) VALUES ('connection', 'a', 'smtp', 'now', 'now')").run()
+    migrateAllSqlite(raw)
+    assert.deepEqual(raw.prepare('SELECT id FROM mailbox_connections').all(), [{ id: 'connection' }])
+  } finally {
+    raw.close()
+  }
+})
