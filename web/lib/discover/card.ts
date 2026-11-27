@@ -91,7 +91,7 @@ export function discoverContact(l: { source_kind?: string | null; name?: string 
   // employee's address stored beside it is not this person's (review of #1596); otherAddress says one was published.
   const own = (r: Row) => {
     if (!person || isGenericInbox(r.value)) return false
-    const local = r.value!.trim().toLowerCase().split('@')[0]
+    const local = r.value!.trim().toLowerCase().split('@')[0].replace(/\d+$/, '')
     const doctor = /^dr\.?\s/i.test(person.name) || /\b(?:dentist|doctor|dds|dmd|[a-z]*odontist)\b/i.test(person.title ?? '')
     return nameBound(local, person.name) || (doctor && nameBound(local.replace(/^dr[._-]?/, ''), person.name))
   }

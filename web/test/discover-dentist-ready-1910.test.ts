@@ -39,3 +39,19 @@ test('#1910: a practice manager cannot use a same-surname doctor mailbox', () =>
   assert.equal(discoverState(row), 'no_contact')
   assert.equal(discoverApprove(row).ok, false)
 })
+
+test('#1910: a published numbered address keeps the named dentist Ready and keeps its citation', () => {
+  const row = lead('dana.ruiz2')
+  assert.equal(discoverState(row), 'ready_email')
+  assert.deepEqual(discoverApprove(row), { ok: true })
+  assert.deepEqual(discoverContact(row)?.email, { address: 'dana.ruiz2@cedar.example', source })
+  assert.equal(discoverSources(row).find(item => item.field === 'email')?.url, source)
+})
+
+test('#1910: numbered mailboxes still need to identify the buyer', () => {
+  for (const mailbox of ['morgan2', 'office2']) {
+    assert.equal(discoverState(lead(mailbox)), 'no_contact')
+    assert.equal(discoverApprove(lead(mailbox)).ok, false)
+    assert.equal(discoverContact(lead(mailbox))?.email, null)
+  }
+})
