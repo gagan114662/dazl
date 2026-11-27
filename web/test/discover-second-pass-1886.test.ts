@@ -35,6 +35,8 @@ async function fixture({ paused, needsFinalAnswer = false }: { paused: boolean; 
     const fetchImpl: typeof fetch = async (url, init) => {
       if (!init?.body) return new Response('<p>' + date + ' ' + quote + '</p>')
       const body = JSON.parse(String(init.body)) as { model: string; tools: { name: string; max_uses?: number }[]; system: { text: string }[]; messages: { role: string; content: unknown }[] }
+      if (body.model === 'claude-haiku-5-5') return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+        usage: { input_tokens: 0, output_tokens: 0 } })
       assert.equal(body.model, model, String(url))
       const allowance = body.tools.find(tool => tool.name === 'web_search')?.max_uses ?? 0
       allowances.push(allowance)

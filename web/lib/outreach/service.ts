@@ -6,6 +6,8 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
+import { readAccountZone } from '../account-zone.ts'
+import { asDb } from '../db/client.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { composeDraftCopy, DraftCopyError } from './draft-copy.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -60,11 +62,13 @@ export const isInboxFixtureAddress = (email: string): boolean => {
 // nothing is addressable for that tenant. Other tenants are unaffected. Code gate only.
 const isDesignatedTestTenant = (tenantId: string): boolean =>
   !!process.env.OUTREACH_TEST_TENANT_ID && process.env.OUTREACH_TEST_TENANT_ID === tenantId
-export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean => {
+const recipientAllowedWith = (tenantId: string, email: string, testApproved: () => boolean): boolean => {
   if (isInboxFixtureAddress(email)) return false
-  if (isDesignatedTestTenant(tenantId)) return testRecipientApproved(db, tenantId, email)
-  return !CONSUMER.has(norm(email).split('@')[1]) || testRecipientApproved(db,tenantId,email)
+  if (!isDesignatedTestTenant(tenantId) && !CONSUMER.has(norm(email).split('@')[1])) return true
+  return norm(email) === TEST_INBOX && testApproved()
 }
+export const recipientAllowed = (db: Database.Database, tenantId: string, email: string): boolean =>
+  recipientAllowedWith(tenantId, email, () => testRecipientApproved(db, tenantId, email))
 // Mirrors sequences.ts testAddresses (that module owns the allowlist; read directly here to
 // avoid a service -> sequences import cycle). Table may not exist on older databases.
 const isAllowlistedTestRecipient = (db: Database.Database, tenantId: string, email: string): boolean => {
@@ -328,11 +332,22 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // "not refused": the card keeps Approve off and says so, and the failure is recorded for the operator instead of being dropped.
 // The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
 // One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
-const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null) =>
-  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email ?? null
-export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
+type DiscoveryRecipientLead = { id: string; name: string | null; company_domain: string | null }
+type DiscoveryContactEvidence = { kind: string; connector: string; value: string; label: string | null; source_url: string }
+type RecipientRefusal = 'personal_email' | 'suppressed' | 'unreadable' | null
+
+const discoveryEmailFromEvidence = (lead: Omit<DiscoveryRecipientLead, 'id'>, enrichments: DiscoveryContactEvidence[]) =>
+  discoverContact({ ...lead, source_kind: 'discover', enrichments })?.email ?? null
+
+const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null, companyDomain: string | null) =>
+  discoveryEmailFromEvidence({ name, company_domain: companyDomain }, db.prepare("SELECT kind, connector, value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as DiscoveryContactEvidence[])
+
+export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): RecipientRefusal {
   try {
-    const to = norm(discoverOwnEmail(db, tenantId, leadId, (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '')?.address ?? '')
+    const lead = db.prepare('SELECT l.name, l.company_domain FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id WHERE l.id = ? AND j.user_id = ?')
+      .get(leadId, tenantId) as { name: string | null; company_domain: string | null } | undefined
+    if (!lead) return null
+    const to = norm(discoverOwnEmail(db, tenantId, leadId, lead.name, lead.company_domain)?.address ?? '')
     if (!EMAIL_RE.test(to)) return null
     return !recipientAllowed(db, tenantId, to) ? 'personal_email' : isSuppressed(db, tenantId, to) ? 'suppressed' : null
   } catch (e) {
@@ -340,6 +355,52 @@ export function discoverRecipientRefusal(db: Database.Database, tenantId: string
     return 'unreadable'
   }
 }
+
+// Display-only projection. The caller supplies the visible leads read from this owned job.
+export function discoverRecipientRefusalsForJob(
+  db: Database.Database, tenantId: string, jobId: string, leads: readonly DiscoveryRecipientLead[],
+): Map<string, RecipientRefusal> {
+  const verdicts = new Map<string, RecipientRefusal>()
+  if (!leads.length) return verdicts
+
+  const keys = (values: Iterable<string>) => JSON.stringify(Object.fromEntries(Array.from(values, value => [value, true])))
+  try {
+    const evidence = db.prepare(`SELECT lead_id, kind, connector, value, label, source_url
+      FROM lead_enrichments
+      WHERE tenant_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin')
+        AND lead_id IN (SELECT l.id FROM leads l JOIN scan_jobs j ON j.id = l.scan_job_id
+          WHERE j.user_id = ? AND j.id = ? AND l.id IN (SELECT key FROM json_each(?)))
+      ORDER BY retrieved_at, id`).all(tenantId, tenantId, jobId, keys(leads.map(lead => lead.id))) as (DiscoveryContactEvidence & { lead_id: string })[]
+    const byLead = new Map<string, DiscoveryContactEvidence[]>()
+    for (const row of evidence) {
+      const existing = byLead.get(row.lead_id)
+      if (existing) existing.push(row)
+      else byLead.set(row.lead_id, [row])
+    }
+
+    const allowedAddresses = new Map<string, string>()
+    let testApproved: boolean | undefined
+    const approvedTestRecipient = () => testApproved ??= testRecipientApproved(db, tenantId, TEST_INBOX)
+    for (const lead of leads) {
+      const email = norm(discoveryEmailFromEvidence(lead, byLead.get(lead.id) ?? [])?.address ?? '')
+      if (!EMAIL_RE.test(email)) verdicts.set(lead.id, null)
+      else if (!recipientAllowedWith(tenantId, email, approvedTestRecipient)) verdicts.set(lead.id, 'personal_email')
+      else allowedAddresses.set(lead.id, email)
+    }
+    if (allowedAddresses.size) {
+      const rows = db.prepare(`SELECT email FROM suppressions
+        WHERE tenant_id = ? AND email IN (SELECT key FROM json_each(?))`)
+        .all(tenantId, keys(allowedAddresses.values())) as { email: string }[]
+      const suppressed = new Set(rows.map(row => row.email))
+      for (const [id, email] of allowedAddresses) verdicts.set(id, suppressed.has(email) ? 'suppressed' : null)
+    }
+  } catch (e) {
+    captureError(e, { source: 'route', where: '/api/leads', tenantId })
+    for (const lead of leads) if (!verdicts.has(lead.id)) verdicts.set(lead.id, 'unreadable')
+  }
+  return verdicts
+}
+
 function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead, leadId: string) {
   if (requiredGateHeld(db, tenantId, leadId)) throw new OutreachError('sales_hiring_check_failed')
   const state = db.prepare('SELECT review_reason, company_domain FROM leads WHERE id = ?').get(leadId) as { review_reason: string | null; company_domain: string | null } | undefined
@@ -348,7 +409,7 @@ function discoverDraftChecks(db: Database.Database, tenantId: string, lead: Lead
   if (lead.fit === 0 && lead.intent === null) throw new OutreachError('lead_ungraded')
   // #1250: a shared inbox (info@, sales@, reception@ ...) is not a contact and is never drafted to; the first address that is not one is used
   // and the address must be the named person's own, as the card decides it (lib/discover/card.ts discoverContact): one rule, read here too
-  const mine = discoverOwnEmail(db, tenantId, leadId, lead.name)
+  const mine = discoverOwnEmail(db, tenantId, leadId, lead.name, state?.company_domain ?? null)
   const row = mine ? { value: mine.address, source_url: mine.source } : undefined
   // a press, support or privacy inbox keeps its own refusal, as before
   if (!mine && (db.prepare("SELECT value FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind = 'email'").all(tenantId, leadId) as { value: string }[]).some(r => classifyPurpose(norm(r.value)).purpose === 'non-sales')) throw new OutreachError('not_sales_contact')
@@ -585,9 +646,12 @@ export function sendFooter(body: string, s: Settings | undefined): string | null
   return composeBody(body, s, '[your unsubscribe link, added when sent]').slice(body.trim().length).trim()
 }
 
-// #1618: every send and in-flight claim of the account since midnight in Toronto, and the cap a person's own sends are held to.
-export const sentToday = (db: Database.Database, tenantId: string, now: number): number => accountSendCount(db, tenantId, now, sendDayStart(now))
-export const sendCapToday = (db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)) => ({ cap: manualSendCap(db, tenantId, now), sent_today: sentToday(db, tenantId, now) })
+// #1618: every send and in-flight claim of the account since midnight in the account's own zone (#2054), and the
+// cap a person's own sends are held to. These read the raw store synchronously, so the zone is an argument: an
+// async caller resolves it with readAccountZone (lib/account-zone.ts) and passes it in; without one the count
+// runs on the UTC day.
+export const sentToday = (db: Database.Database, tenantId: string, now: number, zone?: string | null): number => accountSendCount(db, tenantId, now, sendDayStart(now, zone))
+export const sendCapToday = (db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000), zone?: string | null) => ({ cap: manualSendCap(db, tenantId, now), sent_today: sentToday(db, tenantId, now, zone) })
 
 export function sentLast24h(db: Database.Database, tenantId: string, d: Deps = {}): number {
   return (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND claimed_at >= ?").get(tenantId, nowS(d) - 86400) as { n: number }).n
@@ -625,7 +689,7 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
 // Read-only: why sendMessage would refuse this approved message right now (its error code), or null. The pre-claim checks
 // above plus the account checks it makes after claiming (exact words still approved, sender identity, Gmail connected,
 // the shared daily cap). Gmail itself can still fail at send time; this never claims or sends.
-export function sendBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean; now?: number } = {}): string | null {
+export function sendBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean; now?: number; zone?: string | null } = {}): string | null {
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const m = getMsg(db, tenantId, id)
   if (!m) return 'not_found'
@@ -635,7 +699,7 @@ export function sendBlockReason(db: Database.Database, tenantId: string, id: str
   // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
   if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
   if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
-  if (sentToday(db, tenantId, now) + 1 > manualSendCap(db, tenantId, now)) return 'daily_cap'
+  if (sentToday(db, tenantId, now, o.zone) + 1 > manualSendCap(db, tenantId, now)) return 'daily_cap'
   return null
 }
 
@@ -679,9 +743,13 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!settings) release('sender_identity_missing')
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
-  // This claim counts itself. #1618: a person's own send is held to the cap for the account's age, counted per Toronto day.
+  // This claim counts itself. #1618: a person's own send is held to the cap for the account's age, counted per
+  // account day. #2054: the account's zone is resolved here, on the Db layer - this function is async, so the
+  // synchronous count below takes it as an argument (an authorized send never reads it: it keeps the fixed
+  // rolling-24h cap).
   // A send an automated caller authorizes (d.authorize: autopilot, the first-touch drain) keeps the fixed rolling-24h cap.
-  if (d.authorize ? accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP : sentToday(db, tenantId, nowS(d)) > manualSendCap(db, tenantId, nowS(d))) release('daily_cap')
+  const zone = d.authorize ? null : await readAccountZone(asDb(db), tenantId)
+  if (d.authorize ? accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP : sentToday(db, tenantId, nowS(d), zone) > manualSendCap(db, tenantId, nowS(d))) release('daily_cap')
 
   let token: string
   let tokenGen: string

@@ -36,19 +36,19 @@ test('created -> rescheduled -> cancelled through the signed route: not booked a
     assert.equal(res.status, 200, body)
   }
   const stage = () => (raw.prepare("SELECT stage FROM leads WHERE id = 'lead-r'").get() as { stage: string | null }).stage
-  const booked = () => conversionBySignal(raw, T).reduce((s, r) => s + r.booked, 0)
+  const booked = async () => (await conversionBySignal(sqliteDb(raw), T)).reduce((s, r) => s + r.booked, 0)
   const attendees = [{ email: 'Jane@Acme.example', name: 'Jane Doe' }]
 
   await post({ triggerEvent: 'BOOKING_CREATED', createdAt: '2026-10-01T09:00:00.000Z', payload: { uid: 'R-A', iCalUID: 'ical-r', iCalSequence: 0, startTime: '2026-10-10T10:00:00Z', endTime: '2026-10-10T10:30:00Z', attendees } })
-  assert.equal(booked(), 1, 'a new booking counts')
+  assert.equal(await booked(), 1, 'a new booking counts')
   assert.equal(stage(), 'booked_call')
 
   await post({ triggerEvent: 'BOOKING_RESCHEDULED', createdAt: '2026-10-02T09:00:00.000Z', payload: { uid: 'R-B', rescheduleUid: 'R-A', iCalUID: 'ical-r', iCalSequence: 1, startTime: '2026-10-12T14:00:00Z', endTime: '2026-10-12T14:30:00Z', attendees } })
-  assert.equal(booked(), 1, 'a rescheduled booking still counts once, not twice')
+  assert.equal(await booked(), 1, 'a rescheduled booking still counts once, not twice')
   assert.equal(stage(), 'booked_call')
 
   await post({ triggerEvent: 'BOOKING_CANCELLED', createdAt: '2026-10-03T09:00:00.000Z', payload: { uid: 'R-B', iCalUID: 'ical-r', iCalSequence: 2, startTime: '2026-10-12T14:00:00Z', endTime: '2026-10-12T14:30:00Z', attendees, cancellationReason: 'no longer needed' } })
-  assert.equal(booked(), 0, 'a cancelled meeting leaves the active booking count')
+  assert.equal(await booked(), 0, 'a cancelled meeting leaves the active booking count')
   assert.equal(stage(), 'replied', 'the lead goes back to the stage it had before the booking')
   const n = (raw.prepare('SELECT COUNT(*) AS n FROM calcom_bookings WHERE tenant_id = ?').get(T) as { n: number }).n
   assert.equal(n, 2, 'history is kept: both booking uids stay recorded')

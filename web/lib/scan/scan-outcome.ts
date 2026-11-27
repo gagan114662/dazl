@@ -49,6 +49,12 @@ export interface ScanRecord {
   // successfully. An accounting_uncertain stop counts that step as billed at this amount. Omitted (or null) when not read.
   uncertain_usd?: number | null
   uncertain_steps?: number | null
+  // #1727/#1862: what the scan's paid calls actually settled at (scan_spend_calls 'settled' rows' actual_usd sum), read
+  // by the caller. Omitted (or null) when not read: then the billed claim below falls back to the #1157 definite answer.
+  settled_usd?: number | null
+  // #1727: how many spend rows the scan has in total (any status), read by the caller; omitted when not read.
+  spend_rows?: number | null
+  created_at?: number | null; finished_at?: number | null
   trial_attempt_restored?: boolean
 }
 // #1157: a definite answer for an interrupted paid step - counted as billed at the amount reserved for it - never "may have been
@@ -158,11 +164,49 @@ function baseOutcome(j: ScanRecord): ScanOutcome {
       case 'spend_refused': return { kind: 'stopped', label: 'Stopped - a paid step was refused before it was sent', detail: 'Nothing was concluded about whether leads exist.', next: { text: 'Try again', href: NEW_SCAN } }
       case 'accounting_failed': return { kind: 'stopped', label: 'Stopped - the cost of one paid step could not be recorded', detail: 'dazl did not retry it automatically. That step may have been billed, so its worst-case cost stays counted against your limits. This is not an empty search: nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.', next: { text: 'Start a new scan', href: NEW_SCAN } }
       case 'provider_rate_limited': return { kind: 'stopped', label: 'Stopped - the AI provider rate-limited a request', detail: 'The provider refused a request because of its rate limit. dazl did not retry it automatically, and it does not claim the request was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.', next: { text: 'Start a new scan', href: NEW_SCAN } }
-      case 'provider_rejected': return { kind: 'stopped', label: 'Stopped - the AI provider refused a request', detail: 'The provider answered a request with a refusal. dazl did not retry it automatically, and it does not claim the request was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.', next: { text: 'Start a new scan', href: NEW_SCAN } }
+      case 'provider_rejected': {
+        // #1932: a refusal the provider answered before running anything (no recorded spend on the caller's read)
+        // billed nothing, and the release gives the charge and the trial search back - the copy says so. When any
+        // spend was recorded, or the caller never read spend, the counted wording below stands.
+        const settledSpend = typeof j.settled_usd === 'number' && Number.isFinite(j.settled_usd) && j.settled_usd > 0
+        // A 'kept' spend row is invisible to the counted steps above (it is neither still-reserved nor settled),
+        // but it may have been billed - the job's own recorded cost (its reserve columns, zeroed by the release
+        // when the refusal stands alone) is what tells it apart from a refusal that truly charged nothing.
+        const jobCostCounted = typeof j.spend_usd === 'number' && Number.isFinite(j.spend_usd) && j.spend_usd > 0
+        const spendRead = j.uncertain_usd !== undefined || j.settled_usd !== undefined || j.spend_rows !== undefined
+        if (spendRead && !countedSteps(j) && !countedAmount(j) && !settledSpend && !jobCostCounted) {
+          return { kind: 'stopped', label: 'Stopped - the AI provider refused a request', detail: j.trial_attempt_restored === true ? "The provider refused the request before anything ran, so nothing was charged, and it didn't use a free search. Nothing was concluded about whether leads exist." : 'The provider refused the request before anything ran, so nothing was charged. Nothing was concluded about whether leads exist.', next: { text: 'Start a new scan', href: NEW_SCAN } }
+        }
+        return { kind: 'stopped', label: 'Stopped - the AI provider refused a request', detail: 'The provider answered a request with a refusal. dazl did not retry it automatically, and it does not claim the request was free: it stays counted against your limits. Nothing was concluded about whether leads exist. A new scan runs paid steps again and may be charged again.', next: { text: 'Start a new scan', href: NEW_SCAN } }
+      }
       case 'native_search_accounting_pending': return { kind: 'stopped', label: 'Claude Web Search did not start', detail: 'A previous search for this workspace has not settled. Dazl did not send another search that could add charges.', next: null }
       case 'native_search_provider_limit': return { kind: 'stopped', label: 'Stopped after an unexpected Claude Web Search response', detail: 'Claude reported more searches or output than requested. Dazl recorded the usage and did not start any more paid steps.', next: null }
       case 'native_search_estimate_exceeded': return { kind: 'stopped', label: 'Stopped after Claude Web Search exceeded its estimate', detail: 'Dazl did not start any more paid steps after the search. Anthropic bills for actual usage. We did not determine whether matching leads exist.', next: null }
       case 'accounting_uncertain': {
+        // #1727/#1862: the billed claim is phrased from recorded spend only - a settled paid call (settled_usd > 0) or a
+        // still-reserved paid step that actually started (the counted steps below). A reserve alone (the job's
+        // reservation columns, or a trial reservation with no spend rows) is never shown as billed. When the caller's
+        // spend read found no recorded spend, nothing was charged and the copy says so plainly; callers that never
+        // read spend pass none of these fields, and the #1157 definite answer stands for them.
+        const settledSpend = typeof j.settled_usd === 'number' && Number.isFinite(j.settled_usd) && j.settled_usd > 0
+        // Same kept-row hole as the provider_rejected branch: a 'kept' row is neither still-reserved nor
+        // settled, so the reads above miss it, but it may have been billed and the job's recorded cost
+        // (spend_usd) still counts it - never say "You weren't charged" while it stands.
+        const jobCostCounted = typeof j.spend_usd === 'number' && Number.isFinite(j.spend_usd) && j.spend_usd > 0
+        const spendRead = j.uncertain_usd !== undefined || j.settled_usd !== undefined || j.spend_rows !== undefined
+        if (!countedSteps(j) && !countedAmount(j) && !settledSpend && !jobCostCounted && spendRead) {
+          // 'Stopped before it started' only when the scan never ran: no spend rows at all and nothing extracted,
+          // or the row's own timestamps show it ended the second it started. A scan that ran free steps (spend
+          // rows at $0, or candidates found) and then stopped is an interruption that charged nothing. The free
+          // search is given back only when the trial attempt was actually restored (a scan that saved leads
+          // keeps its attempt, whatever funded it).
+          const neverRan = (typeof j.spend_rows === 'number' && j.spend_rows === 0 && !(typeof j.candidates === 'number' && j.candidates > 0))
+            || (typeof j.created_at === 'number' && typeof j.finished_at === 'number' && j.finished_at === j.created_at)
+          const restored = j.trial_attempt_restored === true
+          return neverRan
+            ? { kind: 'stopped', label: 'Stopped before it started', detail: restored ? "This search stopped before it started. You weren't charged, and it didn't use a free search." : "This search stopped before it started. You weren't charged.", next: { text: 'Start a new scan', href: NEW_SCAN } }
+            : { kind: 'stopped', label: 'Stopped after an interruption', detail: restored ? "You weren't charged, and it didn't use a free search." : "You weren't charged.", next: { text: 'Start a new scan', href: NEW_SCAN } }
+        }
         // The count and the amount come from the still-reserved spend rows; when they cannot be read the copy names neither.
         const amount = countedAmount(j), steps = countedSteps(j), many = steps !== null && steps > 1, paren = amount ? ` (${amount})` : ''
         const counted = `${many ? `${steps} paid steps` : steps === 1 ? 'one paid step' : 'the interrupted paid step'} counted as billed${paren}`

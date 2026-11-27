@@ -70,12 +70,17 @@ export function currentReviewedDomain(db: Database.Database, tenantId: string, l
   const ev = readSync(db, tenantId, leadId)
   return ev ? reviewedFrom(ev.lead, ev.rows) : null
 }
+export function domainConfirmedFromRows(lead: ReviewLead | undefined, rows: EvRow[], domain: string | null | undefined): boolean {
+  const d = norm(domain)
+  return !!d && verdictFrom(lead, rows, d).confirmed
+}
+
 // domainConfirmed on the Db layer (SQLite or Postgres): the same rule and the same rows, for routes ported to Db (#354).
 export async function domainConfirmedDb(db: Db, tenantId: string, leadId: string, domain: string | null | undefined): Promise<boolean> {
   const d = norm(domain)
   if (!d) return false
   const ev = await readDb(db, tenantId, leadId)
-  return ev ? verdictFrom(ev.lead, ev.rows, d).confirmed : false
+  return !!ev && domainConfirmedFromRows(ev.lead, ev.rows, domain)
 }
 
 // Identical ownership semantics for server-side display readers on either engine.

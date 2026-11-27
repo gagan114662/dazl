@@ -30,6 +30,8 @@ test('#1886 direct search followed by a proof-page fetch yields a discovery lead
     const fetchImpl: typeof fetch = async (_endpoint, init) => {
       if (!init?.body) return new Response('<p>' + now + ' ' + evidence + '</p>')
       const body = JSON.parse(String(init.body)) as { model: string; tools: typeof requests[number] }
+      if (body.model === 'claude-haiku-5-5') return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+        usage: { input_tokens: 0, output_tokens: 0 } })
       requests.push(body.tools)
       assert.deepEqual(body.tools.map(tool => tool.type), toolTypes)
       return sseResponse(sseEvents({

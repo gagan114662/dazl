@@ -19,7 +19,7 @@ test('a complete lead says so; each missing piece is named', () => {
 test('each fact links to the page it came from, and only links the run stored', () => {
   const l = { source_url: 'https://news.example/a', enrichments: [
     { kind: 'person', connector: 'discover', value: 'Dana Ruiz, Owner', source_url: 'https://a.example/team' },
-    { kind: 'email', connector: 'discover', value: 'dana@a.example', source_url: 'https://a.example/contact' },
+    { kind: 'email', connector: 'discover', label: 'email verified on source page', value: 'dana@a.example', source_url: 'https://a.example/contact' },
     { kind: 'linkedin', connector: 'discover', value: 'https://www.linkedin.com/in/dana-ruiz/', source_url: 'https://a.example/team' },
     { kind: 'person', connector: 'sitecrawl', value: 'Someone Else', source_url: 'https://other.example' },
   ] }
@@ -32,9 +32,9 @@ test('each fact links to the page it came from, and only links the run stored', 
 // person's LinkedIn. A fact the card does not show has no link.
 test('#1401: Sources links the page of the address and the profile the card shows, never another address or a company page', () => {
   const person = { kind: 'person', connector: 'discover', value: 'Dana Ruiz, Owner', source_url: 'https://a.example/team' }
-  const own = { kind: 'email', connector: 'discover', value: 'dana.ruiz@a.example', source_url: 'https://a.example/dana' }
-  const shared = { kind: 'email', connector: 'discover', value: 'info@a.example', source_url: 'https://a.example/contact' }
-  const colleague = { kind: 'email', connector: 'discover', value: 'sam.lee@a.example', source_url: 'https://a.example/sam' }
+  const own = { kind: 'email', connector: 'discover', label: 'email verified on source page', value: 'dana.ruiz@a.example', source_url: 'https://a.example/dana' }
+  const shared = { kind: 'email', connector: 'discover', label: 'email verified on source page', value: 'info@a.example', source_url: 'https://a.example/contact' }
+  const colleague = { kind: 'email', connector: 'discover', label: 'email verified on source page', value: 'sam.lee@a.example', source_url: 'https://a.example/sam' }
   const profile = { kind: 'linkedin', connector: 'discover', value: 'https://www.linkedin.com/in/dana-ruiz/', source_url: 'https://a.example/team' }
   const companyPage = { ...profile, value: 'https://www.linkedin.com/company/a-example/' }
   const links = (enrichments: unknown[], name = 'Dana Ruiz') => discoverSources({ source_kind: 'discover', name, source_url: 'https://news.example/a', enrichments } as never).map(x => [x.label, x.url])

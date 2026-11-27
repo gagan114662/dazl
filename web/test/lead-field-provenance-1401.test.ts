@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { register } from 'node:module'
 import test from 'node:test'
+import { runInNewContext } from 'node:vm'
+import { discoverApprove, PAGE_PROVEN_EMAIL_LABEL } from '../lib/discover/card.ts'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -52,7 +54,7 @@ test('contact provenance points to the person page and rejects unsupported URLs'
 test('the published email cites its own page even on a lead with no other people details', async () => {
   const { PublishedEmailProvenance } = await loadFields()
   const lead = { source_kind: 'discover', name: 'Sample Buyer', company_domain: website, source_url: signalUrl,
-    contact: null, enrichments: [enrichment('discover', 'email', email, emailSource)] }
+    contact: null, enrichments: [enrichment('discover', 'email', email, emailSource, PAGE_PROVEN_EMAIL_LABEL)] }
   const html = renderToStaticMarkup(createElement(PublishedEmailProvenance, { lead }))
   assert.match(html, /sample\.buyer@company\.example/)
   assert.match(html, /href="https:\/\/company\.example\/contact"/)
@@ -61,4 +63,18 @@ test('the published email cites its own page even on a lead with no other people
   const unsupported = renderToStaticMarkup(createElement(PublishedEmailProvenance, { lead: broker }))
   assert.match(unsupported, /Published work email unavailable/)
   assert.doesNotMatch(unsupported, /broker\.example|sample\.buyer/)
+})
+
+
+test('a cited discovery email without page proof leaves Approve disabled', () => {
+  const lead = { source_kind: 'discover', name: 'Sample Buyer', company_domain: website,
+    event_date: new Date().toISOString().slice(0, 10), fit: 80, intent: 80 }
+  const disabled = client.match(/<button onClick=\{\(\) => approveLead\(l\.id\)\} disabled=\{([^}]+)\}/)?.[1]
+  assert.ok(disabled)
+  const isDisabled = (label: string | null) => {
+    const approval = discoverApprove({ ...lead, enrichments: [enrichment('discover', 'email', email, emailSource, label)] })
+    return runInNewContext(disabled, { approval, l: { id: 'fixture' }, approving: {}, approved: {} })
+  }
+  assert.equal(isDisabled(null), true)
+  assert.equal(isDisabled(PAGE_PROVEN_EMAIL_LABEL), false)
 })

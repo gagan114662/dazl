@@ -4,7 +4,7 @@
 // PASS/FAIL. The DEFINITIONS differ in places (see the footer the table prints), so compare a local row with a local row: run it
 // BEFORE a change and AFTER it, and show both in the PR.
 //
-//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--dry] [--json] [--timeout 300]
+//   cd web && npm run matrix:local -- [--cases toronto-dental,berlin-fintech] [--contacts] [--apollo-budget N] [--dry] [--json] [--timeout 300]
 //        [--cap 0.50] [--env-file ~/.config/hermes/dazl_matrix.env] [--matrix path/to/matrix.json] [--out dir]
 //
 // Keys (never printed, never stored; the in-memory store dies with the process). Same ones the staging scans use:
@@ -14,7 +14,7 @@
 //   other scan knob: the staging values, so a local scan behaves like a staging scan
 // --env-file reads KEY=VALUE lines into the environment BEFORE the pipeline loads (a non-empty value already in the environment wins).
 // --contacts: run WITHOUT a run dollar limit on the job, as Hermes's staging matrix does, so the paid contact pass (the tenant's
-// Apollo/PDL keys: MATRIX_PDL_KEY, MATRIX_APOLLO_KEY, saved for each case when set) runs and named % / email % can include its
+// PDL key: MATRIX_PDL_KEY, saved for each case when set) runs and named % / email % can include its
 // contacts. Without --contacts every case carries a run budget, which switches that pass OFF (the table says which mode ran).
 // In --contacts mode the cap is the scan spend ledger's per-scan cap (DAZL_SCAN_CAP_CAD, set by this script to the case cap and
 // checked before every paid call), and the runner also stops the job when its recorded spend reaches the cap.
@@ -27,6 +27,7 @@ import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { RunDeps, runJob } from '../lib/scan/runner.ts'
 import type { CaseResult, MatrixCase, MatrixThresholds } from './matrix-score.mts'
 import { parseEnvFile } from './matrix-env.mts'   // no pipeline import: the env file is read before the pipeline loads
 
@@ -69,7 +70,64 @@ const commit = (() => { try { return execSync('git rev-parse --short HEAD', { cw
 const date = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 const contacts = flag('contacts')
-const contactKeys = { pdl: (process.env.MATRIX_PDL_KEY || '').trim(), apollo: (process.env.MATRIX_APOLLO_KEY || '').trim() }
+const requestedApolloBudget = opt('apollo-budget') ?? ''
+let apolloBudget = 0
+if (flag('apollo-budget')) {
+  if (!contacts) refuse('--apollo-budget requires --contacts. Not running.')
+  const requested = Number(requestedApolloBudget)
+  if (!/^[0-9]+$/.test(requestedApolloBudget) || !Number.isSafeInteger(requested) || requested < 1) {
+    refuse('--apollo-budget must be a positive whole number. Not running.')
+  }
+  const { apolloCreditCap, APOLLO_PILOT_MAX_CREDITS } = await import('../lib/enrich/apollo-credit-ledger.ts')
+  const operatorApolloCap = apolloCreditCap(process.env)
+  if (!operatorApolloCap) {
+    refuse(`--apollo-budget requires APOLLO_CREDIT_CAP from 1 to ${APOLLO_PILOT_MAX_CREDITS}. Not running.`)
+  }
+  apolloBudget = Math.min(requested, operatorApolloCap)
+}
+const evidenceOutput = flag('apollo-evidence-out') ? opt('apollo-evidence-out') ?? '' : null
+if (evidenceOutput !== null && (!evidenceOutput || !apolloBudget || flag('dry') || cases.length !== 1)) {
+  refuse('Apollo evidence export requires one non-dry case, --contacts and --apollo-budget. Not running.')
+}
+if (evidenceOutput && existsSync(expand(evidenceOutput))) refuse('Apollo evidence output already exists. Not running.')
+process.env.APOLLO_CREDIT_CAP = String(apolloBudget)
+const pdlKey = (process.env.MATRIX_PDL_KEY || '').trim()
+if (flag('apollo-plan-db') || flag('apollo-plan-input')) {
+  const dbPath = opt('apollo-plan-db') ?? ''
+  const inputPath = opt('apollo-plan-input') ?? ''
+  if (!flag('dry') || !apolloBudget || !dbPath || !inputPath) {
+    refuse('Apollo planning requires --dry, --contacts, --apollo-budget, --apollo-plan-db and --apollo-plan-input.')
+  }
+  try {
+    const { default: Database } = await import('better-sqlite3')
+    const { planApolloBuyerMatches } = await import('../lib/enrich/apollo-ready-match.ts')
+    const snapshot = JSON.parse(readFileSync(expand(inputPath), 'utf8')) as {
+      complete: true
+      tenantId: string
+      scanId: string
+      scanLimit: number
+      candidates: Parameters<typeof planApolloBuyerMatches>[2]
+    }
+    if (snapshot.complete !== true || typeof snapshot.tenantId !== 'string' || !snapshot.tenantId ||
+      typeof snapshot.scanId !== 'string' || !snapshot.scanId ||
+      !Number.isSafeInteger(snapshot.scanLimit) || snapshot.scanLimit < 1 ||
+      !Array.isArray(snapshot.candidates) || snapshot.candidates.some(({ leadId, evidence }) =>
+        typeof leadId !== 'string' || !leadId || !evidence ||
+        typeof evidence.dayVerified !== 'boolean' || typeof evidence.otherwiseReady !== 'boolean')) {
+      throw new Error('invalid evidence snapshot')
+    }
+    const ledger = new Database(expand(dbPath), { readonly: true, fileMustExist: true })
+    try {
+      const planned = await planApolloBuyerMatches(ledger, snapshot.tenantId, snapshot.candidates,
+        { id: snapshot.scanId, limit: snapshot.scanLimit })
+      console.log(`Apollo calls planned: ${planned.length} (saved scan evidence; no calls made)`)
+    } finally { ledger.close() }
+  } catch {
+    refuse('Unable to read the Apollo evidence snapshot or credit ledger. Not running.')
+  }
+  process.exit(0)
+}
+
 if (flag('dry')) {
   // no network, no model call, nothing created: the plan and what is missing
   console.log(`engine: ${engine}`)
@@ -77,7 +135,7 @@ if (flag('dry')) {
   for (const c of cases) console.log(`  ${c.id.padEnd(24)} ${c.query}`)
   const knobs = ['TINYFISH_SEARCHES_PER_SCAN', 'TINYFISH_FETCHES_PER_SCAN', 'SITECRAWL_ENABLED', 'NEWS_SEARCH_ENABLED', 'EMAIL_GUESS_ENABLED']
   console.log(`keys: TINYFISH_API_KEY ${tinyfish ? 'set' : 'MISSING'}; Anthropic key ${anthropic ? 'set' : 'MISSING'} (MATRIX_ANTHROPIC_KEY / SCOREBOARD_ANTHROPIC_KEY / DAZL_TRIAL_ANTHROPIC_KEY)`)
-  console.log(`mode: ${contacts ? `--contacts (no run dollar limit; contact pass on; PDL key ${contactKeys.pdl ? 'set' : 'MISSING'}, Apollo key ${contactKeys.apollo ? 'set' : 'MISSING'})` : 'run budget per case (paid contact pass OFF; use --contacts to measure it)'}`)
+  console.log(`mode: ${contacts ? `--contacts (no run dollar limit; contact pass on; PDL key ${pdlKey ? 'set' : 'MISSING'}, ${apolloBudget ? `Apollo budget ${apolloBudget}` : 'Apollo off'})` : 'run budget per case (paid contact pass OFF; use --contacts to measure it)'}`)
   console.log(`staging knobs: ${knobs.map(k => `${k}=${process.env[k] === undefined ? 'unset' : 'set'}`).join(' ')}`)
   process.exit(anthropic && tinyfish ? 0 : 2)
 }
@@ -105,18 +163,38 @@ for (const c of cases) saveKey(db, tenantOf(c), 'anthropic', anthropic, master)
 const savedContactKeys: string[] = []
 if (contacts) {
   const { saveCredential } = await import('../lib/connectors/store.ts')
-  const { ENRICH_APOLLO, ENRICH_PDL } = await import('../lib/enrich/index.ts')
-  for (const [name, key, connector] of [['PDL', contactKeys.pdl, ENRICH_PDL], ['Apollo', contactKeys.apollo, ENRICH_APOLLO]] as const) {
-    if (!key) continue
-    for (const c of cases) saveCredential(db, tenantOf(c), connector, key, master)
-    savedContactKeys.push(name)
+  const { ENRICH_PDL } = await import('../lib/enrich/index.ts')
+  if (pdlKey) {
+    for (const c of cases) saveCredential(db, tenantOf(c), ENRICH_PDL, pdlKey, master)
+    savedContactKeys.push('PDL')
   }
 }
 
 const results: CaseResult[] = []
 let crashed = false
 for (const c of cases) {
-  const r = await runCase(db, c, { tenant: tenantOf(c), cap, timeoutS, thresholds, deps: { master }, contacts })
+  const tenantId = tenantOf(c)
+  let scanId: string | undefined
+  let candidates: Parameters<NonNullable<RunDeps['onApolloEvidence']>>[0] | undefined
+  let run: typeof runJob | undefined
+  if (evidenceOutput) {
+    const runner = await import('../lib/scan/runner.ts')
+    run = (store, job, deps) => {
+      scanId = job.id
+      return runner.runJob(store, job, { ...deps, onApolloEvidence: rows => { candidates = rows } })
+    }
+  }
+  const r = await runCase(db, c, { tenant: tenantId, cap, timeoutS, thresholds, deps: { master }, contacts, run })
+  if (evidenceOutput) {
+    if (scanId && candidates && !r.error && r.status === 'done') {
+      const snapshot = { complete: true, tenantId, scanId, scanLimit: apolloBudget, candidates }
+      writeFileSync(expand(evidenceOutput), JSON.stringify(snapshot), { flag: 'wx', mode: 0o600 })
+      console.error(`Apollo evidence saved: ${candidates.length} eligible lead(s); no Apollo requests sent`)
+    } else {
+      crashed = true
+      console.error('Apollo evidence collection incomplete. No snapshot written.')
+    }
+  }
   if (r.error?.startsWith('crashed')) crashed = true
   results.push(r)
   console.error(`${c.id}: ${r.status}${r.error ? ` (${r.error})` : ''} cand=${r.candidates} leads=${r.leads} ready=${r.ready} usd=${r.usd == null ? '?' : r.usd.toFixed(3)} (${r.seconds}s)`)

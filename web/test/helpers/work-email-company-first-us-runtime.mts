@@ -91,9 +91,9 @@ test('US company-first buyer with an own printed address: Find work email gives 
   s.db.close()
 })
 
-test('Canadian company-first buyer stays display-only: the one-click lookup gives no address', async () => {
+test('Canadian company-first buyer keeps its crawl proof while the US-scoped lookup gives no address', async () => {
   const s = await companyFirstLead('Toronto, ON', '200 Example Ave, Toronto, ON M5V 2T6, Canada')
-  assert.ok(!s.rows.some(r => r.kind === 'email'), 'no sender route outside the US')
+  assert.deepEqual(s.rows.filter(r => r.kind === 'email').map(r => [r.value, r.source_url]), [[s.email, s.contact]])
   const body = await (await s.post(s.target)).json() as { status?: string; lookup?: { address: string | null } }
   assert.notEqual(body.lookup?.address ?? null, s.email)
   assert.deepEqual((await (await s.get()).json() as { lookups: unknown[] }).lookups, [])

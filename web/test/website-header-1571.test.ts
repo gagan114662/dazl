@@ -11,7 +11,7 @@ import { leadCardSummary } from '../lib/scan/lead-card.ts'
 import { discoverLine, discoverSite } from '../lib/discover/card.ts'
 
 const person = { connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: 'named on a public page', source_url: 'https://northwind-dental.example/team' }
-const email = { connector: 'discover', kind: 'email', value: 'dana@northwind-dental.example', label: 'published on a public page', source_url: 'https://northwind-dental.example/contact' }
+const email = { connector: 'discover', kind: 'email', value: 'dana@northwind-dental.example', label: 'email verified on source page', source_url: 'https://northwind-dental.example/contact' }
 const recent = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10)
 const lead = (o: Record<string, unknown> = {}) => ({ id: 'a'.repeat(24), company: 'Northwind Dental', name: 'Dana Ruiz', signal: 'Opening a second clinic', source_url: 'https://news.example/northwind', evidence_excerpt: 'Northwind Dental will open its second clinic', event_date: recent, date_status: 'verified', review_reason: null, fit: 4, intent: 4, why: 'expanding', icp_match: null, company_domain: 'northwind-dental.example', contact: null, confidence: 85, source_kind: 'discover', enrichments: [person, email], ...o })
 const status = (o: Record<string, unknown> = {}) => leadCardSummary(lead(o) as never).contactStatus

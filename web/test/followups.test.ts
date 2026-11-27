@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import { runWithoutAccountSpend } from '../lib/scan/spend-cap.ts'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
+import { promises as dns } from 'node:dns'
 import Database from 'better-sqlite3'
 import { migrateKeys, saveKey } from '../lib/llm/key-store.ts'
 import { anthropicProvider, openaiProvider } from '../lib/llm/provider.ts'
@@ -89,7 +90,7 @@ test('thin page classification: bot wall, JS shell, normal short page', () => {
   assert.equal(htmlToText('<div id="root"></div>').text, '')
 })
 
-test('renderer hook is only used when configured, and refuses private targets first', async () => {
+test('renderer hook is only used when configured, and refuses private targets first', async t => {
   delete process.env.SCAN_RENDER_URL
   let called = 0
   const render = async () => { called++; return null }
@@ -102,10 +103,14 @@ test('renderer hook is only used when configured, and refuses private targets fi
   process.env.SCAN_RENDER_URL = 'http://renderer.internal:3000'
   assert.equal(await renderViaService('https://127.0.0.1/', (async () => { throw new Error('should not be called') }) as never), null)
   assert.equal(await renderViaService('http://example.com/', (async () => { throw new Error('should not be called') }) as never), null)
+  const resolve4 = t.mock.method(dns.Resolver.prototype, 'resolve4', async () => ['93.184.215.14'])
+  const resolve6 = t.mock.method(dns.Resolver.prototype, 'resolve6', async () => [])
   const seen: { url: string; body: string }[] = []
   const html = '<html><body>' + 'Real rendered article text about Northside Builders. '.repeat(10) + '</body></html>'
   const out = await renderViaService('https://example.com/news', (async (u: string, init: RequestInit) => { seen.push({ url: u, body: String(init.body) }); return new Response(html) }) as never)
   assert.equal(out, html)
+  assert.deepEqual(resolve4.mock.calls.map(call => call.arguments), [['example.com']])
+  assert.deepEqual(resolve6.mock.calls.map(call => call.arguments), [['example.com']])
   assert.equal(seen[0].url, 'http://renderer.internal:3000/content')
   assert.equal(JSON.parse(seen[0].body).url, 'https://example.com/news')
   delete process.env.SCAN_RENDER_URL

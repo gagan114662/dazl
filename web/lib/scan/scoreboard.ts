@@ -87,8 +87,8 @@ export const RUBRIC_VERSION = 'v2'
 // The closed set of recognized event-date proofs (canonical contract with the runner; anything else
 // fails closed to "no proof"). NULL means no proof. Written only where the proof is computed; no
 // historical backfill.
-export type EventDateProof = 'page_bound' | 'ats_structured'
-export const isEventDateProof = (v: unknown): v is EventDateProof => v === 'page_bound' || v === 'ats_structured'
+export type EventDateProof = 'page_bound' | 'ats_structured' | 'page_structured'
+export const isEventDateProof = (v: unknown): v is EventDateProof => v === 'page_bound' || v === 'ats_structured' || v === 'page_structured'
 
 export const isCalendarDay = (d: string): boolean => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false

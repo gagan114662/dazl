@@ -36,7 +36,7 @@ async function lookup(overrides = {}, sources = [page(team, `${personText} ${ema
   }
   const result = await enrichLeads([original], {}, { apiKey: 'fixture-only', fetch })
   assert.equal(result.accountingUncertain, false)
-  return result.leads[0]
+  return { ...result.leads[0], enriched: result.enriched }
 }
 
 test('S3 keeps a named local manager and their own-site address with separate public sources', async () => {
@@ -126,4 +126,10 @@ test('S3 keeps a published name-matched mailbox with a numeric suffix', async ()
   const address = 'dana.ruiz2@cedar.example'
   const result = await lookup({ email: address }, [page(team, `${personText} ${address}`)])
   assert.deepEqual([result.person, result.email, result.email_source_url], [name, address, team])
+})
+
+test('S3 counts a verified email added to a buyer who was already named', async () => {
+  const result = await lookup({}, undefined, { ...lead, person: name, title, person_source_url: team })
+  assert.equal(result.email, email)
+  assert.equal(result.enriched, 1)
 })

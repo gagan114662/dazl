@@ -8,6 +8,7 @@ import { quoteSupports, quoteBacksOffer, quoteBacksDisqualifier, MAX_RESEARCH_QU
 // pass to a model as quoted data.
 export interface Icp {
   summary: string
+  request?: string         // full query-derived target; summary is only its bounded display excerpt
   who: string[]            // roles or types of buyer, e.g. "VP of Sales at a SaaS company"
   industries: string[]     // industries of the buyer, empty means any
   sizes: string[]          // company sizes, e.g. "1-10 employees", empty means any
@@ -182,12 +183,12 @@ function list(v: unknown, n: number): string[] {
 // explicit input, so admission can refuse it with field/item detail before anything is reserved, queued or counted.
 // Model output keeps the old bounded sanitation (parseIcp/normalizeIcp), unchanged.
 export type IcpLoss =
-  | { field: 'summary'; kind: 'too_long'; limit: number; actual: number }
+  | { field: 'summary' | 'request'; kind: 'too_long'; limit: number; actual: number }
   | { field: IcpListField; kind: 'too_many_items'; limit: number; actual: number }
   | { field: IcpListField; kind: 'item_too_long'; index: number; limit: number; actual: number }
   | { field: IcpListField; kind: 'wrong_type'; expected: 'array'; actual: string }
   | { field: IcpListField; kind: 'item_not_text'; index: number; actual: string }
-  | { field: 'window_days' | 'country' | 'language'; kind: 'invalid_value'; actual: string }   // a stated window or market that normalizeIcp would silently drop
+  | { field: 'window_days' | 'country' | 'language' | 'request'; kind: 'invalid_value'; actual: string }   // a stated window or market that normalizeIcp would silently drop
 export type IcpListField = 'who' | 'industries' | 'sizes' | 'where' | 'signals' | 'exclude'
 const squash = (v: unknown): string => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim() : ''
 export function icpLoss(raw: unknown): IcpLoss[] {
@@ -216,6 +217,8 @@ export function icpLoss(raw: unknown): IcpLoss[] {
   // language) widens the scan behind the person's back, so it is refused by name. Absent, null and "" still mean "not given".
   const given = (x: unknown) => x !== undefined && x !== null && !(typeof x === 'string' && x.trim() === '')
   const shown = (x: unknown) => typeof x === 'string' ? JSON.stringify(x.slice(0, 20)) : typeof x === 'number' ? String(x) : typeOf(x)
+  if (given(r.request) && typeof r.request !== 'string') out.push({ field: 'request', kind: 'invalid_value', actual: shown(r.request) })
+  if (squash(r.request).length > MAX_QUERY) out.push({ field: 'request', kind: 'too_long', limit: MAX_QUERY, actual: squash(r.request).length })
   if (given(r.window_days) && !(typeof r.window_days === 'number' && Number.isInteger(r.window_days) && r.window_days >= 1 && r.window_days <= 365)) out.push({ field: 'window_days', kind: 'invalid_value', actual: shown(r.window_days) })
   if (given(r.country) && isoCountry(r.country) === null) out.push({ field: 'country', kind: 'invalid_value', actual: shown(r.country) })
   if (given(r.language) && !(typeof r.language === 'string' && /^[A-Za-z]{2}$/.test(r.language.trim()))) out.push({ field: 'language', kind: 'invalid_value', actual: shown(r.language) })
@@ -250,7 +253,8 @@ export function normalizeIcp(raw: unknown): Icp | null {
   // supplied-account exclusions its profile claims to carry.
   const lookalike = normalizeLookalike(r.lookalike === null ? undefined : r.lookalike)
   if (lookalike === null) return null
-  return { summary, who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}), ...(carry.length ? { carry_exclude: carry } : {}) }
+  const request = clean(r.request, MAX_QUERY)
+  return { summary, ...(request ? { request } : {}), who: list(r.who, caps.who), industries: list(r.industries, caps.industries), sizes: list(r.sizes, caps.sizes), where: list(r.where, caps.where), signals: list(r.signals, caps.signals), exclude: list(r.exclude, caps.exclude), ...(country ? { country } : {}), ...(language ? { language } : {}), ...(win ? { window_days: win } : {}), ...(research ? { research } : {}), ...(lookalike ? { lookalike } : {}), ...(carry.length ? { carry_exclude: carry } : {}) }
 }
 
 export function icpPrompt(query: string, seller?: string): string {
