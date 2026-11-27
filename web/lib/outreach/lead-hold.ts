@@ -7,6 +7,7 @@ import { requiredGateHeld } from '../scan/held-state.ts'
 import { eventDayVerified, surfaceStoredIntent, TIMING_REQUESTED } from '../scan/scoreboard.ts'
 import { jobWindowDays } from '../scan/window.ts'
 import { heldReason, publishedAddressRefused, type PreviewLead } from '../journey.ts'
+import { checkedMailboxesForLeads } from '../people/email-pattern.ts'
 import { isUnconfirmedTimingResearch } from '../lead-state.ts'
 import { discoverRecipientRefusal } from './service.ts'
 
@@ -25,16 +26,7 @@ export function legacyMailboxRefusals(
     .filter(lead => lead.source_kind !== 'discover')
   if (!legacy.length) return new Set()
 
-  let candidates: { lead_id: string; address: string; verification: string; checked_at: number }[] = []
-  try {
-    candidates = db.prepare(`SELECT lead_id, address, verification, checked_at FROM email_candidates
-      WHERE tenant_id = ? AND lead_id IN (${legacy.map(() => '?').join(',')})
-      AND verification IN ('undeliverable', 'verified') AND checked_at IS NOT NULL`)
-      .all(tenantId, ...legacy.map(lead => lead.id)) as typeof candidates
-  } catch (error) {
-    // Older stores have no candidate verifier history. Their enrichment checks still apply.
-    if (!(error instanceof Error) || !/^no such (?:table: email_candidates|column: (?:verification|checked_at))$/.test(error.message)) throw error
-  }
+  const candidates = checkedMailboxesForLeads(db, tenantId, legacy.map(lead => lead.id))
   const checks: Record<string, NonNullable<PreviewLead['enrichments']>> = {}
   for (const row of candidates) {
     const verdict = row.verification === 'undeliverable' ? 'rejected' : 'accepted'
