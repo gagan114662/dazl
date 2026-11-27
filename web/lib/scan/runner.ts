@@ -1479,13 +1479,6 @@ function isJobBankPosting(raw: string): boolean {
 async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch, onApolloEvidence }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch' | 'onApolloEvidence'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
   let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
-  // The lane returns before legacy query inference; persist a general request-only profile for null-ICP queries.
-  if (job.query && !profile) {
-    profile = fallbackIcp(job.query)
-    assertOwned(db, job)
-    db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = 2 WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?")
-      .run(JSON.stringify(profile), job.id, job.user_id, job.attempts)
-  }
   const savedSource = sells?.icp_inferred
   let profileCarried = savedSource !== 1 && savedSource !== 2 && discoverProfileCarried(savedSource, job.watch_id)
   if (job.query && profile && profileCarried) {
