@@ -510,3 +510,30 @@ test('Postgres bounce deduplication rolls back with suppression and survives a r
     await drop()
   }
 })
+
+test('Postgres bounce threshold pauses only the workspace that recorded the bounces', { skip: pgSkip }, async () => {
+  const { recordBounceInTx } = await import('../lib/outreach/autopilot.ts')
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 2 })
+  const now = Math.floor(Date.now() / 1000)
+  try {
+    await runPgMigrations(db.pool)
+    await db.run("INSERT INTO autopilot_settings (tenant_id, enabled) VALUES ('owner', 1), ('neighbor', 1)")
+    const record = (tenant: string, id: string) => db.tx(tx => applyBounceVerdictInTx(tx, tenant,
+      { kind: 'permanent', recipient: 'buyer-' + id + '@example.test', outreachMessageId: id, originalMessageId: id },
+      'dsn', id, now, recordBounceInTx))
+    await record('neighbor', 'neighbor-send')
+    await Promise.all([record('owner', 'first'), record('owner', 'second')])
+    assert.deepEqual(await db.all('SELECT paused FROM autopilot_settings ORDER BY tenant_id'), [{ paused: 0 }, { paused: 0 }])
+    await record('owner', 'third')
+    assert.deepEqual(await db.all('SELECT tenant_id, paused, pause_reason FROM autopilot_settings ORDER BY tenant_id'), [
+      { tenant_id: 'neighbor', paused: 0, pause_reason: null },
+      { tenant_id: 'owner', paused: 1, pause_reason: 'bounces' },
+    ])
+    assert.deepEqual(await db.all("SELECT tenant_id, action FROM autopilot_audit WHERE action = 'paused'"),
+      [{ tenant_id: 'owner', action: 'paused' }])
+  } finally {
+    await db.close()
+    await drop()
+  }
+})

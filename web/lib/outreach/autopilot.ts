@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { autopilotInBeta } from '../beta.ts'
+import type { Tx } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { drainVerifiedPendingLifecycle, LIFECYCLE_NOT_CONVERTED } from './lifecycle.ts'
 import { PUBLISHED_RECIPIENT_CANDIDATE_SQL } from './published-email.ts'
 import { draftClaimContextFor } from './service.ts'
 import { publishedContact } from './published-email.ts'
 import { gmailStatus } from '../gmail/oauth.ts'
-import { createDraftWithWords, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, type Deps } from './service.ts'
+import { createDraftWithWords, approve, getSettings, isSuppressed, OutreachError, playOfferRow, sendMessage, suppress, suppressInTx, type Deps } from './service.ts'
 import { readTenantOffer } from './play-memory.ts'
 import { tableExists } from './send-budget.ts'
 import { draftOffer } from '../scan/play-offer-text.ts'
@@ -187,11 +188,30 @@ const LAUNCH_BOUNDARY_CODES: ReadonlySet<string> = new Set(['launch_policy_chang
 
 // A bounce suppresses the address for good. Three bounces in a day pause autopilot.
 // (Reading bounce notices from the inbox is not built yet; this is the entry point for it.)
+const BOUNCE_WINDOW_SECONDS = 86400
+const BOUNCE_PAUSE_COUNT = 3
+const BOUNCE_COUNT_SQL = "SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'bounce' AND created_at >= ?"
+
 export function recordBounce(db: Database.Database, tenantId: string, email: string, nowS = Math.floor(Date.now() / 1000)): void {
   suppress(db, tenantId, email, 'bounce')
   audit(db, tenantId, 'bounce', email)
-  const n = (db.prepare("SELECT count(*) AS n FROM autopilot_audit WHERE tenant_id = ? AND action = 'bounce' AND created_at >= ?").get(tenantId, nowS - 86400) as { n: number }).n
-  if (n >= 3) pause(db, tenantId, 'bounces')
+  const n = (db.prepare(BOUNCE_COUNT_SQL).get(tenantId, nowS - BOUNCE_WINDOW_SECONDS) as { n: number }).n
+  if (n >= BOUNCE_PAUSE_COUNT) pause(db, tenantId, 'bounces')
+}
+
+export function* recordBounceInTx(tx: Tx, tenantId: string, email: string, nowS: number) {
+  // Serialize threshold checks for an existing autopilot account without locking any other tenant.
+  if (tx.kind === 'pg') {
+    yield* tx.get('SELECT tenant_id FROM autopilot_settings WHERE tenant_id = ? FOR UPDATE', [tenantId])
+  }
+  yield* suppressInTx(tx, tenantId, email, 'bounce')
+  const auditBounceSql = 'INSERT INTO autopilot_audit (id, tenant_id, action, detail) VALUES (?, ?, ?, ?)'
+  yield* tx.run(auditBounceSql, [randomBytes(12).toString('hex'), tenantId, 'bounce', email.slice(0, 200)])
+  const count = yield* tx.get<{ n: number }>(BOUNCE_COUNT_SQL, [tenantId, nowS - BOUNCE_WINDOW_SECONDS])
+  if ((count?.n ?? 0) >= BOUNCE_PAUSE_COUNT) {
+    yield* tx.run('UPDATE autopilot_settings SET paused = 1, pause_reason = ? WHERE tenant_id = ?', ['bounces', tenantId])
+    yield* tx.run(auditBounceSql, [randomBytes(12).toString('hex'), tenantId, 'paused', 'bounces'])
+  }
 }
 
 const sentTotal = (db: Database.Database, tenantId: string) => (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status = 'sent'").get(tenantId) as { n: number }).n
