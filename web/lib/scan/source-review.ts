@@ -49,6 +49,6 @@ export async function createSourceReview(db:DbLike,tenant:string,input:SourceRev
  return {job_id:jobId,lead_id:leadId,check}
 }
 export function sourceCheckForLead(db:Database.Database,tenant:string,lead:string):SourceCheck|null{
- const r=db.prepare('SELECT r.fetch_status,r.quote_match,r.company_named,r.contact_match,r.checked_at FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id AND j.id=r.job_id WHERE r.tenant_id=? AND r.lead_id=? AND j.user_id=?').get(tenant,lead,tenant) as {fetch_status:string;quote_match:number;company_named:number;contact_match:number;checked_at:number}|undefined
+ const r=db.prepare('SELECT r.fetch_status,r.quote_match,r.company_named,r.contact_match,r.checked_at FROM source_reviews r JOIN leads l ON l.id=r.lead_id JOIN scan_jobs j ON j.id=l.scan_job_id AND j.id=r.job_id WHERE r.tenant_id=? AND r.lead_id=? AND j.user_id=? ORDER BY r.checked_at DESC, r.id DESC LIMIT 1').get(tenant,lead,tenant) as {fetch_status:string;quote_match:number;company_named:number;contact_match:number;checked_at:number}|undefined
  return r?{...r,quote_match:!!r.quote_match,company_named:!!r.company_named,contact_match:!!r.contact_match}:null
 }
