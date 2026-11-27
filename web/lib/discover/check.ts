@@ -4,7 +4,7 @@ import type { DiscoveredLead, SeenPage } from './agent.ts'
 import { dateMentions } from '../scan/date-in-text.ts'
 import { eventDateBound } from '../scan/event-date-binding.ts'
 import { discoveryHiringDateProven, isDiscoveryHiringLead } from '../scan/timing-proof.ts'
-import { atsDate } from './ats-dates.ts'
+import { atsDate, careersAtsDate } from './ats-dates.ts'
 
 // confirmed: the page text (as Claude's reader returned it, or as dazl fetched it) names the company.
 // listed: the page came back in the run's search results with the company in its title, but nobody could read its text.
@@ -14,7 +14,7 @@ import { atsDate } from './ats-dates.ts'
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
 // date_source distinguishes a date taken from an opened source from the search index's day for the page itself.
 // date_on_page records whether the exact calendar day was found in the proof page's text.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; signal_by?: 'claude'; proof_check?: 'spend_cap' | 'unavailable' }
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; date_proof?: 'ats_structured' | null; date_record_url?: string | null; signal_by?: 'claude'; proof_check?: 'spend_cap' | 'unavailable' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
 //   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
@@ -429,7 +429,18 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   if (!stillDate && !needProfile) return out
   raw = await page()
   if (!raw) return out
-  if (stillDate) { const day = embeddedDay(raw, now, isDiscoveryHiringLead(c)); if (day) out = { ...out, date: day, date_source: 'page' } }
+  if (stillDate) {
+    // A careers page on the company's own domain names its posting record in its own markup (an embedded board); read that record first.
+    // Only a hiring signal is dated this way, and only when the page prints that posting's title (careersAtsDate): a funding or expansion
+    // page that happens to embed a vacancy never borrows the vacancy's day.
+    const claim = [c.signal, c.evidence_quote ?? ''].join(' ')
+    const embedded = isDiscoveryHiringLead(c) ? await careersAtsDate(raw, u, fetchImpl, now, INDEX_DATE_MAX_AGE_DAYS, timeoutMs, claim) : null
+    if (embedded) out = { ...out, date: embedded.date, date_source: 'page', date_proof: 'ats_structured', date_record_url: embedded.sourceUrl }
+    else {
+      const day = embeddedDay(raw, now, isDiscoveryHiringLead(c))
+      if (day) out = { ...out, date: day, date_source: 'page' }
+    }
+  }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
   return out
 }

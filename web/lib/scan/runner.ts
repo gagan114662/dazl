@@ -1451,13 +1451,19 @@ export function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
   // #2004: a day the proof page states in its own typed markup is on the page, but it is not PRINTED on it - the two are different
   // proofs, and only the printed one may be called page_bound.
   const dated = !!l.date, printed = l.date_source === 'page' && !l.date_on_page_field
+  // #2096: a careers page that embeds its board's record names the posting's day without printing it. That day is the board's own
+  // structured date for that posting (ats_structured, hiring only), cited by the record's URL - never page_bound, because the page text
+  // does not carry it.
+  const record = l.date_proof === 'ats_structured' && !!l.date_record_url && l.proof === 'confirmed'
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
     score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
-    event_date: l.date, event_date_proof: l.date_on_page && l.proof === 'confirmed' ? (printed ? 'page_bound' : 'page_structured') : null,
-    event_date_proof_note: !l.date_on_page ? null : printed ? 'the date is printed on the proof page' : `the proof page's own typed ${l.date_on_page_field} states the day`,
-    timing_note: l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
-    date_status: dated ? (l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
+    event_date: l.date,
+    event_date_proof: record ? 'ats_structured' : l.date_on_page && l.proof === 'confirmed' ? (printed ? 'page_bound' : 'page_structured') : null,
+    event_date_proof_note: record ? `the day comes from the posting's own board record ${l.date_record_url}`.slice(0, 200)
+      : !l.date_on_page ? null : printed ? 'the date is printed on the proof page' : `the proof page's own typed ${l.date_on_page_field} states the day`,
+    timing_note: record ? `event date ${l.date}: read from the posting's own board record ${l.date_record_url}`.slice(0, 200) : l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
+    date_status: dated ? (record || l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }
