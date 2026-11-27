@@ -14,7 +14,7 @@ import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl, suppressInTx } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
 import { grantConsent, grantConsentInTx, hasConsent, migrateLedger, revokeAll, revokeAllInTx } from '../lib/outreach/ledger.ts'
-import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, recordReplySyncOptOut, syncReplies } from '../lib/outreach/replies.ts'
+import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, recordClassifiedReply, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
 
@@ -337,22 +337,38 @@ test('Postgres reply sync selects only the owning tenant and prioritizes due thr
     assert.equal(await db.tx(tx => insertReplySyncInbound(tx, 'owner', { ...inbound, classification: 'positive' })), false)
     assert.deepEqual(await db.all('SELECT tenant_id, classification, length(excerpt) AS length FROM inbound_messages'),
       [{ tenant_id: 'owner', classification: 'opt_out', length: 200 }])
-    const optOut = { ...inbound, gmailId: 'opt-out', classification: 'opt_out', leadId: 'recent', recipient: 'original@example.test' } as const
+    const optOut = { ...inbound, gmailId: 'opt-out', classification: 'opt_out', leadId: 'recent', recipient: 'original@example.test', bodyStatus: 'ok' } as const
     await assert.rejects(db.tx(function* (tx) {
-      yield* recordReplySyncOptOut(tx, 'owner', optOut, NOW)
+      yield* recordClassifiedReply(tx, 'owner', optOut, NOW)
       throw new Error('later write failed')
     }), /later write failed/)
     assert.deepEqual(await db.all('SELECT email FROM suppressions'), [])
     assert.equal(await db.get('SELECT gmail_id FROM inbound_messages WHERE gmail_id = ?', ['opt-out']), undefined)
-    assert.equal(await db.tx(tx => recordReplySyncOptOut(tx, 'neighbor', optOut, NOW)), false)
-    assert.equal(await db.tx(tx => recordReplySyncOptOut(tx, 'owner', optOut, NOW)), true)
-    assert.equal(await db.tx(tx => recordReplySyncOptOut(tx, 'owner', optOut, NOW + 1)), false)
+    assert.equal(await db.tx(tx => recordClassifiedReply(tx, 'neighbor', optOut, NOW)), null)
+    assert.equal((await db.tx(tx => recordClassifiedReply(tx, 'owner', optOut, NOW)))?.kind, 'opt_out')
+    assert.equal(await db.tx(tx => recordClassifiedReply(tx, 'owner', optOut, NOW + 1)), null)
     assert.deepEqual(await db.all('SELECT tenant_id, email, reason FROM suppressions ORDER BY email'), [
       { tenant_id: 'owner', email: 'buyer@example.test', reason: 'unsubscribe' },
       { tenant_id: 'owner', email: 'original@example.test', reason: 'unsubscribe' },
     ])
     assert.deepEqual(await db.get('SELECT stopped, last_lead_reply_at FROM followup_threads WHERE tenant_id = ? AND thread_id = ?', ['owner', 'recent']),
       { stopped: 'opt_out', last_lead_reply_at: NOW })
+    const automatic = { ...optOut, gmailId: 'automatic', classification: 'auto', receivedAt: NOW + 1 }
+    assert.equal((await db.tx(tx => recordClassifiedReply(tx, 'owner', automatic, NOW)))?.kind, 'auto')
+    assert.deepEqual(await db.get("SELECT last_lead_reply_at FROM followup_threads WHERE tenant_id = 'owner' AND thread_id = 'recent'"),
+      { last_lead_reply_at: NOW })
+    const positive = { ...optOut, gmailId: 'positive', classification: 'positive', from: 'interested@example.test' }
+    assert.equal((await db.tx(tx => recordClassifiedReply(tx, 'owner', positive, NOW)))?.kind, 'consent')
+    assert.equal(await db.tx(tx => recordClassifiedReply(tx, 'owner', positive, NOW)), null)
+    assert.deepEqual(await db.all('SELECT tenant_id, evidence_ref, revoked_at FROM consent_ledger'),
+      [{ tenant_id: 'owner', evidence_ref: 'gmail:positive', revoked_at: null }])
+    const uncertain = { ...positive, gmailId: 'uncertain', classification: 'uncertain', receivedAt: NOW + 2 }
+    assert.equal((await db.tx(tx => recordClassifiedReply(tx, 'owner', uncertain, NOW + 2)))?.kind, 'review')
+    assert.deepEqual(await db.all('SELECT revoked_at, revoke_reason FROM consent_ledger'),
+      [{ revoked_at: NOW + 2, revoke_reason: 'reply_uncertain' }])
+    assert.deepEqual(await db.get("SELECT stopped FROM followup_threads WHERE tenant_id = 'owner' AND thread_id = 'recent'"),
+      { stopped: 'opt_out' })
+
 
 
 

@@ -7,7 +7,7 @@ import { getAccessToken, type OAuthDeps } from '../gmail/oauth.ts'
 import { gmailIsStubbed } from '../staging.ts'
 import { stagingFakeReplies, stagingFakeGmail } from './staging-fake-replies.ts'
 import { auditAt } from './autopilot.ts'
-import { grantConsent, revokeAll, revokeAllInTx } from './ledger.ts'
+import { grantConsentInTx, revokeAllInTx } from './ledger.ts'
 import { norm, READ_CONSENT_VERSION } from './store.ts'
 import { suppressInTx } from './service.ts'
 import { fullText, messageText, type GPart } from './reply-text.ts'
@@ -434,30 +434,56 @@ export function* insertReplySyncInbound(tx: Tx, tenantId: string, item: ReplySyn
   return result.changes === 1
 }
 
-export function* recordReplySyncOptOut(tx: Tx, tenantId: string, item: ReplySyncInbound & {
-  classification: 'opt_out' | 'negative'
+export function* recordClassifiedReply(tx: Tx, tenantId: string, item: ReplySyncInbound & {
   leadId: string
   recipient: string
+  bodyStatus: string
 }, now: number, hasSequences = true) {
-  if (!(yield* insertReplySyncInbound(tx, tenantId, item))) return false
+  if (!(yield* insertReplySyncInbound(tx, tenantId, item))) return null
+  const cls = item.classification
+  if (cls === 'auto') return { kind: 'auto' } as const
   if (hasSequences) {
     yield* tx.run(
       "UPDATE sequences SET status = 'replied', stop_reason = 'reply' WHERE tenant_id = ? AND lead_id = ? AND status IN ('approved','active')",
       [tenantId, item.leadId],
     )
   }
-  // An opt-out from anyone in the thread covers the person we wrote to.
-  for (const address of new Set([item.from, item.recipient])) {
-    yield* suppressInTx(tx, tenantId, address, item.classification === 'opt_out' ? 'unsubscribe' : 'manual', {
-      consent: true, sequences: hasSequences,
-    })
-    yield* revokeAllInTx(tx, tenantId, address, item.classification, now)
-  }
   yield* tx.run(
-    'UPDATE followup_threads SET last_lead_reply_at = ?, stopped = ? WHERE tenant_id = ? AND thread_id = ?',
-    [item.receivedAt, item.classification, tenantId, item.threadId],
+    'UPDATE followup_threads SET last_lead_reply_at = ? WHERE tenant_id = ? AND thread_id = ?',
+    [item.receivedAt, tenantId, item.threadId],
   )
-  return true
+  if (cls === 'opt_out' || cls === 'negative') {
+    // An opt-out from anyone in the thread covers the person we wrote to.
+    for (const address of new Set([item.from, item.recipient])) {
+      yield* suppressInTx(tx, tenantId, address, cls === 'opt_out' ? 'unsubscribe' : 'manual', {
+        consent: true, sequences: hasSequences,
+      })
+      yield* revokeAllInTx(tx, tenantId, address, cls, now)
+    }
+    yield* tx.run(
+      'UPDATE followup_threads SET stopped = ? WHERE tenant_id = ? AND thread_id = ?',
+      [cls, tenantId, item.threadId],
+    )
+    return { kind: 'opt_out', action: cls === 'opt_out' ? 'reply_opt_out' : 'reply_negative', detail: item.from } as const
+  }
+  if (cls === 'positive' && item.from.split('@')[1] === item.recipient.split('@')[1]) {
+    yield* grantConsentInTx(tx, tenantId, item.from, {
+      channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:' + item.gmailId, now,
+    })
+    return { kind: 'consent', action: 'consent_granted', detail: item.from + ' replied with interest' } as const
+  }
+  if (cls === 'uncertain') {
+    for (const address of new Set([item.from, item.recipient])) {
+      yield* revokeAllInTx(tx, tenantId, address, 'reply_uncertain', now)
+    }
+    // A stronger existing stop reason stands. An unclear reply creates no suppression.
+    yield* tx.run(
+      "UPDATE followup_threads SET stopped = 'review' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL",
+      [tenantId, item.threadId],
+    )
+    return { kind: 'review', action: 'reply_blocked_for_review', detail: item.bodyStatus === 'ok' ? 'unclear wording' : 'body ' + item.bodyStatus } as const
+  }
+  return { kind: 'other', action: 'reply_for_review', detail: cls } as const
 }
 
 export async function syncReplies(db: Database.Database, tenantId: string, d: SyncDeps = {}): Promise<SyncResult> {
@@ -565,33 +591,16 @@ export async function syncReplies(db: Database.Database, tenantId: string, d: Sy
           continue
         }
         const cls = classifyMessage(body, { autoSubmitted: header(g, 'auto-submitted'), precedence: header(g, 'precedence'), subject: header(g, 'subject'), xAutoreply: header(g, 'x-autoreply'), xAutorespond: header(g, 'x-autorespond') })
-        if (cls === 'opt_out' || cls === 'negative') {
-          const recorded = sqliteTransaction(db, tx => recordReplySyncOptOut(tx, tenantId, {
-            gmailId: g.id, threadId: thread, messageId: m.id, from, text, classification: cls, receivedAt: at,
-            leadId: m.lead_id, recipient: m.to_email,
-          }, now, tableExists(db, 'sequences')))
-          if (!recorded) continue
-          auditAt(db, tenantId, cls === 'opt_out' ? 'reply_opt_out' : 'reply_negative', from, m.lead_id, m.id, now)
-          out.replies++
-          out.optOuts++
-          continue
-        }
-        if (!log(cls)) continue
-        if (cls === 'auto') continue
+        const result = sqliteTransaction(db, tx => recordClassifiedReply(tx, tenantId, {
+          gmailId: g.id, threadId: thread, messageId: m.id, from, text, classification: cls, receivedAt: at,
+          leadId: m.lead_id, recipient: m.to_email, bodyStatus: body.status,
+        }, now, tableExists(db, 'sequences')))
+        if (!result || result.kind === 'auto') continue
         out.replies++
-        if (tableExists(db,'sequences')) db.prepare("UPDATE sequences SET status = 'replied', stop_reason = 'reply' WHERE tenant_id = ? AND lead_id = ? AND status IN ('approved','active')").run(tenantId,m.lead_id)
-        db.prepare('UPDATE followup_threads SET last_lead_reply_at = ? WHERE tenant_id = ? AND thread_id = ?').run(at, tenantId, thread)
-        if (cls === 'positive' && from.split('@')[1] === m.to_email.split('@')[1]) {
-          grantConsent(db, tenantId, from, { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: `gmail:${g.id}`, now })
-          auditAt(db, tenantId, 'consent_granted', `${from} replied with interest`, m.lead_id, m.id, now); out.consents++
-        } else if (cls === 'uncertain') {
-          // Blocked for review: no automated follow-up on this thread and no consent stands for either address until a
-          // person has read it. Nobody is suppressed: an unclear message is not taken as an opt-out (or as interest).
-          for (const e of new Set([from, m.to_email])) revokeAll(db, tenantId, e, 'reply_uncertain', now)
-          // a thread already stopped for a stronger reason (opt-out, no, bounce) keeps that reason
-          db.prepare("UPDATE followup_threads SET stopped = 'review' WHERE tenant_id = ? AND thread_id = ? AND stopped IS NULL").run(tenantId, thread)
-          auditAt(db, tenantId, 'reply_blocked_for_review', body.status === 'ok' ? 'unclear wording' : `body ${body.status}`, m.lead_id, m.id, now); out.reviews++
-        } else auditAt(db, tenantId, 'reply_for_review', cls, m.lead_id, m.id, now)
+        auditAt(db, tenantId, result.action, result.detail, m.lead_id, m.id, now)
+        if (result.kind === 'opt_out') out.optOuts++
+        else if (result.kind === 'consent') out.consents++
+        else if (result.kind === 'review') out.reviews++
       }
       await checkpointReplySync(store, tenantId, m.id, now)
       readNow.add(m.id)
