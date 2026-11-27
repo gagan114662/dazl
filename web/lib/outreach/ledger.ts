@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import type { Tx } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { norm } from './store.ts'
 
@@ -27,14 +28,34 @@ export function migrateLedger(db: Database.Database): void {
   `)
 }
 
-export function grantConsent(db: Database.Database, tenantId: string, contact: string, g: { channel: Channel; scope: string; basis: string; evidenceRef: string; now?: number; ttlDays?: number }): void {
-  const now = g.now ?? Math.floor(Date.now() / 1000)
-  db.prepare('INSERT INTO consent_ledger (id, tenant_id, contact, channel, scope, basis, evidence_ref, granted_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(randomBytes(12).toString('hex'), tenantId, norm(contact), g.channel, g.scope, g.basis, g.evidenceRef.slice(0, 200), now, now + (g.ttlDays ?? CONSENT_TTL_DAYS) * 86400)
+type ConsentGrant = { channel: Channel; scope: string; basis: string; evidenceRef: string; now?: number; ttlDays?: number }
+const INSERT_CONSENT_SQL = 'INSERT INTO consent_ledger (id, tenant_id, contact, channel, scope, basis, evidence_ref, granted_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+const REVOKE_CONSENT_SQL = 'UPDATE consent_ledger SET revoked_at = ?, revoke_reason = ? WHERE tenant_id = ? AND contact = ? AND revoked_at IS NULL'
+
+function grantParameters(tenantId: string, contact: string, grant: ConsentGrant) {
+  const now = grant.now ?? Math.floor(Date.now() / 1000)
+  return [randomBytes(12).toString('hex'), tenantId, norm(contact), grant.channel, grant.scope, grant.basis,
+    grant.evidenceRef.slice(0, 200), now, now + (grant.ttlDays ?? CONSENT_TTL_DAYS) * 86400]
 }
 
-export function revokeAll(db: Database.Database, tenantId: string, contact: string, reason: string, now = Math.floor(Date.now() / 1000)): void {
-  db.prepare('UPDATE consent_ledger SET revoked_at = ?, revoke_reason = ? WHERE tenant_id = ? AND contact = ? AND revoked_at IS NULL').run(now, reason.slice(0, 60), tenantId, norm(contact))
+function revokeParameters(tenantId: string, contact: string, reason: string, now = Math.floor(Date.now() / 1000)) {
+  return [now, reason.slice(0, 60), tenantId, norm(contact)]
+}
+
+export function grantConsent(db: Database.Database, tenantId: string, contact: string, grant: ConsentGrant): void {
+  db.prepare(INSERT_CONSENT_SQL).run(...grantParameters(tenantId, contact, grant))
+}
+
+export function* grantConsentInTx(tx: Tx, tenantId: string, contact: string, grant: ConsentGrant) {
+  yield* tx.run(INSERT_CONSENT_SQL, grantParameters(tenantId, contact, grant))
+}
+
+export function revokeAll(db: Database.Database, tenantId: string, contact: string, reason: string, now?: number): void {
+  db.prepare(REVOKE_CONSENT_SQL).run(...revokeParameters(tenantId, contact, reason, now))
+}
+
+export function* revokeAllInTx(tx: Tx, tenantId: string, contact: string, reason: string, now?: number) {
+  yield* tx.run(REVOKE_CONSENT_SQL, revokeParameters(tenantId, contact, reason, now))
 }
 
 export function hasConsent(db: Database.Database, tenantId: string, contact: string, channel: Channel, scope: string, now = Math.floor(Date.now() / 1000)): boolean {

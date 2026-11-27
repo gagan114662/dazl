@@ -13,7 +13,7 @@ import { migrateOutreach } from '../lib/outreach/store.ts'
 import { completeOAuth, startOAuth, GMAIL_READ_SCOPE } from '../lib/gmail/oauth.ts'
 import { saveSettings, getSettings, isSuppressed, cleanBookingUrl } from '../lib/outreach/service.ts'
 import { ATTESTATIONS, CONSENT_VERSION, enable, getState, migrateAutopilot, recentAutopilotAudit } from '../lib/outreach/autopilot.ts'
-import { grantConsent, hasConsent, migrateLedger, revokeAll } from '../lib/outreach/ledger.ts'
+import { grantConsent, grantConsentInTx, hasConsent, migrateLedger, revokeAll, revokeAllInTx } from '../lib/outreach/ledger.ts'
 import { acceptReadConsent, classifyReply, migrateReplies, newText, readReplySyncCandidates, bindReplySyncThread, recordReplySyncThread, recordReplySyncActivity, checkpointReplySync, insertReplySyncInbound, syncReplies } from '../lib/outreach/replies.ts'
 import { followupText, runFollowups, setFollowups } from '../lib/outreach/followups.ts'
 import { inboxPage } from '../lib/outreach/inbox.ts'
@@ -339,6 +339,39 @@ test('Postgres reply sync selects only the owning tenant and prioritizes due thr
       [{ tenant_id: 'owner', classification: 'opt_out', length: 200 }])
 
 
+  } finally {
+    await db.close()
+    await drop()
+  }
+})
+
+
+test('Postgres reply consent effects preserve tenant scope and roll back with their transaction', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const db = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  const contact = 'Buyer@Example.test'
+  const grant = { channel: 'email', scope: 'followup', basis: 'reply_interest', evidenceRef: 'gmail:reply', now: NOW } as const
+  try {
+    await runPgMigrations(db.pool)
+    await db.tx(function* (tx) {
+      yield* grantConsentInTx(tx, 'owner', contact, grant)
+      yield* grantConsentInTx(tx, 'owner', contact, { ...grant, channel: 'phone' })
+      yield* grantConsentInTx(tx, 'neighbor', contact, grant)
+    })
+    await assert.rejects(db.tx(function* (tx) {
+      yield* revokeAllInTx(tx, 'owner', contact, 'opt_out', NOW + 1)
+      throw new Error('later effect failed')
+    }), /later effect failed/)
+    assert.deepEqual(await db.get('SELECT count(*) AS n FROM consent_ledger WHERE revoked_at IS NOT NULL'), { n: 0 })
+    await db.tx(tx => revokeAllInTx(tx, 'owner', contact.toLowerCase(), 'opt_out', NOW + 2))
+    await db.tx(tx => revokeAllInTx(tx, 'owner', contact, 'repeat', NOW + 3))
+    assert.deepEqual(await db.all(
+      'SELECT tenant_id, contact, channel, revoked_at, revoke_reason FROM consent_ledger ORDER BY tenant_id, channel',
+    ), [
+      { tenant_id: 'neighbor', contact: 'buyer@example.test', channel: 'email', revoked_at: null, revoke_reason: null },
+      { tenant_id: 'owner', contact: 'buyer@example.test', channel: 'email', revoked_at: NOW + 2, revoke_reason: 'opt_out' },
+      { tenant_id: 'owner', contact: 'buyer@example.test', channel: 'phone', revoked_at: NOW + 2, revoke_reason: 'opt_out' },
+    ])
   } finally {
     await db.close()
     await drop()
