@@ -14,7 +14,7 @@ import { leadPerson } from '../people/lead-person.ts'
 import { discoverApprove, discoverContact, discoverLinkedIn, discoverMissing, discoverProofHold, discoverSite, isDiscoverLead } from '../discover/card.ts'
 import { domainBasisFor, publishedContact, PUBLISHED_EMAIL_RE, type DomainBasisKind } from '../outreach/published-email.ts'
 import { eventDateCopy } from './date-copy.ts'
-import { domainReviewFor } from '../outreach/domain-review.ts'
+import { domainReviewFor } from '../outreach/domain-review-view.ts'
 
 export interface CardLead {
   id?: string
