@@ -331,7 +331,7 @@ export function createDraftWithWords(db: Database.Database, tenantId: string, le
 // The address a discovery lead is drafted to: the named person's own, as the card decides it (lib/discover/card.ts discoverContact).
 // One read, used by the draft check and by the card's recipient verdict, so both judge the same address.
 const discoverOwnEmail = (db: Database.Database, tenantId: string, leadId: string, name: string | null) =>
-  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; source_url: string }[] })?.email ?? null
+  discoverContact({ source_kind: 'discover', name, enrichments: db.prepare("SELECT kind, connector, value, label, source_url FROM lead_enrichments WHERE tenant_id = ? AND lead_id = ? AND connector = 'discover' AND kind IN ('person', 'email', 'linkedin') ORDER BY retrieved_at, id").all(tenantId, leadId) as { kind: string; connector: string; value: string; label: string | null; source_url: string }[] })?.email ?? null
 export function discoverRecipientRefusal(db: Database.Database, tenantId: string, leadId: string): 'personal_email' | 'suppressed' | 'unreadable' | null {
   try {
     const to = norm(discoverOwnEmail(db, tenantId, leadId, (db.prepare('SELECT name FROM leads WHERE id = ?').get(leadId) as { name: string | null } | undefined)?.name ?? '')?.address ?? '')

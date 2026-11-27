@@ -107,7 +107,7 @@ test('ordinary job still reads ordinary team and role inbox; strict mode holds l
  assert.deepEqual(linked.rows.filter(r=>r.kind!=='person'),[])
  assert.equal(linked.routed,null)
 })
-test('strict excludes foreign, hidden, former, split, shared and tagged addresses and does not widen non-US recipient eligibility',async()=>{
+test('strict excludes off-domain, hidden, former, split, shared and tagged addresses',async()=>{
  for(const markup of [
   '<section aria-label="Former team">'+card()+'</section>',
   '<h2>Past Team</h2>'+card(),
@@ -118,7 +118,7 @@ test('strict excludes foreign, hidden, former, split, shared and tagged addresse
   const {rows}=await fixture(card(title,address))
   assert.ok(!rows.some(r=>r.kind==='email'),address)
  }
- assert.ok(!(await fixture(card(),{international:true})).rows.some(r=>r.kind==='email'))
+ assert.deepEqual((await fixture(card(),{international:true})).rows.filter(r=>r.kind==='email').map(r=>r.value),[email])
 })
 
 test('persisted normal-scan marker forces strict recrawl without explicit caller options',async()=>{
@@ -129,13 +129,13 @@ test('persisted normal-scan marker forces strict recrawl without explicit caller
  assert.ok(refreshed.rows.some(r=>r.kind==='person'))
 })
 
-test('ordinary marked crawl records display-only exact personal work email outside US, without a routing recipient',async()=>{
+test('marked crawl stores the exact published address outside the US and retains display provenance',async()=>{
  for(const country of ['Toronto, ON','London, England','Osaka, Japan']){
   const {display,foreign,routed,rows,guesses}=await fixture(card(),{marker:true,international:true,country})
   assert.deepEqual(display,{person:name+', '+title,address:email,source_url:team,role_quote:title,observed_at:now/1000,display_only:true},country)
   assert.equal(foreign,undefined)
-  assert.equal(routed,null)
-  assert.ok(!rows.some(r=>r.kind==='email'))
+  assert.equal(routed,email)
+  assert.deepEqual(rows.filter(r=>r.kind==='email').map(r=>r.value),[email])
   assert.deepEqual(guesses,[])
  }
  assert.equal((await fixture(card(),{marker:true})).routed,email,'pre-existing US recipient path is unchanged')
@@ -162,7 +162,7 @@ test('company-first buyer stage prioritizes a linked company story under the sam
  const foreign=await fixture(card(),{marker:true,buyerSitePage:true,international:true})
  assert.equal(foreign.display?.source_url,source_url)
  assert.equal(foreign.display?.address,email)
- assert.equal(foreign.routed,null)
+ assert.equal(foreign.routed,email)
 })
 
 test('already-admitted buyer source is only a fresh exact-origin crawl hint after separate website identity',async()=>{

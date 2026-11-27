@@ -1,5 +1,5 @@
 'use client'
-import { discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
+import { discoverContact, discoverCountParts, discoverLine, isDiscoverLead, type DiscoverCounts } from '@/lib/discover/card'
 import { CompanyFirstResultSummary } from '../company-first-result-summary'
 import type { HomeResults } from '@/lib/outreach/home-results'
 import type { HomeReady } from '@/lib/outreach/home-ready'
@@ -34,7 +34,7 @@ import { isUnconfirmedTimingResearch, uncheckableCause } from '@/lib/lead-state'
 import { recoveryNote } from '@/lib/lead-state'
 import { coreSources, socialLabel, socialSources, usableLabels, enrichmentLabels, analysisPrerequisite, type Advanced, type KeyState, type ServerSources, type SourceRow } from '@/lib/scan/source-availability'
 import { barCopy, scanCounts } from '@/lib/outreach/scan-drafts'
-import { publishedEmail, publishedContact, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
+import { publishedEmail, publishedContact, displayedEmailSource, emailsInText, contactSearchNote, domainBasisNote, domainBasisText } from '@/lib/outreach/published-email'
 import { domainUnresolvedText } from '@/lib/connectors/domain-unresolved'
 import { domainReviewFor } from '@/lib/outreach/domain-review'
 import SourceReview from './source-review'
@@ -64,6 +64,7 @@ import { reviewLaneWorkEmailTargets } from '@/lib/people/work-email-review-lane'
 import { outcomeOwnCopy, scanOutcome, type ScanOutcome } from '@/lib/scan/scan-outcome'
 import InfoTip from '../ui/info-tip'
 import { ContactStatusLine } from './contact-status'
+import { EmailSourceLink } from './contact-status'
 import { Icon } from '../ui/icons'
 import { Avatar, Pill, Stepper, type Tone } from '../ui/bits'
 import Caveat from '@/app/app/caveat'
@@ -1573,6 +1574,19 @@ export default function LeadsClient() {
               const timing = l.timing === 'proof_backed' ? timingHeadline({ timing: l.timing }) : c.timing
               // #1037: the person to contact, on the row itself (lib/people/lead-person.ts); null = "No buyer named yet".
               const lp = leadPerson(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '', undefined, identityOf({ id: l.id, contact: l.contact }, l.enrichments ?? []))
+              const contactLine = lp ? c.contact : c.contactNoPerson
+              const email = emailsInText(contactLine ?? '')[0]
+              const discovered = discoverContact(l)?.email
+              const citedContact = !isDiscoverLead(l) && l.contact_context && publishedEmail(l) === email?.toLowerCase()
+                ? { ...l, evidence_excerpt: l.contact_context.excerpt, source_url: l.contact_context.source_url }
+                : null
+              const emailSource = email && (discovered?.address === email ? discovered.source
+                : displayedEmailSource(l, email.toLowerCase()) || (citedContact && displayedEmailSource(citedContact, email.toLowerCase())))
+              const visibleLine = email && !emailSource ? contactLine?.slice(0, contactLine.indexOf(email)).replace(/ - $/, '').trim() : contactLine
+              const recipient = isDiscoverLead(l) ? discovered?.address : publishedEmail(l)
+              const approval = c.approve.ok && (!emailSource || email.toLowerCase() !== recipient?.toLowerCase())
+                ? { ok: false as const, reason: 'The recipient needs a visible email source before you can approve.' }
+                : c.approve
               return <div data-testid="lead-card">
                 {/* Below sm the actions sit under the identity so the company, contact and any warning get the full width. */}
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1582,10 +1596,9 @@ export default function LeadsClient() {
                     <div className="font-semibold text-base leading-tight">{l.company_domain ? <a className="hover:underline" href={`https://${l.company_domain}`} target="_blank" rel="noopener noreferrer nofollow">{c.company}</a> : c.company}{!!l.watch_new && <>{' '}<span className="ml-1"><Pill tone="mint">new</Pill></span></>}{l.quarantined_at && <>{' '}<span className="ml-1"><Pill tone="pink">Rejected</Pill></span></>}{!l.quarantined_at && (draftedLeads?.has(l.id) || approved[l.id]) && <>{' '}<span className="ml-1"><Pill tone="mint">Approved</Pill></span></>}</div>
                     {/* #1037: the person to contact, on the row itself (name, title, LinkedIn or source), or plainly none yet. */}
                     <PersonWithProvenance p={lp} signalSource={l.source_url} nameOnly={!lp && onlyNameOnlyRows(l.enrichments, icp && icp.icp.who.length > 0 ? icp.icp.who.join('; ') : '')}>{!l.quarantined_at && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && <> · <button type="button" className="underline text-[var(--ink)]" onClick={() => findContact(l.id)} data-testid="lead-person-find">Find contact</button></>}{contactMsg[l.id] ? <span className="text-[var(--ink-3)] text-xs ml-2">{contactMsg[l.id]}</span> : null}</PersonWithProvenance>
-                    {(() => { const line = lp ? c.contact : c.contactNoPerson; return !(lp && c.contact === `${lp.name}, ${lp.title}`) && <div className="text-[var(--ink-2)] text-xs mt-0.5">{line ?? 'No contact found yet'}</div> })()}
+                    <div className="text-[var(--ink-2)] text-xs mt-0.5">{!lp || visibleLine !== `${lp.name}, ${lp.title}` ? visibleLine || 'No contact found yet' : null}{emailSource ? <> · <EmailSourceLink url={emailSource} /></> : !l.quarantined_at && (l.company_first_published_email?.display_only ? <PublishedEmailProvenance lead={l} /> : <div>Published work email unavailable</div>)}</div>
                     {/* How far the contact is established (app/app/leads/contact-status.tsx). */}
                     <ContactStatusLine status={c.contactStatus} />
-                    {!l.quarantined_at && <PublishedEmailProvenance lead={l} />}
                     {/* #384: published where, deliverable or not, and whose route - three separate facts, never one "verified". */}
                     {c.route && <ul data-testid="contact-route" className="text-xs text-[var(--ink-2)] mt-1 space-y-0.5">
                       <li data-testid="contact-provenance">{c.route.provenance.text}</li>
@@ -1595,8 +1608,8 @@ export default function LeadsClient() {
                   </div>
                   </div>
                   {!l.quarantined_at && <div className="flex flex-wrap gap-2 min-w-0 pl-[52px] sm:pl-0 sm:shrink-0" data-testid="card-actions">
-                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!!approving[l.id] || !!approved[l.id]} title="Creates a draft for you to review in Outreach. Nothing is sent." className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
-                    {!c.approve.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
+                    {c.approve.ok && <button onClick={() => approveLead(l.id)} disabled={!approval.ok || !!approving[l.id] || !!approved[l.id]} title={approval.ok ? 'Creates a draft for you to review in Outreach. Nothing is sent.' : approval.reason} className="btn-primary btn-sm"><Icon name="check" className="w-3.5 h-3.5" />Approve</button>}
+                    {!approval.ok && c.linkedin && <a data-testid="reach-linkedin" className="btn-primary btn-sm" href={c.linkedin.profile} target="_blank" rel="noopener noreferrer nofollow" title={`Opens ${c.linkedin.name}'s LinkedIn profile in a new tab. You send the message yourself; dazl sends nothing.`}><Icon name="link" className="w-3.5 h-3.5" />Message on LinkedIn</a>}
                     <button onClick={() => setRejecting(rejecting?.id === l.id ? null : { id: l.id, why: '' })} aria-expanded={rejecting?.id === l.id} className="btn-ghost btn-sm"><Icon name="x" className="w-3.5 h-3.5" />Reject</button>
                   </div>}
                 </div>
@@ -1615,8 +1628,8 @@ export default function LeadsClient() {
                 {l.quarantined_at
                   ? <div className="text-xs mt-2 flex items-center gap-2"><span>{isRejection(l.quarantine_reason) ? l.quarantine_reason : `Quarantined: ${l.quarantine_reason ?? 'by you'}`}<InfoTip>Kept with its evidence; it will not be drafted, sent or exported.</InfoTip></span><button className="btn-ghost btn-sm" onClick={() => quarantine(l.id, true)}>Undo</button></div>
                   : drafted[l.id] ? <div className="text-xs mt-2 flex items-center gap-2" role="status"><span>{drafted[l.id]}</span>{drafted[l.id].startsWith('Draft created') && <a className="btn-ghost btn-sm" href={`/app/outreach?job_id=${jobId}`}>Review draft</a>}</div>
-                  : !c.approve.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{c.approve.reason}</span></div>
-                  : !c.approve.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{c.approve.reason}</span></div> : null}
+                  : !approval.ok && c.linkedin ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="linkedin-ready">Ready to reach on LinkedIn. Open {c.linkedin.name}&apos;s profile and send the first message yourself. Email draft unavailable. <span>{approval.reason}</span></div>
+                  : !approval.ok ? <div className="text-xs text-[var(--ink-2)] mt-2" data-testid="approve-hold">Can&apos;t approve yet. <span>{approval.reason}</span></div> : null}
               </div>
             })()}
             <details className="mt-2 text-sm">
@@ -1743,9 +1756,10 @@ export default function LeadsClient() {
             <DiscoveredVia l={l} />
             {(() => {
               const pc = publishedContact(l)
-              const draftTo = publishedEmail(l)
+              const pcSource = pc && displayedEmailSource(l, pc.email)
+              const draftTo = pcSource && publishedEmail(l)
               return <>
-                {pc && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'}</span>}
+                {pc && pcSource && pc.purpose !== 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email}{pc.purpose==='unknown'?' - published address; purpose and buyer relevance unknown':' - business inquiry context, not consent'} · <EmailSourceLink url={pcSource} /></span>}
                 {pc && (() => { const rv = domainReviewFor(l, l.enrichments)
                   // A contact email that is also the address the crawl recorded is reviewed like a crawled address: equality does not show a cited-page origin.
                   const lc = pc.source === 'lead' && rv.state !== 'not_required'
@@ -1755,17 +1769,18 @@ export default function LeadsClient() {
                   const cv = rv.covered
                   return <span className="text-xs ml-3 block mt-1 border border-black px-2 py-1 text-[#111]">
                     {note}{bpc.domainBasisSourceUrl && bpc.domainBasis !== 'unrecorded' ? <> <a className="underline" href={bpc.domainBasisSourceUrl} target="_blank" rel="noopener noreferrer nofollow">{bpc.domainBasis === 'name_probe' ? 'homepage read' : 'page with the link'}</a>.</> : null}
-                    {rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => <span key={'a' + i}>{i ? ', ' : ''}{a.email}{a.source_url ? <> (<a className="underline" href={a.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}).</span>}
-                    {rv.state === 'required' && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">{rv.multi ? 'These websites are the right company' : 'This website is the right company'}</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
+                    {rv.binding && rv.multi && cv && rv.state !== 'not_required' && <span className="block mt-1">One check covers all of these, not only the first: {cv.domains.length} {cv.domains.length === 1 ? 'website' : 'websites'} ({cv.domains.map((d, i) => <span key={'d' + i}>{i ? ', ' : ''}{d.domain}{d.source_url ? <> (<a className="underline" href={d.source_url} target="_blank" rel="noopener noreferrer nofollow">page</a>)</> : null}</span>)}) and {cv.addresses.length} {cv.addresses.length === 1 ? 'address' : 'addresses'} ({cv.addresses.map((a, i) => <span key={'a' + i}>{i ? ', ' : ''}{a.email}{a.source_url && <> (<EmailSourceLink url={a.source_url} />)</>}</span>)}).</span>}
+                    {rv.state === 'required' && !rv.binding && <> A draft needs a visible email source first.</>}
+                    {rv.state === 'required' && rv.binding && <> A draft needs your check first. <button onClick={() => domainReview(l.id, 'confirm', rv.binding)} className="underline">{rv.multi ? 'These websites are the right company' : 'This website is the right company'}</button> <span className="text-gray-500">(not need, consent or a send approval)</span></>}
                     {rv.state === 'confirmed' && <> You checked that {rv.multi && cv ? `these ${cv.domains.length} websites and ${cv.addresses.length} addresses are` : `${rv.domain} is`} the right company. <button onClick={() => domainReview(l.id, 'withdraw')} className="underline">withdraw</button></>}
                     {reviewMsg[l.id] ? <span className="text-gray-500 ml-2">{reviewMsg[l.id]}</span> : null}
                   </span> })()}
-                {pc && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact</span>}
+                {pc && pcSource && pc.purpose === 'non-sales' && <span className="text-gray-500 text-xs ml-3">{pc.email} - published {pc.purposeHint} inbox, not a sales contact · <EmailSourceLink url={pcSource} /></span>}
                 {(() => { const n = companySearchEligible(l) ? contactSearchNote(l) : (publishedContact(l) || l.contact ? null : 'No contact stored. This row does not identify a verified company website for contact search.'); return n ? <span className="text-gray-500 text-xs ml-3 block mt-1">{n}</span> : null })()}
                 {!pc && !l.contact && l.human_confirmed_at !== null && l.human_confirmed_at !== undefined && findContactOffered(l) && (
                   <span className="text-xs ml-3 block mt-1"><button onClick={() => findContact(l.id)} className="underline text-[#111]">Look for a published contact on the company website</button>{contactMsg[l.id] ? <span className="text-gray-500 ml-2">{contactMsg[l.id]}</span> : null}</span>
                 )}
-                {!pc && l.contact && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
+                {!pc && l.contact && emailsInText(l.contact).length === 0 && <span className="text-gray-500 text-xs ml-3">{l.contact}</span>}
                 {draftTo && domainReviewFor(l, l.enrichments).state !== 'required' && (l.confidence !== null || l.human_confirmed_at !== null) && !(l.fit === 0 && l.intent === null) && (
                   drafted[l.id]
                     ? <span className="text-gray-400 text-xs ml-3">{drafted[l.id]}</span>

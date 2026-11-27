@@ -64,9 +64,9 @@ for (const [country, market, host] of [
     assert.equal(usEvidence('Portland, OR 97201',[market]).us,false,'explicit foreign scope cannot borrow a US homepage address')
     assert.equal(recordEmailGuesses(db,tenant,lead,host,['ada.lane'],[role],{
       env:{EMAIL_GUESS_ENABLED:'1'},where:[market],homeText:market,seen:[{address,url:team}],
-    }),null)
-    assert.equal(publishedCandidateFor(db,tenant,lead,'Ada Lane'),null)
-    assert.equal(db.prepare("SELECT count(*) AS n FROM email_candidates WHERE tenant_id=? AND lead_id=?").pluck().get(tenant,lead),0)
+    })?.published,1)
+    assert.deepEqual(publishedCandidateFor(db,tenant,lead,'Ada Lane'),{address,url:team})
+    assert.deepEqual(db.prepare("SELECT tier FROM email_candidates WHERE tenant_id=? AND lead_id=?").all(tenant,lead),[{tier:'published'}])
     assert.deepEqual(strictPublishedWorkEmailsForLeads(db,tenant,[lead],at)[lead]??[],[])
     assert.equal(db.prepare('SELECT count(*) FROM work_email_lookups WHERE tenant_id=? AND lead_id=?').pluck().get(tenant,lead),0)
     const lookup=await findWorkEmail(db,tenant,lead,targetKey({name:'Ada Lane',title:'Owner'}),{now:at,env:{}})

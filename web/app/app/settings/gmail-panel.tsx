@@ -1,9 +1,9 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 import { GMAIL_EXPLAINER_PATH } from '@/lib/auth-google-explainer'
 
-interface State { autopilot_available?: boolean; google_app_verified?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; sent_today?: number }
+interface State { reply_reading_on: boolean; autopilot_available?: boolean; google_app_verified?: boolean; gmail: { email: string; status: string; read_granted: boolean } | null; sender: { sender_name: string; postal_address: string; booking_url?: string | null } | null; daily_cap: number; sent_24h: number; sent_today?: number }
 
 export default function GmailPanel() {
   const [s, setS] = useState<State | null>(null)
@@ -13,17 +13,23 @@ export default function GmailPanel() {
   const [msg, setMsg] = useState('')
   const [justConnected, setJustConnected] = useState(false) // back from Google's grant: offer the way back to the emails
 
+  const requests = useRef({ latest: 0 })
   async function load() {
+    const request = ++requests.current.latest
     const r = await fetch('/api/outreach/settings')
     if (!r.ok) return
     const j: State = await r.json()
+    if (request !== requests.current.latest) return
     setS(j)
     setName(n => n || j.sender?.sender_name || '')
     setAddr(a => a || j.sender?.postal_address || '')
     setBooking(b => b || j.sender?.booking_url || '')
   }
   useEffect(() => {
+    const sequence = requests.current
     void Promise.resolve().then(load) // after the effect, as the other panels load (react-hooks/set-state-in-effect)
+    const refreshReplyReading = () => void load()
+    window.addEventListener('reply-reading-updated', refreshReplyReading)
     const q = new URLSearchParams(window.location.search).get('gmail')
     // Google's redirect lands at the top of Settings: bring this panel (and its next step) into view.
     // The sections above load on their own and can push it back down, so it keeps its place while they settle
@@ -43,24 +49,32 @@ export default function GmailPanel() {
       if (q === 'connected') { setMsg('Gmail connected.'); setJustConnected(true) }
       else if (q) setMsg('Gmail was not connected. Try again.')
     })
+    return () => {
+      sequence.latest++
+      window.removeEventListener('reply-reading-updated', refreshReplyReading)
+    }
   }, [])
 
   async function saveSender(e: React.FormEvent) {
     e.preventDefault()
     const r = await fetch('/api/outreach/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sender_name: name, postal_address: addr, booking_url: booking }) })
     setMsg(r.ok ? 'Saved.' : (await r.json()).error || 'Could not save')
+    if (r.ok) window.dispatchEvent(new Event('sender-updated'))
     void load()
   }
   async function disconnect() {
-    await fetch('/api/gmail/disconnect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
-    void load()
+    const response = await fetch('/api/gmail/disconnect', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    if (response.ok) window.dispatchEvent(new Event('reply-reading-updated'))
+    else void load()
   }
 
   const field = 'min-h-11 bg-white border border-black/20 rounded px-4 py-2.5 text-[#111] text-sm'
   return (
     <div className="card p-6 mb-4">
       <h2 className="font-semibold mb-1">Email sending (Gmail)</h2>
-      <Caveat className="text-[#555] text-sm mb-4" summary={`Emails go out from your own Gmail after you approve them${s?.autopilot_available ? ' (or on autopilot, if you turn it on)' : ''}. Connecting asks Google only for permission to send; dazl does not ask to read your mailbox.`}>Emails go out from your own Gmail. {s?.autopilot_available ? 'By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set.' : 'Each one is sent only after you approve it and click send.'} Connecting asks Google only for permission to send email as you. dazl does not ask to read your mailbox, so replies and delivery-failure notices arrive in your own Gmail inbox and are not shown in dazl. An account connected earlier with read access keeps it until it is disconnected or reconnected; reconnecting makes it send-only.</Caveat>
+      <Caveat className="text-[#555] text-sm mb-4" summary={`Emails go out from your own Gmail after you approve them${s?.autopilot_available ? ' (or on autopilot, if you turn it on)' : ''}. Connecting asks Google only for permission to send; dazl does not ask to read your mailbox.`}>Emails go out from your own Gmail. {s?.autopilot_available ? 'By default each one is sent after you approve it; if you turn on autopilot below, it can send first emails on its own within the limits you set.' : 'Each one is sent only after you approve it and click send.'} Connecting asks Google only for permission to send email as you. {s?.reply_reading_on
+          ? 'For new connections, dazl does not ask to read your mailbox. Your account previously granted read access and has accepted the current terms. Replies and delivery-failure notices for dazl outreach are checked. You can disconnect at any time, and reconnecting makes it send-only.'
+          : 'dazl does not ask to read your mailbox, so replies and delivery-failure notices arrive in your own Gmail inbox and are not shown in dazl. An account connected earlier with read access keeps it until it is disconnected or reconnected; reconnecting makes it send-only.'}</Caveat>
       {s?.gmail ? (
         <div className="text-sm mb-4">
           <div className="flex items-center justify-between">
@@ -71,7 +85,9 @@ export default function GmailPanel() {
             </span>
           </div>
           {s.gmail.status === 'active' && (
-            <p className="text-[#666] text-xs mt-1">{s.gmail.read_granted ? 'Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.' : 'Send only. dazl does not read this mailbox: replies and delivery-failure notices arrive in your Gmail inbox.'}</p>
+            <p className="text-[#666] text-xs mt-1">{s.reply_reading_on ? 'Reply reading: on. Replies in dazl outreach threads and delivery-failure notices for its sends are checked.'
+              : s.gmail.read_granted ? 'Reply reading: off. Accept the current terms under Replies and follow-ups to turn it on.'
+              : 'Send only. dazl does not read this mailbox: replies and delivery-failure notices arrive in your Gmail inbox.'}</p>
           )}
           {s.gmail.status !== 'active' && !s.google_app_verified && (
             <p className="text-[#666] text-xs mt-1" data-testid="gmail-panel-verification-note">{'Reconnecting goes through Google again: dazl is waiting on Google\'s review of its app, so Google first shows a warning that says "Google hasn\'t verified this app". That is expected. On the warning, click "Advanced", then "Go to dazl.ai (unsafe)".'}</p>

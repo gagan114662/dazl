@@ -50,7 +50,12 @@ export async function verifySyntheticReadyBuyer(): Promise<void> {
     const crawlReads = new Set<string>()
     assert.equal(await runJob(db, job, {
       master, discover: true, discoverImpl: async () => found, enrichImpl: null,
-      fetchImpl: async input => {
+      fetchImpl: async (input, init) => {
+        if (String(input) === 'https://api.anthropic.com/v1/messages' && init?.body &&
+            JSON.parse(String(init.body)).model === 'claude-haiku-5-5') {
+          return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+            usage: { input_tokens: 0, output_tokens: 0 } })
+        }
         verificationReads.add(String(input))
         const page = pages.get(String(input))
         return new Response(page ?? '', { status: page ? 200 : 404 })
