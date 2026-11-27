@@ -32,8 +32,10 @@ test('a verified date is acknowledged while the rest of the source proof awaits 
     reason: "dazl could not confirm this lead's proof page. Check the source under Needs your review first.",
   })
 
-  const unverified = { ...pageDateOnly, date_status: 'unverified' }
-  const refusal = discoverApprove(unverified)
-  assert.equal(refusal.ok, false)
-  if (!refusal.ok) assert.doesNotMatch(refusal.reason, /date is verified/)
+  const unverified = { ...lead, date_status: 'unverified' }
+  assert.equal(discoverState(unverified), 'review')
+  assert.deepEqual(discoverApprove(unverified), {
+    ok: false,
+    reason: 'The signal date is verified, but the rest of the proof still needs checking. Open the cited source under Needs your review.',
+  })
 })
