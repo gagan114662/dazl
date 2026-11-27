@@ -1,6 +1,7 @@
 import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
 import { isPersonName } from '../people/job-title-name.ts'
 import { deliverabilityBlocked } from '../outreach/contact-route.ts'
+import { CAUSE_TEXT, uncheckableCause } from '../lead-state.ts'
 import { eventDayVerified } from '../scan/scoreboard.ts'
 import { hasDiscoveryEventDate } from './timing.ts'
 // What a lead from the Claude discovery lane says about itself on its card: how sure dazl is, and plainly what is missing
@@ -130,11 +131,13 @@ export const signalStale = (eventDate: string | null | undefined, now: Date = ne
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, a signal more than
 // a year old, not graded a fit.
 // One list, read by Approve (email) and by the LinkedIn route below.
-type ProofLead = Parameters<typeof eventDayVerified>[0] & { timing_note?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
+type ProofLead = Parameters<typeof eventDayVerified>[0] & { timing_note?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; human_confirmed_from?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
 export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
-  if (l.review_reason === 'public_sector_non_buyer') return 'Not a fit for this offer. The organization is a public-sector body.'
+  if (l.review_reason === 'public_sector_non_buyer' || l.human_confirmed_from === 'public_sector_non_buyer') return 'Not a fit for this offer. The organization is a public-sector body.'
+  const confirmedHold = uncheckableCause(l.human_confirmed_from)
+  if (confirmedHold) return `Research only: ${CAUSE_TEXT[confirmedHold]}.`
   if (l.review_reason === 'source_review_required' && eventDayVerified(l, { now })) {
     return 'The signal date is verified, but the rest of the proof still needs checking. Open the cited source under Needs your review.'
   }

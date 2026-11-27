@@ -5,9 +5,11 @@ import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { sqliteDb } from '../lib/db/client.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { discoverJobCounts } from '../lib/discover/state-db.ts'
-import { heldState } from '../lib/lead-state.ts'
+import { previewSplit } from '../lib/journey.ts'
+import { heldState, researchTip } from '../lib/lead-state.ts'
 import { historyCampaigns } from '../lib/outreach/campaigns.ts'
 import { approveBlockReason, createDraft, OutreachError } from '../lib/outreach/service.ts'
+import { confirmLeadReview } from '../lib/scan/review-confirm.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
 import { listLeads } from '../lib/scan/store.ts'
 
@@ -99,4 +101,41 @@ test('a dated lead that becomes research only cannot approve its existing draft'
   assert.equal(counts?.ready, cards.filter(card => !heldState(card)).length)
   assert.equal(counts?.research, 2)
   assert.equal(approveBlockReason(db, tenant, id, { skipAccount: true }), 'lead_currentness_unconfirmed')
+})
+
+
+test('a historical confirmation cannot make a research-only draft look Ready', async t => {
+  const db = fixture(t)
+  const id = createDraft(db, tenant, 'page-dated', 'Workspace', { manual: true })
+  assert.equal(approveBlockReason(db, tenant, id, { skipAccount: true }), null)
+
+  db.prepare("UPDATE leads SET review_reason = 'public_sector_non_buyer' WHERE id = ?").run('page-dated')
+  const store = sqliteDb(db)
+  assert.equal(await confirmLeadReview(store, tenant, 'page-dated'), true)
+  assert.equal(approveBlockReason(db, tenant, id, { skipAccount: true }), 'lead_currentness_unconfirmed')
+
+  const rows = listLeads(db, tenant, scan, 20, true) as (Parameters<typeof leadCardSummary>[0] & { id: string })[]
+  const enrichments = enrichmentsForLeads(db, tenant, rows.map(row => row.id))
+  const cards = rows.map(row => ({ ...row, enrichments: enrichments[row.id] ?? [] }))
+  const lead = cards.find(card => card.id === 'page-dated')
+  assert.ok(lead)
+  const counts = await discoverJobCounts(store, tenant, scan)
+  assert.deepEqual({
+    state: heldState(lead)?.state,
+    approvable: leadCardSummary(lead).approve.ok,
+    ready: counts?.ready,
+    research: counts?.research,
+  }, { state: 'research', approvable: false, ready: 0, research: 2 })
+})
+
+test('Home explains the original hold after a Research-only lead is confirmed', async t => {
+  const db = fixture(t)
+  db.prepare("UPDATE leads SET review_reason = 'job_closed' WHERE id = ?").run('page-dated')
+  assert.equal(await confirmLeadReview(sqliteDb(db), tenant, 'page-dated'), true)
+
+  const rows = listLeads(db, tenant, scan, 20, true) as Parameters<typeof previewSplit>[0]
+  const lead = rows.find(row => row.id === 'page-dated')
+  assert.ok(lead)
+  const { research } = previewSplit([lead])
+  assert.match(researchTip(research.map(item => item.cause)), /The opening is closed[.]/)
 })
