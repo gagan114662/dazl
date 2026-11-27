@@ -5,7 +5,7 @@
 import { discoverNotReady, isDiscoverLead } from './discover/card.ts'
 import { evidenceStateOf } from './outreach/evidence-state.ts'
 import { domainReviewFor } from './outreach/domain-review-view.ts'
-import { contactRoute } from './outreach/contact-route.ts'
+import { recordedDeliverability } from './outreach/contact-route.ts'
 import { displayedEmailSource, PUBLISHED_EMAIL_RE, publishedEmail } from './outreach/published-email.ts'
 import { scanOutcome, type ScanOutcomeKind } from './scan/scan-outcome.ts'
 import type { CardLead } from './scan/opportunity.ts'
@@ -26,15 +26,15 @@ export const EMAIL_CANNOT_RECEIVE_MAIL = "email can't receive mail"
 export function publishedAddressRefused(lead: Pick<CardLead, 'contact' | 'source_url' | 'evidence_excerpt' | 'enrichments'>): boolean {
   const email = publishedEmail(lead)
   if (!email) return false
-  const verdict = (address: string) => contactRoute({ ...lead, contact: address }, null).deliverability
+  const verdict = (address: string) => recordedDeliverability(address, lead.enrichments ?? [])?.verdict
   const primary = verdict(email)
-  if (primary.state !== 'mailbox_rejected' && !(primary.state === 'domain_invalid' && primary.checkedAt !== null)) return false
+  if (primary !== 'rejected' && primary !== 'no_mx') return false
   return !(lead.enrichments ?? []).some(row => {
     if (row.connector !== 'sitecrawl' || row.kind !== 'email') return false
     const alternate = row.value.trim().toLowerCase()
     if (alternate === email || !PUBLISHED_EMAIL_RE.test(alternate) || !displayedEmailSource(lead, alternate)) return false
     return publishedEmail({ ...lead, contact: alternate, evidence_excerpt: null }) !== null &&
-      verdict(alternate).state === 'mailbox_accepted'
+      verdict(alternate) === 'accepted'
   })
 }
 

@@ -23,6 +23,15 @@ if (process.env.DAZL_READY_1980_CHILD) {
     }
   })
 } else {
+  test('#1980 a domain-only MX result cannot clear a mailbox rejection', async () => {
+    const { deliverabilityBlocked } = await import('../lib/outreach/contact-route.ts')
+    const email = 'rowan@workshop.example'
+    const check = (value: string, retrieved_at: number) => ({ connector: 'scan:deliverability', kind: 'deliverability', value, retrieved_at })
+    const rejected = check(`${email}|rejected`, 100)
+    const domain = check('@workshop.example|mx_found', 101)
+    assert.equal(deliverabilityBlocked(email, [rejected, domain]), true)
+    assert.equal(deliverabilityBlocked(email, [rejected, domain, check(`${email}|accepted`, 102)]), false)
+  })
   test('#1980 Ready holds and controls through the real Home store', () => {
     const env: NodeJS.ProcessEnv = { ...process.env, DAZL_READY_1980_CHILD: '1' }
     delete env.NODE_TEST_CONTEXT
