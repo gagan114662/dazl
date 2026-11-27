@@ -22,8 +22,13 @@ const MSG: Record<string, [Stage, string]> = {
 // A lead's latest email decides once one exists; before that, its rejection, review or evidence state does.
 export function leadStatus(l: ViewLead, msgs: ViewMsg[]): LeadStatus {
   if (l.quarantined_at) { const why = (l.quarantine_reason ?? '').replace(/^Rejected(: )?/, '').trim(); return { stage: 'rejected', text: why ? `Rejected: ${why}` : 'Rejected' } }
-  const m = msgs.find(x => x.lead_id === l.id)
+  // A skipped email is finished history, not the lead's state (#2129): it never outranks the lead's own state, which is what Home and Leads count.
+  const m = msgs.find(x => x.lead_id === l.id && x.status !== 'skipped')
   if (m) { const [stage, text] = MSG[m.status] ?? ['other', `Email ${m.status}`]; return { stage, text } }
+  if (msgs.some(x => x.lead_id === l.id && x.status === 'skipped')) {
+    const own = leadStatus(l, [])
+    return own.stage === 'qualified' ? { stage: own.stage, text: `${own.text} (an earlier email was skipped)` } : own
+  }
   // A lead from the new engine: its ONE state and that state's words (lib/discover/card.ts), the same as on Home, Leads and Campaigns (#1238).
   if (l.discover_state) { const s = l.discover_state; return { stage: s === 'ready_email' || s === 'ready_linkedin' ? 'qualified' : s, text: DISCOVER_STATE_LABEL[s] } }
   // A review-list lead no check can make usable is research, never a review item (#683; the same verdict as Home, lib/lead-state.ts).
