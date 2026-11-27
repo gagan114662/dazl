@@ -183,8 +183,11 @@ export function discoverApprove(l: ProofLead & { company_domain?: string | null;
 //   review          its proof page is not confirmed: the user can check it under Needs your review
 //   research        something no check by the user can lift holds it (no date, not graded a fit, a required check)
 //   ready_email     Approve is on: a draft email to the named person's own published address
+//   ready_linkedin  the person's own address is published but cannot be used (refused, undeliverable, or not the
+//                   company's own site/domain), and their own LinkedIn profile is known: the card's manual action
 //   no_contact      the proof is fine, but nobody can be reached yet
-// Ready requires a usable work email. A LinkedIn profile can still be shown as a manual contact option.
+// Ready by email requires a usable work email (#2007): a lead with no address of the person's own is no_contact,
+// never ready_linkedin — the profile alone stays a manual option the card shows, not a count.
 // stored_intent: the grade as saved. GET /api/leads replaces `intent` with a display value and keeps the saved one here; the saved one
 // is what the draft check reads (lib/outreach/service.ts), so it is the one used when both are present.
 export type DiscoverState = 'rejected' | 'review' | 'research' | 'ready_email' | 'ready_linkedin' | 'no_contact'
@@ -199,11 +202,17 @@ export function discoverState(lead: DiscoverStateLead): DiscoverState {
   const held = discoverProofHold(l)
   // Would the hold go away, or change, if the user confirmed the proof page? Then it is theirs to check. Otherwise no check lifts it.
   if (held) return discoverProofHold({ ...l, review_reason: null }) !== held ? 'review' : 'research'
-  if (!discoverApprove(l).ok) return 'no_contact'
   const address = discoverContact(l)?.email?.address
-  if (!address || !emailOnCompanySite(address, null, l.company_domain)) return 'no_contact'
+  if (!address) return 'no_contact'
   const storedEmailRefused = (l.enrichments ?? []).some(row => row.kind === 'email' && row.value?.trim().toLowerCase() === address && row.suppressed === 1)
-  return storedEmailRefused || discoveryMailboxRefused(l, address) ? 'no_contact' : 'ready_email'
+  const mailboxRefused = discoveryMailboxRefused(l, address)
+  if (discoverApprove(l).ok && !storedEmailRefused && !mailboxRefused && emailOnCompanySite(address, null, l.company_domain)) return 'ready_email'
+  // #1926: the person's own address is published but cannot be used — on the do-not-contact list, undeliverable,
+  // or not the company's own site/domain — and their own LinkedIn profile is known. The card offers "Ready to
+  // reach on LinkedIn" for exactly this lead, so the count says ready_linkedin, not "no contact yet". Every fact
+  // read here is one both readers of the state (the stored-row counters and the page) can see, so they agree.
+  if ((storedEmailRefused || mailboxRefused || !emailOnCompanySite(address, null, l.company_domain)) && discoverLinkedIn(l)) return 'ready_linkedin'
+  return 'no_contact'
 }
 
 function discoveryMailboxRefused(l: DiscoverStateLead, address: string): boolean {
@@ -213,6 +222,10 @@ function discoveryMailboxRefused(l: DiscoverStateLead, address: string): boolean
 // The words for one lead's state, the same on every page that labels a lead.
 export const DISCOVER_STATE_LABEL: Record<DiscoverState, string> = { rejected: 'Rejected', review: 'Needs your review', research: 'Research only - checking the source cannot make it ready',
   ready_email: 'Ready - approve it to draft an email', ready_linkedin: 'Ready - message them on LinkedIn', no_contact: 'No contact found yet' }
+// Ready, for the surfaces that act on a lead (Home's tile, the checked list, the campaign split): a usable work
+// email only (#2007). A ready_linkedin lead is counted ready in a search's own counts (discoverCounts below,
+// whose line names both channels) but is NOT ready here: nobody can be emailed, and the manual LinkedIn
+// message is the person's own step, offered on the card.
 export const discoverReady = (s: DiscoverState): boolean => s === 'ready_email'
 // Why a lead that is not ready is not, in the short words the Home tile and the checked list group by; null when it is ready.
 export function discoverNotReady(lead: DiscoverStateLead): string | null {
@@ -220,7 +233,10 @@ export function discoverNotReady(lead: DiscoverStateLead): string | null {
   if (discoverReady(s)) return null
   if (s === 'rejected') return 'rejected'
   if (s === 'review') return 'needs your review'
-  if (s === 'no_contact') {
+  // ready_linkedin takes the no-contact words here: on the surfaces this reason feeds (Home, the checked list)
+  // the lead is held, and what holds it is that no usable email contact exists — the same words it had before
+  // the state learned to name its LinkedIn channel for the counts.
+  if (s === 'no_contact' || s === 'ready_linkedin') {
     const address = discoverContact(lead)?.email?.address
     return address && discoveryMailboxRefused(lead, address) ? "email can't receive mail" : 'no contact found yet'
   }
@@ -231,7 +247,9 @@ export function discoverNotReady(lead: DiscoverStateLead): string | null {
 export interface DiscoverCounts { found: number; ready: number; ready_email: number; ready_linkedin: number; no_contact: number; review: number; research: number; rejected: number }
 export function discoverCounts(states: Iterable<DiscoverState>): DiscoverCounts {
   const c: DiscoverCounts = { found: 0, ready: 0, ready_email: 0, ready_linkedin: 0, no_contact: 0, review: 0, research: 0, rejected: 0 }
-  for (const s of states) { c.found++; c[s]++; if (discoverReady(s)) c.ready++ }
+  // The line's own total is the sum of its parts ("N ready (a by email, b on LinkedIn)"), so both ready
+  // channels count here even though discoverReady (the acting surfaces' rule) is email only.
+  for (const s of states) { c.found++; c[s]++; if (s === 'ready_email' || s === 'ready_linkedin') c.ready++ }
   return c
 }
 export function discoverCountParts(c: DiscoverCounts): string[] {
