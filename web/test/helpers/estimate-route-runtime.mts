@@ -23,7 +23,7 @@ process.env.DAZL_MASTER_KEY = randomBytes(32).toString('base64')
 globalThis.fetch = (async (u: unknown) => { throw new Error(`network fenced: ${String(u)}`) }) as typeof fetch
 let n = 0
 function setup() { const db = new Database(':memory:'); migrateScan(db); migrateKeys(db); migratePlans(db); migratePlatform(db); migrateTrial(db); migrateModelUsage(db); setScanDb(db); return db }
-function as(db: Database.Database) { const id = `E${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' }) }
+function as(db: Database.Database) { const id = `E${++n}`; saveKey(db, id, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' }) }
 const req = (path: string, body: unknown) => new NextRequest(`http://localhost${path}`, { method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost', 'x-forwarded-for': `10.1.0.${++n}` }, body: JSON.stringify(body) })
 const est = (body: unknown) => ESTIMATE(req('/api/scan/estimate', body))
 const scan = (body: unknown) => SCAN(req('/api/scan', body))
@@ -54,33 +54,27 @@ test('new stated offer and saved dental buyer: confirm the offer before showing 
   assert.deepEqual(db.prepare('SELECT sells, buyer_profile FROM users WHERE id=?').get(tenant), { sells: saved, buyer_profile: JSON.stringify(buyer) })
 })
 
-test('a plain request to find customers for the signed workspace offers that choice before pricing a carried buyer', async () => {
-  const db = setup(); as(db)
-  const tenant = `E${n}`
-  setUser({ id: tenant, business_name: 'dazl' })
-  const saved = 'appointment booking and reminder software'
-  setSellerLine(tenant, `${saved} - https://dazl.ai`)
+// Quest design 7146891498 supersedes the old repeated workspace-name chooser.
+test('naming the signed workspace preserves its offer without re-approval of the carried buyer', async () => {
   const icp = { summary: 'Independent dental practices in New York City', who: [], industries: [], sizes: [], where: [], signals: [], exclude: [] }
-  const query = 'Find leads for dazl (dazl.ai), focusing on owners looking for outbound help.'
-  const body = { query, icp, reviewed: false }
-  for (const request of [est, scan]) {
-    const r = await request(body)
-    assert.equal(r.status, 409)
-    assert.deepEqual(await r.json(), { error: 'offer_conflict', stated: 'dazl', saved, fresh_target: true })
-    assert.equal(jobs(db).length, 0)
+  for (const query of ['Find leads for dazl (dazl.ai), focusing on owners looking for outbound help.', 'Find 5 high-intent leads for dazl (dazl.ai).']) {
+    for (const request of [est, scan]) {
+      const db = setup(); as(db)
+      const tenant = `E${n}`
+      setUser({ id: tenant, business_name: 'dazl' })
+      const seller = 'appointment booking and reminder software - https://dazl.ai'
+      setSellerLine(tenant, seller)
+      const r = await request({ query, icp, reviewed: false })
+      assert.equal(r.status, request === est ? 200 : 202, JSON.stringify(await r.clone().json()))
+      assert.equal(jobs(db).length, request === est ? 0 : 1)
+      if (request === scan) {
+        const row = db.prepare('SELECT seller, offer, icp FROM scan_jobs').get() as { seller: string; offer: string | null; icp: string }
+        assert.equal(row.seller, seller)
+        assert.equal(row.offer, null)
+        assert.equal(JSON.parse(row.icp).summary, query)
+      }
+    }
   }
-  // A similar company name or ordinary buyers described as partners are not this workspace's offer.
-  assert.equal((await est({ ...body, query: 'Find leads for dazl partners in New York.' })).status, 200)
-  assert.equal((await est({ ...body, query: 'Find leads for another company (dazl.ai).' })).status, 200)
-  assert.equal((await est({ ...body, query: 'Find leads for dazl (another.example).' })).status, 200)
-  setSellerLine(tenant, 'dazl - https://dazl.ai')
-  const sameOfferBody = { ...body, query: 'Find 5 high-intent leads for dazl (dazl.ai), focusing on owners looking for outbound help.' }
-  for (const request of [est, scan]) {
-    const r = await request(sameOfferBody)
-    assert.equal(r.status, 409)
-    assert.deepEqual(await r.json(), { error: 'offer_conflict', stated: 'dazl', saved: 'dazl', fresh_target: true })
-  }
-  assert.equal(jobs(db).length, 0)
 })
 
 test('carried exclusions: same oversize refusal before quoting and admission; valid list queues unchanged', async () => {
@@ -217,6 +211,7 @@ async function keyless(fn: (db: Database.Database, id: string) => Promise<void>)
     const id = `K${++n}`
     db.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')").run(id, `${id}@gmail.com`)
     db.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
+    setSellerLine(id, 'Independent compliance consulting')
     db.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'Acme', 'personal', ?, 1)").run(id, id) // as sign-in creates it
     setUser({ id, business_name: 'Acme', email: `${id}@gmail.com` })     // no API key: the shared trial funds this account
     await fn(db, id)
@@ -372,7 +367,7 @@ test('own-key account: a failure while writing the estimate leaves no job either
 
 test('OpenAI key under a spending limit: the estimate and POST /api/scan refuse BEFORE launch (422 model_unpriced, no job); no limit, or an Anthropic key, is unaffected', async () => {
   const db = setup(); const id = `E${++n}`
-  saveKey(db, id, 'openai', 'sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id, business_name: 'Acme' })
+  saveKey(db, id, 'openai', 'sk-proj-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' })
   const saved = process.env.DAZL_OPENAI_MODEL; delete process.env.DAZL_OPENAI_MODEL
   assert.equal(defaultVendor(db, id, {}), null, 'OpenAI stays unusable without explicit operator opt-in')
   assert.equal(defaultVendor(db, id, { DAZL_PAID_VENDORS: 'openai' }), 'openai', 'these synthetic positive cases explicitly opt in')
@@ -389,7 +384,7 @@ test('OpenAI key under a spending limit: the estimate and POST /api/scan refuse 
     const free = await (await est({ query: Q })).json() as { estimate: { verdict: { ok: boolean; reason: string | null } } }
     assert.notEqual(free.estimate.verdict.reason, 'model_unpriced')
     // An Anthropic key under the same limit is not blocked by this check.
-    const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setUser({ id: a, business_name: 'Acme' })
+    const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'); setSellerLine(a, 'Independent compliance consulting'); setUser({ id: a, business_name: 'Acme' })
     const ok = await (await est(limited)).json() as { estimate: { verdict: { reason: string | null } } }
     assert.notEqual(ok.estimate.verdict.reason, 'model_unpriced')
   } finally {
@@ -411,16 +406,16 @@ const modelRowsOf = (e: Est) => e.estimate.rows.filter(r => r.kind === 'model')
 
 test('#851 OpenAI key, no limit: the route shows gpt-4.1 at its own listed price (not claude-sonnet-4-5), and the started job keeps that estimate', async () => {
   await withEnv({ DAZL_OPENAI_MODEL: undefined, DAZL_PAID_VENDORS: 'openai' }, async () => {
-    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' })
     const r = await est({ query: Q }); const e = await r.json() as Est
     assert.equal(r.status, 200)
     assert.ok(modelRowsOf(e).every(x => x.unit_usd === '$3.50 in / $14.00 out per 1M tokens (gpt-4.1)'), JSON.stringify(modelRowsOf(e).map(x => x.unit_usd)))
     assert.match(e.estimate.assumptions[0], /^Model: gpt-4\.1\./); assert.equal(e.estimate.verdict.ok, true)
-    const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant...AAAA'); setUser({ id: a, business_name: 'Acme' })
+    const a = `E${++n}`; saveKey(db, a, 'anthropic', 'sk-ant...AAAA'); setSellerLine(a, 'Independent compliance consulting'); setUser({ id: a, business_name: 'Acme' })
     const sonnet = await (await est({ query: Q })).json() as Est
     assert.ok(modelRowsOf(sonnet).every(x => /\(claude-sonnet-4-5\)$/.test(x.unit_usd)))
     assert.notDeepEqual(e.estimate.total, sonnet.estimate.total); assert.notEqual(e.estimate.ack, sonnet.estimate.ack)
-    setUser({ id, business_name: 'Acme' })
+    setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' })
     const ok = await scan({ query: Q, estimate_ack: e.estimate.ack }); assert.equal(ok.status, 202)
     const saved = JSON.parse(jobs(db)[0].estimate!) as { rows: { kind: string; unit_usd: string }[]; ack: string }
     assert.equal(saved.ack, e.estimate.ack); assert.ok(saved.rows.filter(x => x.kind === 'model').every(x => /\(gpt-4\.1\)$/.test(x.unit_usd)))
@@ -429,7 +424,7 @@ test('#851 OpenAI key, no limit: the route shows gpt-4.1 at its own listed price
 
 test('#851 a changed key model after confirmation is a changed estimate: 409 estimate_changed naming the new model, no job; the fresh confirmation runs', async () => {
   await withEnv({ DAZL_OPENAI_MODEL: undefined, DAZL_PAID_VENDORS: 'openai' }, async () => {
-    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' })
     const e = await (await est({ query: Q })).json() as Est
     process.env.DAZL_OPENAI_MODEL = 'gpt-4.1-2025-04-14'
     const r = await scan({ query: Q, estimate_ack: e.estimate.ack }); const j = await r.json() as { error: string } & Est
@@ -442,11 +437,11 @@ test('#851 a changed key model after confirmation is a changed estimate: 409 est
 
 test('#851 an own OpenAI key on a model the per-scan cap cannot price (DAZL_OPENAI_MODEL=gpt-4o), NO limit: the estimate refuses (no "remove the limit" advice) and POST /api/scan gives 422 model_unpriced with no job', async () => {
   await withEnv({ DAZL_OPENAI_MODEL: 'gpt-4o', DAZL_PAID_VENDORS: 'openai' }, async () => {
-    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setUser({ id, business_name: 'Acme' })
+    const db = setup(); const id = `E${++n}`; saveKey(db, id, 'openai', 'sk-pro...AAAA'); setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'Acme' })
     const r0 = await est({ query: Q }); const e = await r0.json() as Est
     assert.equal(r0.status, 200)
     assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
-    assert.match(e.estimate.verdict.message, /^Your key's model \(gpt-4o\) has no listed price, so the per-scan spend cap/)
+    assert.match(e.estimate.verdict.message, /^The workspace model \(gpt-4o\) has no listed price, so the per-scan spend cap/)
     assert.ok(!e.estimate.verdict.change.some(c => /without a spending limit/i.test(c)), JSON.stringify(e.estimate.verdict.change))
     assert.ok(modelRowsOf(e).every(x => x.usd === null))
     const r = await scan({ query: Q }); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced'])
@@ -461,8 +456,8 @@ test('#851 an Anthropic key on a model the limit guard cannot price (dated id): 
     const limited = { query: Q, budget: { max_usd: 2, judge: false } }
     const e = await (await est(limited)).json() as Est
     assert.deepEqual([e.estimate.verdict.ok, e.estimate.verdict.reason], [false, 'model_unpriced'])
-    assert.match(e.estimate.verdict.message, /Your key's model \(claude-sonnet-4-5-20250929\) has no listed price/)
-    assert.ok(!e.estimate.verdict.change.some(c => /Anthropic key/.test(c)), 'the Anthropic key is this model: not offered as the fix')
+    assert.match(e.estimate.verdict.message, /The workspace model \(claude-sonnet-4-5-20250929\) has no listed price/)
+    assert.ok(!e.estimate.verdict.change.some(c => /Anthropic key|priced Claude model/.test(c)), 'the unpriceable model is not offered as the fix')
     assert.ok(modelRowsOf(e).every(x => x.usd !== null), 'the rows are still priced as the scan cap prices the alias')
     const r = await scan(limited); assert.deepEqual([r.status, (await r.json() as { error: string }).error], [422, 'model_unpriced']); assert.equal(jobs(db).length, 0)
     assert.equal((await scan({ query: Q })).status, 202, 'without a limit nothing is reserved against the limit guard')

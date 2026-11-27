@@ -8,11 +8,12 @@ import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstResults } from '../scan/company-first-results.ts'
 import { enrichState } from '../scan/enrichment.ts'
 import { reviewIsActionable, uncheckableCause } from '../lead-state.ts'
-import { discoverCounts, type DiscoverCounts } from '../discover/card.ts'
+import { discoverCounts, discoverLinkedIn, type DiscoverCounts } from '../discover/card.ts'
 import { DISCOVER_LEAD_COLUMNS, discoverNoTable, discoverStatesFromRows, discoverStatesOfDb, discoverStoredSql, type DiscoverStoredRow } from '../discover/state-db.ts'
 import { buyerUnreachable, buyerUnreachableFrom, buyerReachSql, noTable, type ReachRow } from '../people/buyer-reach.ts'
 import { listQual } from '../run-status.ts'
 import { approveBlockReason, manualDraftBlockReason, sendBlockReason } from './service.ts'
+import { readAccountZone } from '../account-zone.ts'
 
 // One row per search (a scan job is a campaign, as in the Outreach analytics): discovery -> qualification -> contact ->
 // outreach -> sequence -> reply, and the single next action. Read-only and tenant-scoped: every count is limited to the
@@ -111,11 +112,16 @@ export const gateHoldReason = (j: { id: string }, shown: CompanyFirstShown): str
 // The Campaigns list with the company-first gate read (GET /api/campaigns).
 export async function listCampaignsNow(db: Database.Database, tenantId: string, limit = 10, now: Date = new Date()): Promise<Campaign[]> {
   const jobs = campaignJobs(db, tenantId, limit)
-  return listCampaigns(db, tenantId, limit, await companyFirstShown(db, tenantId, jobs, now), jobs)
+  // #2054: the send-cap verdicts inside run on the account's own day; its zone is resolved here, at the async
+  // boundary, on the Db layer - listCampaigns itself stays synchronous on the raw store.
+  const zone = await readAccountZone(sqliteDb(db), tenantId)
+  return listCampaigns(db, tenantId, limit, await companyFirstShown(db, tenantId, jobs, now), jobs, zone)
 }
 // `shown`: companyFirstShown for these scans. Without it, every lead of a company-first scan counts as held by checks (fail closed).
 // `jobs`: the read `shown` was made from (listCampaignsNow passes it); read here only when called on its own.
-export function listCampaigns(db: Database.Database, tenantId: string, limit = 10, shown: CompanyFirstShown = new Map(), jobs: readonly CampaignJob[] = campaignJobs(db, tenantId, limit)): Campaign[] {
+// `zone`: the account's saved zone for the send-cap day (listCampaignsNow resolves it); without one the cap
+// count runs on the UTC day, which is also what an account with no saved zone gets.
+export function listCampaigns(db: Database.Database, tenantId: string, limit = 10, shown: CompanyFirstShown = new Map(), jobs: readonly CampaignJob[] = campaignJobs(db, tenantId, limit), zone?: string | null): Campaign[] {
   return jobs.map(j => {
     const n = (sql: string, ...a: unknown[]) => (db.prepare(sql).get(...a) as { n: number }).n
     // Leads of THIS job of THIS tenant only (scan_jobs.user_id is the tenant).
@@ -191,7 +197,7 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
       return out
     }
     const d = sort(ids('draft'), (id, skipAccount) => approveBlockReason(db, tenantId, id, { skipAccount }))
-    const a = sort(ids('approved'), (id, skipAccount) => sendBlockReason(db, tenantId, id, { skipAccount }))
+    const a = sort(ids('approved'), (id, skipAccount) => sendBlockReason(db, tenantId, id, { skipAccount, zone }))
     const seq = (list: string) => n(`SELECT count(*) AS n FROM sequences s JOIN leads l ON l.id = s.lead_id JOIN scan_jobs j ON j.id = l.scan_job_id AND j.user_id = ? WHERE s.tenant_id = ? AND l.scan_job_id = ? AND s.status IN (${list})`, tenantId, tenantId, j.id)
     const leadIds = (db.prepare(`SELECT l.id ${L}`).all(tenantId, j.id) as { id: string }[]).map(r => r.id)
     const an = sequenceAnalytics(db, tenantId, leadIds)
@@ -201,8 +207,15 @@ export function listCampaigns(db: Database.Database, tenantId: string, limit = 1
     // the draft). Every draft is made by hand during the beta.
     const emailReady = dStates ? every.filter(r => dStates.get(r.id) === 'ready_email') : []
     const undrafted = [...liveRows, ...emailReady].filter(r => !byChecks(r.id) && !drafted.has(r.id) && manualDraftBlockReason(db, tenantId, r.id) === null).length
-    // ready on LinkedIn (the one state rule, lib/discover/card.ts discoverState): the card's "Message on LinkedIn"
-    const linkedinOnly = dc?.ready_linkedin ?? 0
+    // The card can offer manual LinkedIn outreach even when no email makes a lead Ready.
+    const storedByLead = new Map<string, DiscoverStoredRow[]>()
+    for (const row of dStored) {
+      const stored = storedByLead.get(row.lead_id) ?? []
+      stored.push(row)
+      storedByLead.set(row.lead_id, stored)
+    }
+    const linkedinOnly = every.filter(row => dStates?.get(row.id) === 'no_contact' && !byChecks(row.id) &&
+      discoverLinkedIn({ ...row, enrichments: storedByLead.get(row.id) })).length
     const c: Omit<Campaign, 'next'> = {
       id: j.id, query: j.query, status: j.status, error: j.error, created_at: j.created_at,
       discovery: { candidates: j.candidates, leads },
@@ -237,7 +250,7 @@ export function nextAction(c: Omit<Campaign, 'next'>, undrafted: number): Campai
   // Every lead this search found has been rejected: none passed, whatever the scan recorded when it finished.
   if (c.discovery.leads > 0 && c.qualification.rejected >= c.discovery.leads) return { label: 'None passed: every lead was rejected. Try a broader search', href: '/app/leads' }
   if (undrafted > 0) return { label: `Approve ${plural(undrafted, 'lead', 'leads')} to draft emails`, href: leadsHref }
-  // No email draft is possible for these, but the person's LinkedIn profile is known (#1583; lib/discover/card.ts discoverState).
+  // The person can still be reached manually on LinkedIn (#1583).
   // dazl opens the profile; the user sends the message.
   const linkedin = c.contact.linkedinOnly ?? c.qualification.discover?.ready_linkedin ?? 0
   if (linkedin > 0) return { label: `Message ${plural(linkedin, 'lead', 'leads')} on LinkedIn: open ${linkedin === 1 ? 'the lead' : 'each lead'} and use "Message on LinkedIn"`, href: leadsHref }

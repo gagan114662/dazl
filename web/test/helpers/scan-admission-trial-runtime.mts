@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { NextRequest } from 'next/server'
 import { setScanDb, setUser } from './tenant-route-db.ts'
+import { setSellerLine } from './scan-route-auth-stub.ts'
 import { migrateAllSqlite } from '../../lib/db/sqlite-migrations.ts'
 import { createQueryJob } from '../../lib/scan/store.ts'
 import { POST } from '../../app/api/scan/route.ts'
@@ -24,7 +25,7 @@ function trialTenant() {
   raw.prepare("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')").run(id, email)
   raw.prepare("INSERT INTO oauth_identities (provider, subject, user_id) VALUES ('google', ?, ?)").run(`sub-${id}`, id)
   raw.prepare("INSERT INTO organizations (id, name, kind, created_by, created_at) VALUES (?, 'b', 'personal', ?, 1700000000)").run(id, id)
-  setUser({ id, business_name: 'b', email })
+  setSellerLine(id, 'Independent compliance consulting'); setUser({ id, business_name: 'b', email })
   return { raw, id }
 }
 const state = (raw: Database.Database, id: string) => ({

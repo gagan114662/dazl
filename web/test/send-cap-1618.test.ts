@@ -1,5 +1,6 @@
 // #1618: the cap on emails a person sends by hand protects their Gmail. 20 a day for an account's first 14 days, then 10 more a
-// day for each further week up to 50; the count starts again at midnight in Toronto; the page says so in plain words.
+// day for each further week up to 50; the count starts again at midnight in the account's own zone (#2054; the fixture
+// account below saves none, so its sending day is the UTC day); the page says so in plain words.
 // Synthetic rows only, no network, nothing sent.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,9 +12,9 @@ import { approve, saveSettings, sendBlockReason, sendCapToday, sentToday } from 
 
 const DAY = 86400
 const src = (p: string) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
-// 2026-12-02 15:00 UTC = 10:00 in Toronto (winter, UTC-5); that Toronto day began at 05:00 UTC.
+// 2026-12-02 15:00 UTC. The fixture account saves no zone, so its sending day is the UTC day, begun at 00:00 UTC.
 const NOW = Date.UTC(2026, 11, 2, 15, 0, 0) / 1000
-const MIDNIGHT = Date.UTC(2026, 11, 2, 5, 0, 0) / 1000
+const MIDNIGHT = Date.UTC(2026, 11, 2, 0, 0, 0) / 1000
 
 function account(createdAt: number | null) {
   const db = new Database(':memory:'); migrateAllSqlite(db)
@@ -38,14 +39,15 @@ test('#1618 the cap by account age: 20 for 14 days, then +10 a week, never above
 })
 
 test('#1618 the sending day starts at midnight in Toronto, winter and summer', () => {
-  assert.equal(sendDayStart(NOW), MIDNIGHT)
-  assert.equal(sendDayStart(MIDNIGHT), MIDNIGHT)
-  assert.equal(sendDayStart(MIDNIGHT - 1), MIDNIGHT - DAY)
+  const TO_MIDNIGHT = Date.UTC(2026, 11, 2, 5, 0, 0) / 1000 // that Toronto day began at 05:00 UTC
+  assert.equal(sendDayStart(NOW, 'America/Toronto'), TO_MIDNIGHT)
+  assert.equal(sendDayStart(TO_MIDNIGHT, 'America/Toronto'), TO_MIDNIGHT)
+  assert.equal(sendDayStart(TO_MIDNIGHT - 1, 'America/Toronto'), TO_MIDNIGHT - DAY)
   // 2026-07-10 02:30 UTC is still 9 July, 22:30, in Toronto (UTC-4): that day began at 04:00 UTC on the 9th
-  assert.equal(sendDayStart(Date.UTC(2026, 6, 10, 2, 30, 0) / 1000), Date.UTC(2026, 6, 9, 4, 0, 0) / 1000)
+  assert.equal(sendDayStart(Date.UTC(2026, 6, 10, 2, 30, 0) / 1000, 'America/Toronto'), Date.UTC(2026, 6, 9, 4, 0, 0) / 1000)
 })
 
-test('#1618 a new account is refused its 21st send of the Toronto day and may send again after midnight', () => {
+test('#1618 a new account is refused its 21st send of the day and may send again after midnight', () => {
   const db = account(NOW - 3 * DAY)
   assert.equal(accountCreatedAt(db, 'A'), NOW - 3 * DAY)
   assert.equal(manualSendCap(db, 'A', NOW, {}), 20)
@@ -54,7 +56,7 @@ test('#1618 a new account is refused its 21st send of the Toronto day and may se
   sent(db, 1, NOW - 60, 'last')
   assert.deepEqual(sendCapToday(db, 'A', NOW), { cap: 20, sent_today: 20 })
   assert.equal(sendBlockReason(db, 'A', 'm', { now: NOW }), 'daily_cap')
-  // late the same evening in Toronto: still refused
+  // late the same evening: still refused
   assert.equal(sendBlockReason(db, 'A', 'm', { now: MIDNIGHT + DAY - 1 }), 'daily_cap')
   // one second later it is the next day there: the count starts again, though the same 20 are inside the last 24 hours
   assert.equal(sentToday(db, 'A', MIDNIGHT + DAY), 0)
@@ -62,7 +64,7 @@ test('#1618 a new account is refused its 21st send of the Toronto day and may se
   assert.equal(sendBlockReason(db, 'A', 'm', { now: MIDNIGHT + DAY }), null)
 })
 
-test('#1618 yesterday evening in Toronto does not count against today', () => {
+test('#1618 yesterday evening does not count against today', () => {
   const db = account(NOW - 3 * DAY)
   sent(db, 20, MIDNIGHT - 3600)
   assert.equal(sentToday(db, 'A', NOW), 0)
@@ -95,16 +97,18 @@ test('#1618 the operator ceiling lowers a cap and never raises one', () => {
 
 test('#1618 the send itself checks the same cap, and the page says how many were sent and why', () => {
   const service = src('lib/outreach/service.ts')
-  // a person's click: age cap per Toronto day; an automated caller (it passes authorize): the fixed cap over a rolling 24 hours
-  assert.match(service, /if \(d\.authorize \? accountSendCount\(db, tenantId, nowS\(d\)\) > DAILY_CAP : sentToday\(db, tenantId, nowS\(d\)\) > manualSendCap\(db, tenantId, nowS\(d\)\)\) release\('daily_cap'\)/)
-  assert.match(src('app/api/outreach/[id]/route.ts'), /e\.code === 'daily_cap' && tenantId \? \{ cap: sendCapToday\(getScanDb\(\), tenantId\)\.cap, resets_at: sendDayStart\(Math\.floor\(Date\.now\(\) \/ 1000\)\) \+ 86400 \}/)
+  // a person's click: age cap per account day; an automated caller (it passes authorize): the fixed cap over a rolling 24 hours
+  assert.match(service, /const zone = d\.authorize \? null : await readAccountZone\(asDb\(db\), tenantId\)/)
+  assert.match(service, /if \(d\.authorize \? accountSendCount\(db, tenantId, nowS\(d\)\) > DAILY_CAP : sentToday\(db, tenantId, nowS\(d\), zone\) > manualSendCap\(db, tenantId, nowS\(d\)\)\) release\('daily_cap'\)/)
+  assert.match(src('app/api/outreach/[id]/route.ts'), /await readAccountZone\(await getDb\(\), tenantId\)/)
+  assert.match(src('app/api/outreach/[id]/route.ts'), /e\.code === 'daily_cap' && tenantId \? \{ cap: sendCapToday\(getScanDb\(\), tenantId, undefined, zone\)\.cap, resets_at: sendDayStart\(Math\.floor\(Date\.now\(\) \/ 1000\), zone\) \+ 86400 \}/)
   const page = src('app/app/outreach/outreach-client.tsx')
   // #1805: the note is the shared builder's, fed the cap and the reset instant the route returned;
   // the copy never promises the rest send themselves (a refused send returns to approved).
   assert.match(page, /dailyCapMessage\(cap, resetsAt, Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone\)/)
   assert.match(page, /j\.error === 'daily_cap' && Number\.isInteger\(j\.cap\) \? sendCapNote\(j\.cap, Number\.isInteger\(j\.resets_at\) \? j\.resets_at : null\)/)
   assert.doesNotMatch(page, /Sent \$\{cap\} today, more tomorrow/)
-  assert.match(src('lib/outreach/send-cap-copy.ts'), /You can send the rest after midnight\./)
+  assert.match(src('lib/outreach/send-cap-copy.ts'), /You can send the rest after midnight \(\$\{tz\} time\)\./)
   assert.doesNotMatch(src('lib/outreach/send-cap-copy.ts'), /go out|9:00 AM/)
   assert.doesNotMatch(page, /Daily sending limit reached/)
   // Settings shows the same cap and the same day's count, not a fixed 20 over 24 hours

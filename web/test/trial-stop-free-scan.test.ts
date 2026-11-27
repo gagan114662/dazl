@@ -10,7 +10,7 @@ import { scanOutcome } from '../lib/scan/scan-outcome.ts'
 import { readTrialStatus } from '../lib/scan/trial.ts'
 import { bothEngines } from './helpers/engines.ts'
 
-const NOW = 1_800_000_000, DAY = trialDay(NOW)
+const NOW = 1_800_000_000, DAY = trialDay(NOW, 'UTC') // #2054: no saved zone on these accounts: the UTC fallback day
 const caps = { DAZL_TRIAL_SCAN_RESERVE_USD: '0.30', DAZL_TRIAL_ACCOUNT_TOTAL_USD: '1', DAZL_TRIAL_GLOBAL_DAILY_USD: '10', TINYFISH_API_KEY: 'tf-fixture', DAZL_TRIAL_TINYFISH_SEARCH_USD: '0', DAZL_TRIAL_TINYFISH_FETCH_USD: '0', DAZL_TRIAL_ANTHROPIC_KEY: 'sk-fixture' }
 const mkUser = async (db: Db, id: string, email: string) => {
   await db.run("INSERT INTO users (id, email, name, business_name, password_hash, salt) VALUES (?, ?, 'n', 'b', 'x', 'y')", [id, email])

@@ -6,6 +6,8 @@ import {requiredGateHeld} from '../scan/held-state.ts'
 import { messageProvenance } from './provenance.ts'
 import { snapshotSignalContext } from './attribution.ts'
 import { accountSendCount, ACCOUNT_SEND_CAP, anyUncertainSend, manualSendCap, sendDayStart, tableExists } from './send-budget.ts'
+import { readAccountZone } from '../account-zone.ts'
+import { asDb } from '../db/client.ts'
 import { conversionBlockedNow, displayStopReason } from './lifecycle.ts'
 import { composeDraftCopy, DraftCopyError } from './draft-copy.ts'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -585,9 +587,12 @@ export function sendFooter(body: string, s: Settings | undefined): string | null
   return composeBody(body, s, '[your unsubscribe link, added when sent]').slice(body.trim().length).trim()
 }
 
-// #1618: every send and in-flight claim of the account since midnight in Toronto, and the cap a person's own sends are held to.
-export const sentToday = (db: Database.Database, tenantId: string, now: number): number => accountSendCount(db, tenantId, now, sendDayStart(now))
-export const sendCapToday = (db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000)) => ({ cap: manualSendCap(db, tenantId, now), sent_today: sentToday(db, tenantId, now) })
+// #1618: every send and in-flight claim of the account since midnight in the account's own zone (#2054), and the
+// cap a person's own sends are held to. These read the raw store synchronously, so the zone is an argument: an
+// async caller resolves it with readAccountZone (lib/account-zone.ts) and passes it in; without one the count
+// runs on the UTC day.
+export const sentToday = (db: Database.Database, tenantId: string, now: number, zone?: string | null): number => accountSendCount(db, tenantId, now, sendDayStart(now, zone))
+export const sendCapToday = (db: Database.Database, tenantId: string, now = Math.floor(Date.now() / 1000), zone?: string | null) => ({ cap: manualSendCap(db, tenantId, now), sent_today: sentToday(db, tenantId, now, zone) })
 
 export function sentLast24h(db: Database.Database, tenantId: string, d: Deps = {}): number {
   return (db.prepare("SELECT count(*) AS n FROM outreach_messages WHERE tenant_id = ? AND status IN ('sent','sending','uncertain') AND claimed_at >= ?").get(tenantId, nowS(d) - 86400) as { n: number }).n
@@ -625,7 +630,7 @@ function sendPreChecks(db: Database.Database, tenantId: string, pre: StoredMsg):
 // Read-only: why sendMessage would refuse this approved message right now (its error code), or null. The pre-claim checks
 // above plus the account checks it makes after claiming (exact words still approved, sender identity, Gmail connected,
 // the shared daily cap). Gmail itself can still fail at send time; this never claims or sends.
-export function sendBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean; now?: number } = {}): string | null {
+export function sendBlockReason(db: Database.Database, tenantId: string, id: string, o: { skipAccount?: boolean; now?: number; zone?: string | null } = {}): string | null {
   const now = o.now ?? Math.floor(Date.now() / 1000)
   const m = getMsg(db, tenantId, id)
   if (!m) return 'not_found'
@@ -635,7 +640,7 @@ export function sendBlockReason(db: Database.Database, tenantId: string, id: str
   // skipAccount skips only the sender and Gmail checks; the shared daily cap is never skipped.
   if (!o.skipAccount && !getSettings(db, tenantId)) return 'sender_identity_missing'
   if (!o.skipAccount && !db.prepare('SELECT 1 FROM gmail_accounts WHERE tenant_id = ?').get(tenantId)) return 'gmail_not_connected'
-  if (sentToday(db, tenantId, now) + 1 > manualSendCap(db, tenantId, now)) return 'daily_cap'
+  if (sentToday(db, tenantId, now, o.zone) + 1 > manualSendCap(db, tenantId, now)) return 'daily_cap'
   return null
 }
 
@@ -679,9 +684,13 @@ async function sendClaimed(db: Database.Database, tenantId: string, id: string, 
   if (!settings) release('sender_identity_missing')
   const acct = db.prepare('SELECT email FROM gmail_accounts WHERE tenant_id = ?').get(tenantId) as { email: string } | undefined
   if (!acct) release('gmail_not_connected')
-  // This claim counts itself. #1618: a person's own send is held to the cap for the account's age, counted per Toronto day.
+  // This claim counts itself. #1618: a person's own send is held to the cap for the account's age, counted per
+  // account day. #2054: the account's zone is resolved here, on the Db layer - this function is async, so the
+  // synchronous count below takes it as an argument (an authorized send never reads it: it keeps the fixed
+  // rolling-24h cap).
   // A send an automated caller authorizes (d.authorize: autopilot, the first-touch drain) keeps the fixed rolling-24h cap.
-  if (d.authorize ? accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP : sentToday(db, tenantId, nowS(d)) > manualSendCap(db, tenantId, nowS(d))) release('daily_cap')
+  const zone = d.authorize ? null : await readAccountZone(asDb(db), tenantId)
+  if (d.authorize ? accountSendCount(db, tenantId, nowS(d)) > DAILY_CAP : sentToday(db, tenantId, nowS(d), zone) > manualSendCap(db, tenantId, nowS(d))) release('daily_cap')
 
   let token: string
   let tokenGen: string

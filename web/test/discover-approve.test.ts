@@ -200,9 +200,8 @@ test('#1250: an address that does not carry the named person\'s name is not thei
   assert.equal(listCampaigns(db, 'T').find(x => x.id === 'j1')!.contact.withContact, 0, 'and it is not counted as a contact')
 })
 
-// Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
-// email is published. The first step is a LinkedIn message the user sends themselves; nothing is automated.
-test('a lead with a named person and their LinkedIn profile is ready to reach on LinkedIn when no personal email is published', async () => {
+// A proof-backed profile remains a manual contact option when there is no published email.
+test('a lead with a named person and their LinkedIn profile can be reached manually on LinkedIn while outside Ready', async () => {
   const { discoverLinkedIn } = await import('../lib/discover/card.ts')
   const { previewSplit } = await import('../lib/journey.ts')
   const c = leadCardSummary(lead([person, linkedin]) as never)
@@ -219,11 +218,11 @@ test('a lead with a named person and their LinkedIn profile is ready to reach on
   assert.equal(li([person]), null)
   // with the person's own address too, email stays the route and the card does not offer both as the first step
   assert.equal(leadCardSummary(lead([person, linkedin, email]) as never).approve.ok, true)
-  // Home counts it as contact-ready
+  // Home still requires an email for Ready.
   const split = previewSplit([lead([person, linkedin]) as never, lead([person]) as never])
   // #1238: a lead with a name alone has no action, so Home no longer lists it among the ready leads at all (it was listed, marked "no contact")
-  assert.deepEqual(split.opportunities.map(o => o.contactReady), [true], 'ready with a profile')
-  assert.equal(split.noContact.length, 1, 'not ready with a name alone: counted as "no contact yet"')
+  assert.deepEqual(split.opportunities.map(o => o.contactReady), [], 'a profile does not count as a Ready email contact')
+  assert.equal(split.noContact.length, 2, 'both leads are missing email')
 })
 
 // #1250 rule 1 (and #1183): the contact gate needs a NAMED person. A job title stored as the name ("Managing Partner") or a bare first
@@ -245,9 +244,12 @@ test('#1250: a job title stored as a name, or a bare first name, is not a named 
   // the lead's own name column is held to the same rule when no person row is stored
   assert.equal(discoverState(lead([linkedin, partnerMail], { name: 'Managing Partner' }) as never), 'no_contact')
   // real people keep their route: a role-like surname, an accented name, a name written without spaces
-  assert.equal(discoverState(lead([{ ...person, value: 'Joy Manager, Owner' }, linkedin], { name: 'Joy Manager' }) as never), 'ready_linkedin')
-  assert.equal(discoverState(lead([{ ...person, value: 'Zoë D\'Mello-Núñez, Owner' }, linkedin], { name: 'Zoë D\'Mello-Núñez' }) as never), 'ready_linkedin')
-  assert.equal(discoverState(lead([{ ...person, value: '山田太郎, Owner' }, linkedin], { name: '山田太郎' }) as never), 'ready_linkedin')
+  assert.equal(discoverState(lead([{ ...person, value: 'Joy Manager, Owner' }, linkedin], { name: 'Joy Manager' }) as never), 'no_contact')
+  assert.ok(discoverContact(lead([{ ...person, value: 'Joy Manager, Owner' }, linkedin], { name: 'Joy Manager' }) as never)?.person?.linkedin)
+  assert.equal(discoverState(lead([{ ...person, value: 'Zoë D\'Mello-Núñez, Owner' }, linkedin], { name: 'Zoë D\'Mello-Núñez' }) as never), 'no_contact')
+  assert.ok(discoverContact(lead([{ ...person, value: 'Zoë D\'Mello-Núñez, Owner' }, linkedin], { name: 'Zoë D\'Mello-Núñez' }) as never)?.person?.linkedin)
+  assert.equal(discoverState(lead([{ ...person, value: '山田太郎, Owner' }, linkedin], { name: '山田太郎' }) as never), 'no_contact')
+  assert.ok(discoverContact(lead([{ ...person, value: '山田太郎, Owner' }, linkedin], { name: '山田太郎' }) as never)?.person?.linkedin)
   assert.equal(discoverState(lead([person, linkedin, email]) as never), 'ready_email')
   // and the server refuses the draft whatever the page shows
   const db = new Database(':memory:'); migrateAllSqlite(db)

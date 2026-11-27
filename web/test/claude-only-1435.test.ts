@@ -55,7 +55,7 @@ const setup = () => {
 const row = (db: Database.Database, id: string) => db.prepare('SELECT status, error FROM scan_jobs WHERE id = ?').get(id) as { status: string; error: string | null }
 const neverDiscover = async (): Promise<DiscoverResult> => { throw new Error('the search must not start') }
 
-test('a workspace with only an OpenAI key: the search ends saying dazl searches with Claude and to add an Anthropic key; the older engine does not run', async () => {
+test('a workspace with only an OpenAI key: the search explains that Claude search is unavailable; the older engine does not run', async () => {
   const { db, master } = setup()
   saveKey(db, 'T', 'openai', 'sk-openai-fixture', master)
   const id = createQueryJob(db, 'T', { query: 'Dental clinics in a city opening a new location', seller: 'Clinic fit-out contractor' })
@@ -69,13 +69,13 @@ test('a workspace with only an OpenAI key: the search ends saying dazl searches 
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM leads WHERE scan_job_id = ?').get(id) as { n: number }).n, 0)
   const o = scanOutcome({ id, status: 'failed', error: 'claude_key_required' })
   assert.equal(o.kind, 'failed')
-  assert.deepEqual(o.next, { text: 'Add your Anthropic key in Settings', href: '/app/settings' })
+  assert.deepEqual(o.next, { text: 'Review your plan in Settings', href: '/app/settings' })
   const words = outcomeOwnCopy(o) ?? ''
-  assert.match(words, /dazl searches with Claude/)
-  assert.match(words, /Add your Anthropic key in Settings to run a search/)
+  assert.match(words, /Claude search is currently unavailable for this workspace/)
+  assert.match(words, /No search was run and nothing was charged/)
   assert.doesNotMatch(words, /claude_key_required|lane|engine|TinyFish/i, 'plain words, no internal names')
   // the same sentence when the request is refused before a job exists
-  assert.match(knownErrorCopy('claude_key_required') ?? '', /dazl searches with Claude.*Add your Anthropic key in Settings to run a search/)
+  assert.match(knownErrorCopy('claude_key_required') ?? '', /Claude search is currently unavailable.*No search was run and nothing was charged/)
 })
 
 test('too little budget left for a search: the scan stops as a budget stop and says how much was left; the older engine does not run', async () => {
@@ -132,7 +132,7 @@ test('a free search whose spending limit is too small for a Claude search ends a
     assert.deepEqual(asked, [])
     const o = scanOutcome({ id, status: 'failed', error: 'trial_unavailable', funded_by: 'trial' })
     assert.equal(o.label, 'Not started - free scans are not available right now')
-    assert.match(outcomeOwnCopy(o) ?? '', /Add your own Anthropic key in Settings to run a search/)
+    assert.match(outcomeOwnCopy(o) ?? '', /No search was run/)
   } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v } }
 })
 

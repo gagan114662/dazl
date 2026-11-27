@@ -9,7 +9,7 @@ export const QA_NATIVE_WEB_SEARCH_POLICY = 'anthropic_estimated_v1'
 export const QA_NATIVE_WEB_SEARCH_MAX_USES = 2
 export const QA_NATIVE_WEB_SEARCH_RESULT_TOKENS = 25_000
 export const QA_NATIVE_WEB_SEARCH_FEE_USD = 0.01
-export const QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE = 'Claude Web Search requires your workspace’s own active Anthropic key. Nothing was started.'
+export const QA_NATIVE_WEB_SEARCH_OWN_KEY_MESSAGE = 'Claude Web Search is currently unavailable for this workspace. Nothing was started.'
 // A production first-play option. Older servers reject *any* first5 request budget instead
 // of silently interpreting a newly opted-in play as an ordinary scan.
 export function isFirst5NativeSearchRequest(mode: unknown, budget: unknown): boolean {

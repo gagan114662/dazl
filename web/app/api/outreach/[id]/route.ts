@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getScanDb, requireUser } from '@/lib/scan/service'
 import { approve, editDraft, OutreachError, resolveUncertain, sendCapToday, sendMessage, skip } from '@/lib/outreach/service'
 import { sendDayStart } from '@/lib/outreach/send-budget'
+import { readAccountZone } from '@/lib/account-zone'
+import { getDb } from '@/lib/db/client'
 import { sendTestToSelf } from '@/lib/outreach/test-send'
 import { sameOriginJson } from '@/lib/same-origin'
 import { rateLimit } from '@/lib/rate-limit'
@@ -22,10 +24,15 @@ async function guard(req: NextRequest, id: string, action: Action) {
   return { user }
 }
 // #1618: a refusal at the daily cap carries the cap, so the page can say how many were sent today.
-// #1805: it also carries when sending resumes — the manual cap restarts at the next Toronto midnight
-// (send-budget.ts) — so the page can give the reset time in the user's own timezone, never a raw code.
-const fail = (e: unknown, tenantId?: string) => {
-  if (e instanceof OutreachError) return NextResponse.json({ error: e.code, ...(e.code === 'daily_cap' && tenantId ? { cap: sendCapToday(getScanDb(), tenantId).cap, resets_at: sendDayStart(Math.floor(Date.now() / 1000)) + 86400 } : {}) }, { status: STATUS[e.code] ?? 400 })
+// #1805: it also carries when sending resumes — the manual cap restarts at the next midnight in the
+// account's own zone (#2054, send-budget.ts) — so the page can give the reset time in the user's own
+// timezone, never a raw code.
+const fail = async (e: unknown, tenantId?: string) => {
+  if (e instanceof OutreachError) {
+    // #2054: the zone is read on the Db layer (lib/account-zone.ts), never a synchronous read of the raw store
+    const zone = e.code === 'daily_cap' && tenantId ? await readAccountZone(await getDb(), tenantId) : null
+    return NextResponse.json({ error: e.code, ...(e.code === 'daily_cap' && tenantId ? { cap: sendCapToday(getScanDb(), tenantId, undefined, zone).cap, resets_at: sendDayStart(Math.floor(Date.now() / 1000), zone) + 86400 } : {}) }, { status: STATUS[e.code] ?? 400 })
+  }
   throw e
 }
 
@@ -39,7 +46,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   try {
     editDraft(getScanDb(), g.user.tenantId, id, { subject: body.subject, body: body.body })
     return NextResponse.json({ ok: true })
-  } catch (e) { return fail(e) }
+  } catch (e) { return await fail(e) }
 }
 
 // Actions: approve, skip, send, test (to the user's own inbox), mark_sent, retry. One message per call, always a person's click.
@@ -77,5 +84,5 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     await audit(g.user, req, { action: `outreach.${action}`, resource: 'message', id })
     if (action === 'approve') track('approve_clicked', g.user.tenantId, { message_id: id })
     return NextResponse.json({ ok: true })
-  } catch (e) { return fail(e, g.user.tenantId) }
+  } catch (e) { return await fail(e, g.user.tenantId) }
 }

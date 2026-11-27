@@ -46,7 +46,7 @@ const tokens = { openai: session('u-openai'), anthropic: session('u-anthropic') 
 db.close()
 
 const port = pickUiPort(); const base = `http://127.0.0.1:${port}`
-const env = { PATH: process.env.PATH, DB_PATH: DB, SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', SCAN_MAX_CONCURRENT: '0', NODE_OPTIONS: `--experimental-strip-types --import ${url('test/helpers/net-fence.ts')}` }
+const env = { PATH: process.env.PATH, DB_PATH: DB, DAZL_PAID_VENDORS: 'openai', SITECRAWL_ENABLED: '0', NEWS_SEARCH_ENABLED: '0', SCAN_MAX_CONCURRENT: '0', NODE_OPTIONS: `--experimental-strip-types --import ${url('test/helpers/net-fence.ts')}` }
 for (const k of ['SystemRoot', 'TEMP', 'TMP']) if (process.env[k]) env[k] = process.env[k] // Windows needs SystemRoot for sockets
 const srv = spawn(process.execPath, [require.resolve('next/dist/bin/next'), 'start', '-p', String(port), '-H', '127.0.0.1'], { cwd: dir, env, stdio: 'ignore' })
 let up = false
@@ -131,9 +131,11 @@ try {
       assert.equal(estimates.at(-1)?.status, 200); assert.equal(estimates.at(-1).body.estimate.verdict.reason, 'model_unpriced')
       assert.equal(await panel.getAttribute('data-verdict'), 'blocked')
       assert.equal(await page.getByTestId('estimate-confirm-run').count(), 0, `${tag}: no Run button while blocked`)
-      assert.match(await page.getByTestId('estimate-verdict').innerText(), /^Your key's model \(gpt-4\.1\) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call\. The model rows above use its list price for this estimate only\./)
-      const change = await page.getByTestId('estimate-change').innerText()
-      assert.match(change, /Run without a spending limit/); assert.match(change, /Or use an Anthropic key \(claude-sonnet-4-5 is priced\)/)
+      assert.equal(await page.getByTestId('estimate-verdict').innerText(), 'The workspace model (gpt-4.1) has no listed price the spending limit can reserve against yet, so a run under a spending limit would stop at its first model call. The model rows above use its list price for this estimate only. Nothing was started or charged.')
+      assert.deepEqual(await page.getByTestId('estimate-change').locator('li').allTextContents(), [
+        'Run without a spending limit (remove max_usd; a workspace daily/monthly limit also applies if set)',
+        'Or use the priced Claude model (claude-sonnet-4-5)',
+      ])
       report.push([`openai-limit-${tag}`, await noOverflow(page, panel, `openai limit ${tag}`)])
       await shot(page, `estimate-gpt41-limit-blocked-page-${tag}`); await panelShot(page, panel, `estimate-gpt41-limit-blocked-panel-${tag}`, w)
       assert.equal(scans.length, 0, `${tag}: a blocked estimate starts nothing`)

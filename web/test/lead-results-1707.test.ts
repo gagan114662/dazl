@@ -67,7 +67,7 @@ test('the ready response attaches details from the winning lead without crossing
     const company = randomUUID(), domain = company + '.example'
     const name = 'Sample Buyer', title = 'Director', email = 'sample.buyer@' + domain
     const job = db.prepare("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, status, created_at) VALUES (?, ?, ?, '-', '-', 'running', ?)")
-    const lead = db.prepare("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url, event_date, date_status, event_date_proof, source_kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', 'page_bound', 'discover', ?)")
+    const lead = db.prepare("INSERT INTO leads (id, scan_job_id, company, company_domain, signal, source_url, event_date, date_status, event_date_proof, source_kind, intent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', 'page_bound', 'discover', 4, ?)")
     for (const [id, owner, age, signal] of [['ready', 'tenant', 2, 'A dated event'], ['held', 'tenant', 1, 'Unrelated detail'], ['other', 'private', 1, 'Private detail']]) {
       job.run(id, owner, company, at - age)
       lead.run(id, id, company, domain, signal, 'https://' + domain + '/signal', date, at - age)
@@ -88,14 +88,14 @@ test('the ready response attaches details from the winning lead without crossing
 
     addEnrichment(db, 'tenant', 'ready', { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/sample-buyer', label: null, confidence: null, source_url: 'https://' + domain + '/person', source_date: date, retrieved_at: at })
     db.prepare("INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, 'manual')").run('tenant', email)
-    const suppressed = (await homeReady('tenant', at)).companies.find(row => row.lead_id === 'ready')
-    assert.equal(suppressed?.ready, true)
-    assert.equal(suppressed?.details?.email, null, 'a suppressed address stays hidden on a LinkedIn-ready row')
+    const suppressed = (await homeReady('tenant', at)).companies.find(row => row.company === company)
+    assert.equal(suppressed?.ready, false)
+    assert.equal(suppressed?.details, undefined, 'a suppressed address keeps the company out of Ready even with a profile')
     db.prepare("UPDATE lead_enrichments SET value = ? WHERE tenant_id = ? AND lead_id = ? AND kind = 'email'")
       .run('sample.buyer@gmail.com', 'tenant', 'ready')
-    const personal = (await homeReady('tenant', at)).companies.find(row => row.lead_id === 'ready')
-    assert.equal(personal?.ready, true)
-    assert.equal(personal?.details?.email, null, 'a personal mailbox stays hidden even if published on the company site')
+    const personal = (await homeReady('tenant', at)).companies.find(row => row.company === company)
+    assert.equal(personal?.ready, false)
+    assert.equal(personal?.details, undefined, 'a personal mailbox keeps the company out of Ready even if published on the company site')
 
     const legacy = randomUUID(), site = legacy + '.example', legacyEmail = 'inquiries@' + site
     job.run(legacy, 'tenant', legacy, at - 3)
