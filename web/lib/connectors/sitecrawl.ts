@@ -36,6 +36,7 @@ import { isFounderRoute, OWN_POSTING_PERSON_LABEL, postingTopSales, postingOrgIs
 export { OWN_POSTING_PERSON_LABEL }
 import { atsGtmBoard } from '../signals/ats-gtm.ts'
 import { roleContradicted, roleEndedByDate, titleMatches } from '../people/rank.ts'
+import { findJobBankEmployerSite } from '../discover/jobbank-employer-site.ts'
 import { placeAgreement, cityScoped, geoTerms, ownProbePlace, US_STATES } from '../scan/place-agreement.ts'
 import { isCountryOrRegion, resolveSegment, regionOf, trimCanadianPostalTail } from '../scan/countries.ts'
 import { candidateDomainSuffixes, countryDomainHints } from './country-domain-hints.ts'
@@ -360,6 +361,19 @@ export function recordNamedSites(text: string, company: string): string[] {
   return out
 }
 export type DomainBasis = 'evidence_own_domain' | 'evidence_link_domain_label' | 'evidence_link_text' | 'name_probe'
+function printedJobBankSite(html: string, sourceUrl: string): string | null {
+  const url = URL.parse(sourceUrl)
+  if (url?.protocol !== 'https:' || !/(^|\.)(?:jobbank|guichetemplois)\.gc\.ca$/i.test(url.hostname) ||
+    !/^\/jobsearch\/jobposting\/\d+\/?$/.test(url.pathname)) return null
+  try {
+    const host = findJobBankEmployerSite(html)
+    return host && ownSiteHost(`https://${host}/`) === host ? host : null
+  } catch {
+    // An invalid character reference in the publisher HTML must not stop the crawl.
+    return null
+  }
+}
+
 export function findCompanySitesWithBasis(company: string, evidenceHtml: string, evidenceUrl: string): { site: string; basis: DomainBasis; structured?: boolean }[] {
   const want = norm(company); if (want.length < 4) return []
   let base: URL; try { base = new URL(evidenceUrl) } catch { return [] }
@@ -1938,6 +1952,15 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // the bounded official-site lookup may still find this company elsewhere (#1122).
       let anchored = false; const structured: string[] = []
       if (ev) for (const o of findCompanySitesWithBasis(l.company, ev.body, ev.finalUrl)) { basisOf.set(o.site, o.basis); if (o.structured) structured.push(o.site); else { sites.push(o.site); anchored = true } }
+      if (ev?.status === 200 && ev.text === undefined && ev.finalUrl === l.source_url && where.length === 1) {
+        const city = where[0].split(',')[0].trim()
+        const host = city && !isCountryOrRegion(city) ? printedJobBankSite(ev.body, l.source_url) : null
+        // Treat the printed field as a candidate. The crawl must independently confirm the name and city.
+        if (host && !basisOf.has(host)) {
+          basisOf.set(host, 'name_probe')
+          structured.push(host)
+        }
+      }
       // Search citations are scan-wide hints, not lead attribution. A publisher may name a website in plain text
       // ("Full Company Name (company.example)") without linking it. Require that exact pairing in THIS lead's
       // stored verified excerpt and re-read the exact publisher source before treating a matching citation as a
