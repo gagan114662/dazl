@@ -49,7 +49,14 @@ test('a source-checked hire with a crawled named buyer reaches Home Ready', asyn
   ])
   assert.equal(await runJob(db, job, {
     master, discover: true, discoverImpl: async () => found, enrichImpl: null,
-    fetchImpl: async () => new Response('no', { status: 403 }),
+    fetchImpl: async (input, init) => {
+      if (String(input) === 'https://api.anthropic.com/v1/messages' && init?.body &&
+            JSON.parse(String(init.body)).model === 'claude-haiku-5-5') {
+          return Response.json({ model: 'claude-haiku-5-5', content: [{ type: 'text', text: 'YES' }],
+            usage: { input_tokens: 0, output_tokens: 0 } })
+        }
+      return new Response('no', { status: 403 })
+    },
     crawlGet: async url => ({ status: pages.has(url) ? 200 : 404, body: pages.get(url) ?? '', finalUrl: url }),
   }), 'done')
   const result = await homeReady(tenant, Math.floor(Date.now() / 1_000))
