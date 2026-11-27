@@ -99,6 +99,7 @@ const FREE: Record<string, string> = {
   'env:ADVANCED_WORKER_URL': "the operator-run advanced-sources worker, carrying the tenant's own session: no per-call charge",
   'env:DATABASE_URL': 'the store, not a provider',
   'env:SYSTEM_MAIL_SMTP_URL': "dazl's own account mail (SMTP), not a scan path",
+  'env:OPS_ALERT_WEBHOOK_URL': 'scheduled operator notification sent to the configured webhook, outside scan execution',
   'env:JINA_READER_URL': 'Jina Reader endpoint override: free reader',
   'env:PUBLIC_BASE_URL': "dazl's own public URL, not a provider",
   'env:NEXT_PUBLIC_POSTHOG_HOST': 'PostHog capture host for the funnel events (#1616, lib/analytics/track.ts): not a scan path; free plan with billing limits at $0',

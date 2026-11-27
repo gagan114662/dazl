@@ -50,6 +50,7 @@ import { migrateWorkEmail } from '../people/work-email.ts'
 import { SqliteQueue } from '../queue/sqlite.ts'
 import { migrateTrialBudget } from '../billing/trial-budget.ts'
 import { migrateSchedulerRuns } from '../ops/scheduler-runs.ts'
+import { migrateWorkspaceStalls } from '../ops/workspace-stalls.ts'
 import { migrateTenantLifecycle } from './tenant-guard.ts'
 import { migratePreviewClaim } from '../scan/preview-claim.ts'
 import { migrateTraceStore } from '../evals/trace-tables.ts'
@@ -68,7 +69,7 @@ export function migrateAllSqlite(db: Database.Database): void {
     migrateWatch, migrateWarm, migrateConnectors, migrateBilling, migrateOauth,
     migrateTinyfish, migrateThreadReplies, migrateEvents, migrateAdvanced, migrateCompetitors,
     migrateQualify, migrateModelUsage, migrateSourceStats, migrateSourceReview, migratePlayResearch, migrateHiringFeed, migrateEmailGuess, migrateWorkEmail, migratePublishedDisplay,
-    migrateTrialBudget, migrateSchedulerRuns, migratePreviewClaim, migrateTraceStore, migrateWorkers,
+    migrateTrialBudget, migrateSchedulerRuns, migrateWorkspaceStalls, migratePreviewClaim, migrateTraceStore, migrateWorkers,
     migrateFirstParty, migrateNeedEvidence, migrateLiTasks,
   ]
   for (const m of migrates) m(db)

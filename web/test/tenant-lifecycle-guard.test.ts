@@ -290,7 +290,7 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
   const want = guardTriggers(scope).map(g => g.name).sort()
   const accountCols = Object.entries(ACCOUNT_COLUMNS).filter(([t]) => scope.some(s => s.table === t)).reduce((n, [, cs]) => n + cs.length, 0)
   assert.equal(want.length, 2 * (scope.length + 2 + accountCols), `${scope.length} guarded tables, users and organizations, ${accountCols} account column(s): two guards each`)
-  assert.equal(want.length, 232) // Previous230 plus INSERT/UPDATE guards for scan_native_search_calls.
+  assert.equal(want.length, 234) // Add the workspace_stall_state INSERT and UPDATE guards.
   // The static Postgres migrations must carry exactly this generated set, not the fork's: only the sqlite path derives
   // its guards from the live schema, so a stale migration leaves post-fork tables unguarded on pg (#554 review). Tables
   // added after 0039 carry their own guards in their own migration (migrations are immutable once applied): 0040 guards
@@ -306,7 +306,7 @@ bothEngines('guard count: every guarded table has an INSERT and an UPDATE guard,
     '0049_first_party_withdrawals.sql', '0052_lead_need_evidence.sql', '0055_crawl_pages.sql',
     '0059_adv_request_budget.sql', '0060_words_rev.sql', '0061_work_email_lookups.sql',
     '0068_play_alerts.sql', '0070_published_work_email_display.sql', '0071_company_first_published_email_display.sql',
-    '0072_li_extension_tasks.sql', '0073_scan_native_search_calls.sql',
+    '0072_li_extension_tasks.sql', '0073_scan_native_search_calls.sql', '0074_workspace_stall_state.sql',
   ]
     .flatMap(f => [...readFileSync(new URL(`../lib/db/migrations/pg/${f}`, import.meta.url), 'utf8').matchAll(/CREATE TRIGGER (tomb_\w+) BEFORE/g)].map(m => m[1])).sort()
   assert.deepEqual(pgNames, want, 'the static PG migrations drifted from the generated guard set')
