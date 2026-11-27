@@ -1,6 +1,6 @@
 import { legacyMailboxRefusals } from '@/lib/outreach/lead-hold'
 import { companyFirstResults } from '@/lib/scan/company-first-results'
-import { discoverRecipientRefusal } from '@/lib/outreach/service'
+import { discoverRecipientRefusalsForJob } from '@/lib/outreach/service'
 import { hasCompanyFirstBudget } from '@/lib/company-first/product-discovery'
 import { latestLeadSourceReviews } from '@/lib/db/lead-source-reviews'
 import { currentnessHeldFromRow, currentnessRowsForJob, windowHeld } from '@/lib/outreach/currentness'
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   const saved = scanDb.prepare('SELECT run_budget FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, user.tenantId) as { run_budget: string | null } | undefined
   const companyFirst = hasCompanyFirstBudget(saved?.run_budget)
   const includeHidden = !companyFirst && req.nextUrl.searchParams.get('all') === '1'
-  const rows = await db.listLeads(user.tenantId, job.id, 200, includeHidden) as { id: string; source_url: string; company: string; company_domain: string | null; event_date: string | null; event_date_proof?: string | null; signal_kind?: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
+  const rows = await db.listLeads(user.tenantId, job.id, 200, includeHidden) as { id: string; name: string | null; source_kind: string | null; source_url: string; company: string; company_domain: string | null; event_date: string | null; event_date_proof?: string | null; signal_kind?: string | null; score: number; fit: number | null; intent: number | null; action: number | null; signal: string }[]
   // The standard list for company-first jobs exposes only leads that still
   // pass the machine's existing currentness, targeting and contact proof.
   // Even all=1 cannot expose held hypotheses for these jobs.
@@ -90,13 +90,14 @@ export async function GET(req: NextRequest) {
   // #386: a lookalike scan labels each lead's fit to the supplied customers from the lead's own evidence, apart from intent:
   // "with event" only when the existing timing proof backs a current event, never from the lookalike fit itself.
   const la = lookalikeOf(job)
+  const recipientRefusals = discoverRecipientRefusalsForJob(scanDb, user.tenantId, job.id, leads.filter(lead => lead.source_kind === 'discover'))
   const safeLeads = leads.map(l => { const t = surfaceStoredIntent(l, timingOpts); const tr = timingUnconfirmedReason(l, timingOpts)
     return {...l, email_cannot_receive_mail: mailboxRefusals.has(l.id), stored_intent:l.intent, intent:t.intent, timing:t.timing, timing_reason:tr, day_verified:eventDayVerified(l), window_missed:tr === 'out_of_window',
     stored_why:(l as typeof l & {why?:string|null}).why ?? null,
     // #377: the fit / use-case rationale apart from timing status, and the machine timing proof's gap (null = proven).
     fit_rationale:fitRationale((l as typeof l & {why?:string|null}).why, t.timing), timing_proof_gap:proofGap(l.id),
     why:savedGradeWhy(l as typeof l & {why?:string|null}, { timing: t.timing, reason: tr }),
-    currentness_held:currentnessHeldFromRow(timingRows.get(l.id), now, () => gateHeld(l.id), () => proofGap(l.id) !== null), window_held:heldByWindow(l.id), gate_held:gateHeld(l.id), recipient_refused:(l as typeof l & {source_kind?:string|null}).source_kind === 'discover' ? discoverRecipientRefusal(getScanDb(),user.tenantId,l.id) : null,
+    currentness_held:currentnessHeldFromRow(timingRows.get(l.id), now, () => gateHeld(l.id), () => proofGap(l.id) !== null), window_held:heldByWindow(l.id), gate_held:gateHeld(l.id), recipient_refused:recipientRefusals.get(l.id) ?? null,
     lookalike_fit:la && la !== 'unreadable' && !la.exclusionsOnly ? leadLookalikeFit(la, l as typeof l & {evidence_excerpt?:string|null}, t.timing === 'proof_backed' && !(l as typeof l & {review_reason?:string|null}).review_reason) : null} })
   // #401/#379: each lead's CURRENT buying-need status, revalidated at read time against the current rubric, plan and
   // domain evidence (lib/scan/need-evidence.ts). Read-only; absent records and drift read unproven, never guessed.
