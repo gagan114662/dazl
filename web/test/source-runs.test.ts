@@ -24,7 +24,7 @@ test('ledger migration is repeatable, old runs stay unknown and reads are tenant
   assert.deepEqual(sourceRuns(db, 'A', id), [])
   const ledger = new SourceRunLedger(); ledger.record('adapter:rss', 'empty', 0)
   ledger.write(db, id, 1, [], [], new Set())
-  assert.equal((sourceRuns(db, 'A', id)[0] as any).evidence_count, 0)
+  assert.equal((sourceRuns(db, 'A', id)[0] as Record<string, unknown>).evidence_count, 0)
   assert.deepEqual(sourceRuns(db, 'B', id), [])
 })
 test('same evidence URL keeps multiple actual collector credits; counts deduplicate per collector', () => {
@@ -36,18 +36,18 @@ test('same evidence URL keeps multiple actual collector credits; counts deduplic
   db.prepare('INSERT INTO leads (id,scan_job_id,name,company,signal,source_url,score,dedup_key) VALUES (?,?,?,?,?,?,?,?)')
     .run('lead', id, candidate.name, candidate.company, candidate.signal, candidate.source_url, 70, dedupKey(candidate))
   ledger.write(db, id, 1, [candidate], [], new Set([`${dedupKey(candidate)}|${candidate.source_url}`]))
-  const runs = sourceRuns(db, 'A', id) as any[]
+  const runs = sourceRuns(db, 'A', id) as Record<string, unknown>[]
   assert.deepEqual(runs.map(r => [r.collector,r.candidate_count,r.verified_count,r.inserted_count]), [['adapter:rss',1,1,1],['search:anthropic',1,1,1]])
   assert.equal(runs[1].evidence_count, null) // model search hit count is not observed
   assert.equal(sourcesForLead(db, 'A', 'lead').length, 2)
   assert.deepEqual(sourcesForLead(db, 'B', 'lead'), [])
   ledger.write(db, id, 2, [candidate], [], new Set())
-  assert.equal((sourceRuns(db, 'A', id)[2] as any).inserted_count, 0)
+  assert.equal((sourceRuns(db, 'A', id)[2] as Record<string, unknown>).inserted_count, 0)
 })
 test('unobserved verification stays NULL, not a made-up zero', () => {
   const { db, id } = setup(); const ledger = new SourceRunLedger()
   ledger.record('search:openai', 'started'); ledger.write(db,id,1,null,null,new Set())
-  const row = sourceRuns(db,'A',id)[0] as any
+  const row = sourceRuns(db,'A',id)[0] as Record<string, unknown>
   assert.equal(row.evidence_count,null); assert.equal(row.verified_count,null)
 })
 test('adapter reports distinguish empty, exception and timeout without late mutation', async () => {
@@ -66,7 +66,7 @@ test('runner records actual provider candidate counts and stored-lead attributio
   const provider = { research:async()=>({text:JSON.stringify([candidate]),citedUrls:[candidate.source_url]}) }
   const job = claimKeyedJob(db)!
   assert.equal(await runJob(db,job,{master,providers:{anthropic:provider,openai:provider},judge:null,fetchPage:async()=>({text:candidate.excerpt,title:'Acme news',retrievedAt:1791000000}),now:new Date('2026-10-22')}),'done')
-  const row = sourceRuns(db,'A',id)[0] as any
+  const row = sourceRuns(db,'A',id)[0] as Record<string, unknown>
   assert.equal(row.collector,'search:anthropic'); assert.equal(row.candidate_count,1)
   assert.equal(row.verified_count,1); assert.equal(row.inserted_count,1); assert.equal(row.evidence_count,null)
   const lead = db.prepare('SELECT id FROM leads WHERE scan_job_id=?').get(id) as {id:string}
@@ -78,7 +78,7 @@ test('a rejected evidence URL is not credited because the same company survived 
   ledger.candidates('adapter:rss', [candidate])
   ledger.candidates('search:openai', [{ ...candidate, source_url: 'https://other.example/news' }])
   ledger.write(db,id,1,[candidate],[],new Set())
-  const rows = sourceRuns(db,'A',id) as any[]
+  const rows = sourceRuns(db,'A',id) as Record<string, unknown>[]
   assert.equal(rows[0].verified_count,1); assert.equal(rows[1].verified_count,0)
 })
 
@@ -90,12 +90,12 @@ test('a stale attempt cannot write ledger rows or links after its job was reclai
   const provider = { research:async()=>({text:JSON.stringify([candidate]),citedUrls:[candidate.source_url]}) }
   await runJob(db,job,{master,providers:{anthropic:provider,openai:provider},judge:null,fetchPage:async()=>({text:candidate.excerpt,title:'Acme news',retrievedAt:1791000000}),now:new Date('2026-10-22')})
   assert.deepEqual(sourceRuns(db,'A',id),[])
-  assert.equal((db.prepare('SELECT count(*) n FROM lead_sources').get() as any).n,0)
+  assert.equal((db.prepare('SELECT count(*) n FROM lead_sources').get() as { n: number }).n,0)
 })
 test('review attribution is retained without being counted as verified', () => {
   const { db, id } = setup(); const ledger = new SourceRunLedger()
   ledger.candidates('adv:reddit',[candidate]); ledger.write(db,id,1,[],[candidate],new Set())
-  const row = sourceRuns(db,'A',id)[0] as any
+  const row = sourceRuns(db,'A',id)[0] as Record<string, unknown>
   assert.equal(row.review_count,1); assert.equal(row.verified_count,0)
 })
 
