@@ -29,7 +29,7 @@ function renderChecklist(exempt: boolean): string {
       if (id === '@/lib/readiness') return readiness
       if (id === 'next/link') return { default: ({ href, children }: { href: string; children: ReactNode }) => createElement('a', { href }, children) }
       if (id === './ui/bits') return { Pill: ({ children }: { children: ReactNode }) => children }
-      if (['./key-inline', './sender-inline', '@/lib/onboarding', './ui/icons', './readiness-input'].includes(id)) return {}
+      if (['./key-inline', './sender-inline', '@/lib/onboarding', './ui/icons', './readiness-input', '@/lib/focus-refresh'].includes(id)) return {}
       return require(id)
     },
   })
