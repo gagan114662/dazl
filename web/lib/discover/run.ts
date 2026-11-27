@@ -4,6 +4,7 @@
 //   2. if fewer than `wantShown` leads are shown and the budget has room, a second loop looks for different companies;
 //   3. a small-model pass fills the person, website and published email that shown leads still lack.
 // Nothing is hidden: every lead comes back with its label. What a run may spend is stated by the caller.
+import { combineParseDropCounts, type ParseDropCounts } from './parse-drop-counts.ts'
 import { discoverLeads, type DiscoverInput, type DiscoverUsage, type DiscoveredLead, type SeenPage } from './agent.ts'
 import { atsPostingRef } from '../sources/ats-posting.ts'
 import { companyKey } from '../scan/evidence.ts'
@@ -14,7 +15,7 @@ import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from '
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
-export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean }
+export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean; parse_counts?: ParseDropCounts }
 export interface DiscoveryDeps {
   apiKey: string
   fetch?: typeof fetch
@@ -110,6 +111,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
 
   const first = await discover(sized, api)
   add(first.usage)
+  let parseCounts = first.parse_counts
   // one judge for the run: asked only where the quote is on the page and the words alone could not settle it (lib/discover/check.ts)
   const judge: SignalJudge | null = deps.judge === undefined ? signalJudge(api) : deps.judge
   let leads = await checkRunLeads(first, deps, judge)
@@ -122,6 +124,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     try {
       const second = await discover({ ...sized, exclude: [...(input.exclude ?? []), ...first.leads.map(l => l.company)] }, api)
       add(second.usage)
+      parseCounts = combineParseDropCounts(parseCounts, second.parse_counts)
       pages.push(...second.seen.map(p => p.url))
       const known = new Set(leads.map(l => l.company.toLowerCase()))
       const more = (await checkRunLeads(second, deps, judge)).filter(l => !known.has(l.company.toLowerCase()))
@@ -157,6 +160,6 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
     accountingUncertain ||= judge.usage.accountingUncertain === true
   }
-  return { pages, leads, usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
+  return { pages, leads, ...(parseCounts ? { parse_counts: parseCounts } : {}), usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
     note: accountingUncertain ? 'Some research could not be accounted for. Earlier evidence is kept; the full spending reservation remains held.' : note, accountingUncertain }
 }

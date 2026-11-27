@@ -1,5 +1,6 @@
 import { isGenericInbox, nameBound } from '../outreach/generic-inbox.ts'
 import { isPersonName } from '../people/job-title-name.ts'
+import { deliverabilityBlocked } from '../outreach/contact-route.ts'
 import { hasDiscoveryEventDate } from './timing.ts'
 // What a lead from the Claude discovery lane says about itself on its card: how sure dazl is, and plainly what is missing
 // (launch brief, Step 3: a missing date, person or website lowers confidence and is said; it never hides the lead).
@@ -52,7 +53,7 @@ export function discoverSources(l: { source_url?: string | null; name?: string |
 // (connector 'discover'); nothing is matched, ranked or inferred here. The person was chosen by the run for this seller's offer.
 // email: the person's or company's own published address. A shared inbox (info@, sales@ ...) is never one (#1250); sharedInbox says one was published.
 export interface DiscoverContact { person: { name: string; title: string | null; linkedin: string | null; source: string | null } | null; email: { address: string; source: string } | null; sharedInbox: boolean; otherAddress: boolean }
-type Row = { kind: string; connector?: string; value?: string; source_url?: string | null }
+type Row = { kind: string; connector?: string; value?: string; source_url?: string | null; retrieved_at?: number | null; suppressed?: number | null }
 const EMAIL = /^[a-z0-9._%+-]{1,64}@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/
 export function discoverContact(l: { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): DiscoverContact | null {
   if (!isDiscoverLead(l)) return null
@@ -122,8 +123,7 @@ export function discoverProofHold(l: ProofLead, now: Date = new Date()): string 
   if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
   return null
 }
-// Owner decision 2026-11-23: a lead counts with dated proof, a named person and that person's own LinkedIn profile when no personal
-// email is published. The user sends the first message on LinkedIn themselves; dazl opens the profile and automates nothing.
+// A named buyer’s LinkedIn profile can be offered for manual outreach when no personal email is published. The user sends the first message on LinkedIn themselves; dazl opens the profile and automates nothing.
 // Null unless every proof rule passes, a person is named, and the stored link is a person's profile (/in/<name>), never a company page.
 const PROFILE = /^https?:\/\/(?:[a-z0-9-]+\.)?linkedin\.com\/in\/[^/?#]{2,}\/?(?:[?#].*)?$/i
 export function discoverLinkedIn(l: ProofLead & { source_kind?: string | null; name?: string | null; enrichments?: Row[] }): { name: string; profile: string } | null {
@@ -158,13 +158,14 @@ export function discoverApprove(l: ProofLead & { company_domain?: string | null;
 //   review          its proof page is not confirmed: the user can check it under Needs your review
 //   research        something no check by the user can lift holds it (no date, not graded a fit, a required check)
 //   ready_email     Approve is on: a draft email to the named person's own published address
-//   ready_linkedin  the named person's own LinkedIn profile is known (no own address)
 //   no_contact      the proof is fine, but nobody can be reached yet
-// "Ready" and "with a contact" mean ready_email or ready_linkedin and nothing else (discoverReady).
+// Ready requires a usable work email. A LinkedIn profile can still be shown as a manual contact option.
 // stored_intent: the grade as saved. GET /api/leads replaces `intent` with a display value and keeps the saved one here; the saved one
 // is what the draft check reads (lib/outreach/service.ts), so it is the one used when both are present.
 export type DiscoverState = 'rejected' | 'review' | 'research' | 'ready_email' | 'ready_linkedin' | 'no_contact'
-export type DiscoverStateLead = Parameters<typeof discoverApprove>[0] & { stored_intent?: number | null }
+export type DiscoverStateLead = Parameters<typeof discoverApprove>[0] & {
+  stored_intent?: number | null
+}
 const asSaved = (l: DiscoverStateLead): DiscoverStateLead => l.stored_intent !== undefined ? { ...l, intent: l.stored_intent } : l
 export function discoverState(lead: DiscoverStateLead): DiscoverState {
   const l = asSaved(lead)
@@ -173,14 +174,19 @@ export function discoverState(lead: DiscoverStateLead): DiscoverState {
   const held = discoverProofHold(l)
   // Would the hold go away, or change, if the user confirmed the proof page? Then it is theirs to check. Otherwise no check lifts it.
   if (held) return discoverProofHold({ ...l, review_reason: null }) !== held ? 'review' : 'research'
-  if (discoverApprove(l).ok) return 'ready_email'
-  if (discoverLinkedIn(l)) return 'ready_linkedin'
-  return 'no_contact'
+  if (!discoverApprove(l).ok) return 'no_contact'
+  const address = discoverContact(l)?.email?.address
+  if (!address || !emailOnCompanySite(address, null, l.company_domain)) return 'no_contact'
+  const rows = l.enrichments ?? []
+  const storedEmailRefused = rows.some(row => row.kind === 'email' && row.value?.trim().toLowerCase() === address &&
+    row.suppressed === 1)
+  const failedDelivery = deliverabilityBlocked(address, rows.flatMap(row => row.value && row.kind === 'deliverability' ? [{ ...row, value: row.value, connector: row.connector ?? '' }] : []))
+  return storedEmailRefused || failedDelivery ? 'no_contact' : 'ready_email'
 }
 // The words for one lead's state, the same on every page that labels a lead.
 export const DISCOVER_STATE_LABEL: Record<DiscoverState, string> = { rejected: 'Rejected', review: 'Needs your review', research: 'Research only - checking the source cannot make it ready',
   ready_email: 'Ready - approve it to draft an email', ready_linkedin: 'Ready - message them on LinkedIn', no_contact: 'No contact found yet' }
-export const discoverReady = (s: DiscoverState): boolean => s === 'ready_email' || s === 'ready_linkedin'
+export const discoverReady = (s: DiscoverState): boolean => s === 'ready_email'
 // Why a lead that is not ready is not, in the short words the Home tile and the checked list group by; null when it is ready.
 export function discoverNotReady(lead: DiscoverStateLead): string | null {
   const s = discoverState(lead)

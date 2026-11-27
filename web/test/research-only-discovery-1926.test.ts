@@ -40,7 +40,7 @@ function fixture(t: { after(fn: () => void): void }) {
       source_url: `https://${company.toLowerCase()}.example/team`, source_date: day, retrieved_at: 1,
     })
     enrich('person', 'Lee Rivera, Owner')
-    if (proof) enrich('linkedin', 'https://www.linkedin.com/in/lee-rivera/')
+    if (proof) enrich('email', `lee.rivera@${company.toLowerCase()}.example`)
     else enrich('email', mailbox)
   }
   db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(scan)
@@ -61,7 +61,7 @@ test('index-only date is research on the card', t => {
 
 test('the scan and past scans count the index-only lead as research and the dated lead as Ready', async t => {
   const db = fixture(t)
-  const expected = { found: 2, ready: 1, ready_email: 0, ready_linkedin: 1, no_contact: 0, research: 1, rejected: 0, review: 0 }
+  const expected = { found: 2, ready: 1, ready_email: 1, ready_linkedin: 0, no_contact: 0, research: 1, rejected: 0, review: 0 }
   assert.deepEqual(await discoverJobCounts(sqliteDb(db), tenant, scan), expected)
   assert.deepEqual((await historyCampaigns(db, sqliteDb(db), tenant, [scan]))[0].qualification.discover, expected)
 })
