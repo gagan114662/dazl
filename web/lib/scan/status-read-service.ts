@@ -43,7 +43,9 @@ export async function readScanStatus(db: Db, tenantId: string, jobId: string) {
   const pipeline_diagnostic = currentScanPipelineDiagnostic(reportRows, job.attempts, job.error, currentStatus === 'done' || currentStatus === 'failed' ? job.lead_count : null, currentStatus === 'done' || currentStatus === 'failed' || currentStatus === 'cancelled')
   // Why a scan that searched and read pages still extracted nothing (counts only). null when extraction produced candidates or was not recorded.
   const empty_reason = emptyExtractionReason((run_report as { extraction?: never }[] | null)?.at(-1)?.extraction)
-  const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && run_report))
+  const fetchOutcomesRecorded = (run_report as { urls?: { own_fetch?: unknown }[]; candidates?: { own_fetch?: unknown }[] }[] | null)
+    ?.some(report => report.urls?.some(url => typeof url.own_fetch === 'string') || report.candidates?.some(candidate => typeof candidate.own_fetch === 'string'))
+  const notRecorded = (recorded ? NOT_RECORDED_WITH_STATS : NOT_RECORDED).filter(x => !(x === 'model_token_usage' && model_usage.recorded && model_usage.tokens_complete) && !(x === 'per_url_fetch_outcomes' && fetchOutcomesRecorded))
   // Live per-source progress (pollable while the scan runs) and the one honest outcome: failed (which source) / rejected (counts per reason) / zero-match / yielded N leads.
   const progress = progressOf(source_runs, effectiveStatus(job))
   const saved = await readJobCost(db, tenantId, job.id)

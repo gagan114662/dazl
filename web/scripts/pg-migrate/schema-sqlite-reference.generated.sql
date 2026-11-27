@@ -595,7 +595,7 @@ CREATE TABLE organizations (
     kind TEXT NOT NULL CHECK (kind IN ('personal', 'team')),
     created_by TEXT NOT NULL,
     created_at INTEGER NOT NULL
-  );
+  , search_market TEXT);
 
 CREATE TABLE outreach_llm_usage (
       id            INTEGER PRIMARY KEY,
