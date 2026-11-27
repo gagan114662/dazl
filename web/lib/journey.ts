@@ -61,6 +61,7 @@ export function heldReason(l: PreviewLead): string | null {
   if (l.fit === 0 && l.intent === null) return 'not a fit'
   if (!ownSiteBuyer(l)) return NO_OWN_BUYER
   if (l.email_cannot_receive_mail ?? publishedAddressRefused(l)) return EMAIL_CANNOT_RECEIVE_MAIL
+  if (!publishedEmail(l)) return 'no published email'
   return null
 }
 

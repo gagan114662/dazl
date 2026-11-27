@@ -27,12 +27,19 @@ function seed() {
     .run(id, user, testOnly ? 'test only' : '(from request)', testOnly ? 'test only' : '-', query, at + t++)
   // confirmed: the user checked the source themselves (a machine-verified lead also needs a full timing proof to be ready)
   // #1037: each lead's own site names its buyer (the rows the real crawl stores) unless `buyer: false`, so the buyer rule decides no case here
-  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string; source?: string; buyer?: boolean }) => { db.prepare(
+  const lead = (id: string, jobId: string, o: { machine?: boolean; confirmed?: boolean; review?: string | null; date?: string | null; at?: number; quarantined?: boolean; fit?: number | null; company?: string; seen?: boolean; domain?: string; source?: string; buyer?: boolean; email?: boolean }) => { db.prepare(
     "INSERT INTO leads (id, scan_job_id, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, date_status, event_date_proof, fit, created_at, quarantined_at, human_confirmed_at, seen_before, company_domain, source_kind) VALUES (?, ?, ?, 'opened a new location', 'https://news.example/a', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(id, jobId, o.company ?? `Co ${id}`, o.machine ? 80 : null, o.machine ? `Co ${id} opened a new location` : null, o.review ?? null, o.date ?? null, o.date ? 'unverified' : null, o.date ? 'page_bound' : null, o.fit ?? null, o.at ?? NOW - DAY, o.quarantined ? NOW : null, o.confirmed ? NOW - DAY : null, o.seen ? 1 : 0, o.domain ?? null, o.source ?? null)
     if (o.buyer === false) return
     const tenant = (db.prepare('SELECT user_id FROM scan_jobs WHERE id = ?').get(jobId) as { user_id: string }).user_id
     for (const r of ownSiteBuyerRows(o.domain ?? `${id}.example`)) addEnrichment(db, tenant, id, r)
+    if (o.email !== false && o.source !== 'discover') {
+      const domain = o.domain ?? `${id}.example`
+      addEnrichment(db, tenant, id, {
+        connector: 'sitecrawl', kind: 'email', value: `buyer@${domain}`, label: null,
+        source_url: `https://${domain}/contact`, confidence: null, source_date: recent, retrieved_at: NOW,
+      })
+    }
   }
   const done = (id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
   return { db, job, lead, done }
@@ -369,4 +376,30 @@ test('#2012 Home and the company-first Leads route count the same email-ready le
   assert.equal(run.discover_counts.ready, homeReady.ready)
   assert.equal(run.company_first_counts.ready, homeReady.ready)
   assert.equal(run.leads.find(row => row.id === 'missing-email')?.currentness_held, false)
+})
+
+test('#2012 legacy Home and Leads hold a named buyer without a published email', async t => {
+  const { db, job, lead, done } = seed()
+  t.after(() => db.close())
+  const id = 'f'.repeat(24)
+  job(id, 'A', 'Businesses opening another site', NOW - DAY)
+  lead('no-mailbox', id, { machine: true, confirmed: true, date: recent, email: false })
+  lead('published-mailbox', id, { machine: true, confirmed: true, date: recent, domain: 'published.example' })
+  done(id)
+
+  const home = await readyGET()
+  assert.equal(home.status, 200)
+  const summary = await home.json() as { ready: number; companies: { lead_id: string; ready: boolean; reason: string }[] }
+  const byId = Object.fromEntries(summary.companies.map(row => [row.lead_id, row]))
+  assert.deepEqual({
+    ready: summary.ready,
+    noMailbox: [byId['no-mailbox']?.ready, byId['no-mailbox']?.reason],
+    publishedMailbox: byId['published-mailbox']?.ready,
+    leads: await leadsPageVerdicts([id], NOW - 30 * DAY),
+  }, {
+    ready: 1,
+    noMailbox: [false, 'no published email'],
+    publishedMailbox: true,
+    leads: { ready: ['published-mailbox'], held: { 'no published email': 1 }, judged: 2 },
+  })
 })
