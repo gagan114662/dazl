@@ -255,6 +255,28 @@ export function identityNorm(company: string): string {
   const stem = norm(t)
   return stem.length >= 5 ? stem : norm(company)
 }
+// The page's own name fields (title, h1, og:site_name), uncapped by the 30k text cut. Used by the identity check, so a name that is only
+// mentioned in a bio or a testimonial is not the firm's name.
+export function homeHeading(html: string): string {
+  const parts: string[] = []
+  for (const m of html.slice(0, 400_000).matchAll(/<(title|h1)\b[^>]*>([\s\S]{0,300}?)<\/\1>/gi)) { if (parts.length < 6) parts.push(m[2].replace(/<[^>]+>/g, ' ')) }
+  for (const m of html.slice(0, 400_000).matchAll(/<meta\b[^>]*\bproperty\s*=\s*["']og:site_name["'][^>]*\bcontent\s*=\s*["']([^"']{1,200})["']/gi)) { if (parts.length < 8) parts.push(m[1]) }
+  return parts.join(' | ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000)
+}
+// Does the page carry the lead's firm name? The full name (suffix kept) anywhere on the page is enough, as before. When a professional-form
+// suffix was dropped (#2145), the shorter stem could also sit inside a different firm's name ("Summit Partners Wealth Management"), so the stem
+// must be a whole name field: a title/h1/og:site_name segment that, once its own form tail is dropped, is exactly the stem.
+export function nameOnPage(company: string, homeNorm: string, heading = ''): boolean {
+  if (homeNorm.includes(norm(company))) return true
+  const stem = identityNorm(company)
+  if (stem === norm(company)) return false
+  for (const seg of heading.split(/\s[|\u2013\u2014\u00b7:-]\s|[|\u2013\u2014\u00b7]/)) {
+    let t = seg.trim()
+    for (let i = 0; i < 3; i++) { const n = t.replace(FORM_TAIL, ''); if (n === t) break; t = n }
+    if (norm(t) === stem) return true
+  }
+  return false
+}
 const SOCIAL = /(^|\.)(facebook|instagram|linkedin|twitter|x|youtube|tiktok|wikipedia|google|bing|apple|medium|github|crunchbase|pitchbook|glassdoor|indeed|bloomberg|reuters|techcrunch|forbes|yelp|tripadvisor|eventbrite|wa|t|bit|goo|lnkd)\.[a-z.]+$/i
 
 const registrable = (host: string) => { const h = host.toLowerCase().replace(/^www\./, ''); return getDomain(h) ?? h }
@@ -1291,7 +1313,7 @@ function siteLocationProof(pages: LocationPage[], where: string[], company: stri
 // always finite and positive (crawlBudgetBound): invalid or non-positive inputs become CRAWL_BUDGET_MS, never an unbounded crawl.
 // The return names which bound stopped the crawl (stoppedBy); a budget stop before the homepage reads reason 'time_budget', a caller
 // abort reads reason 'aborted', and both are treated as unread.
-export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal, opts?.noRedirect), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, buyerDiscovery: { ownAbout: boolean; authorizedHints?: readonly string[] } | null = null): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number; linkedinPeople?: string | null; withoutHint?: { url: string; found: Found[]; reason: string } }> {
+export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(url, 0, TIMEOUT_MS, guardedLookup, opts?.signal, opts?.noRedirect), gapMs = GAP_MS, expectName?: string, social = false, signal?: AbortSignal, onPage?: (html: string, url: string, status: number) => void, buyerRoles?: string, budgetMs: number = CRAWL_BUDGET_MS, buyerDiscovery: { ownAbout: boolean; authorizedHints?: readonly string[] } | null = null): Promise<{ found: Found[]; reason: string; pages: number; tech?: TechHit[]; homeObs?: Observability; homeNorm?: string; homeText?: string; homeHeading?: string; locationPages?: LocationPage[]; stoppedBy?: 'pages' | 'time' | 'aborted'; buyerPages?: number; linkedinPeople?: string | null; withoutHint?: { url: string; found: Found[]; reason: string } }> {
   const origin = `https://${site}`
   const stopped = () => signal?.aborted ?? false
   const deadline = Date.now() + crawlBudgetBound(budgetMs)
@@ -1352,7 +1374,8 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const homeNorm = norm(homePlain)
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
-    if (expectName && !homeNorm.includes(identityNorm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+    const heading = homeHeading(home.body)
+    if (expectName && !nameOnPage(expectName, homeNorm, heading)) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText, homeHeading: heading }
     // Qodo #1553: a home that lands on the site's own subdomain (uare.ai -> app.uare.ai/site) is crawled as that host: its own robots.txt
     // decides every later read, a login/app-shell landing is no company page, and later paths are requested on the landing origin.
     let crawlOrigin = origin
@@ -1490,7 +1513,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
       return { found: [...contacts.slice(0, 6), ...people.sort(buyerRoles ? byBuyerThenSeniority(buyerRoles) : bySeniority).slice(0, 3)], reason: contacts.length ? 'ok' : 'none_published' }
     }
     const sb = stoppedBy ?? (timeStop ? 'time' as const : abortStop ? 'aborted' as const : undefined)
-    return { ...select(), ...(citedOnlyUrl ? { withoutHint: { url: citedOnlyUrl, ...select(citedOnlyUrl) } } : {}), buyerPages, pages, linkedinPeople: companyPeopleUrl(home.body), tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
+    return { ...select(), ...(citedOnlyUrl ? { withoutHint: { url: citedOnlyUrl, ...select(citedOnlyUrl) } } : {}), buyerPages, pages, linkedinPeople: companyPeopleUrl(home.body), tech: detectTech(home.body), homeObs: observability(home.status, home.body), homeNorm, homeText, homeHeading: heading, locationPages, ...(sb ? { stoppedBy: sb } : {}) }
   } finally {
     clearTimeout(deadlineTimer) // cleared on EVERY exit - return, throw or reject (#871 CI: a rejecting Get leaked the 45s budget timer and held the child past the 60s spawn timeout)
   }
@@ -1856,7 +1879,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         (sharedReads.get(cand)?.deadline ?? 0) > Date.now()
       if (c) {
         if (c.homeNorm === undefined) return c
-        if (!c.homeNorm.includes(identityNorm(company))) return { found: [], reason: 'name_mismatch', pages: 0 }
+        if (!nameOnPage(company, c.homeNorm, c.homeHeading)) return { found: [], reason: 'name_mismatch', pages: 0 }
         if (c.reason !== 'name_mismatch' && !canReplay) return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)

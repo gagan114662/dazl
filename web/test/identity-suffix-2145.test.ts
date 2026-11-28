@@ -38,3 +38,20 @@ test('#2145 control: names without a trailing form behave as before, and a form 
   assert.equal(sc.identityNorm('Birchwood Tax LLP'), 'birchwoodtax')
   assert.equal(sc.identityNorm('Birchwood Tax LLC'), 'birchwoodtax')
 })
+
+test('#2145 control: a stem that is only the start of a different firm\'s name is refused (Summit Partners LLP vs Summit Partners Wealth Management)', async () => {
+  assert.equal(await reasonFor('Summit Partners LLP', 'Summit Partners Wealth Management'), 'name_mismatch')
+  assert.notEqual(await reasonFor('Summit Partners LLP', 'Summit Partners'), 'name_mismatch')
+  assert.notEqual(await reasonFor('Summit Partners LLP', 'Calgary Tax | Summit Partners'), 'name_mismatch')
+  assert.notEqual(await reasonFor('Summit Partners LLP', 'Summit Partners LLP'), 'name_mismatch')
+})
+
+test('#2145 control: the stem only in running text, not in a name field, is refused; the full name in running text is accepted as before', async () => {
+  const body = (t: string) => `<html><head><title>Welcome</title></head><body><h1>Home</h1><p>${t}</p><p>400, 123 8 Ave SW, Calgary, AB</p></body></html>`
+  const rf = async (html: string) => {
+    const get: sc.Get = async url => { const u = new URL(url); if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }; return u.pathname === '/' ? { status: 200, body: html, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+    return (await sc.crawlSite('example-firm.ca', get, 0, 'Summit Partners LLP')).reason
+  }
+  assert.equal(await rf(body('We work with Summit Partners Wealth Management.')), 'name_mismatch')
+  assert.notEqual(await rf(body('Summit Partners LLP, chartered accountants.')), 'name_mismatch')
+})
