@@ -625,6 +625,14 @@ function deobfuscatedEmails(body: string): string[] {
   return out
 }
 
+// A mailto href often carries a query (mailto:partners@site?subject=…). Crawlee's URL pass
+// validates the whole target as an address, query included, and drops it, so the address
+// never becomes a candidate. Strip the query from mailto targets in the copy the parser
+// reads: the address is then judged exactly as the same address in a plain mailto. (#2156)
+function mailtoTargetsPlain(body: string): string {
+  return body.replace(/mailto:([^?"'\s<>]+)\?[^"'\s<>]*/gi, 'mailto:$1')
+}
+
 export function extractContacts(html: string, pageUrl: string, site: string): Found[] {
   html = revealEmails(html) // #1036: Cloudflare-protected and [at]/[dot] addresses read as a visitor sees them
   const out = new Map<string, Found>()
@@ -632,7 +640,7 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
   const add = (f: Found) => { if (!out.has(f.kind + f.value)) out.set(f.kind + f.value, f) }
   // Crawlee's parser finds mailto: links and addresses in visible text; JSON-LD and
   // deobfuscation cover the two forms it misses. The filters below decide what is kept.
-  const emails: string[] = [...social.parseHandlesFromHtml(body).emails, ...jsonLdEmails(html), ...deobfuscatedEmails(body)]
+  const emails: string[] = [...social.parseHandlesFromHtml(mailtoTargetsPlain(body)).emails, ...jsonLdEmails(html), ...deobfuscatedEmails(body)]
   for (const e of emails) {
     const m = /^([^@\s]+)@([^@\s]+)$/.exec(e.trim().toLowerCase()); if (!m) continue
     if (!sameSite(m[2], site) || !ROLE.test(m[1].replace(/[._-]/g, '')) ) continue
