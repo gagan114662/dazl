@@ -257,7 +257,8 @@ export function identityNorm(company: string): string {
 }
 // The page's own name fields (title, h1, og:site_name), uncapped by the 30k text cut. Used by the identity check, so a name that is only
 // mentioned in a bio or a testimonial is not the firm's name.
-export function homeHeading(html: string): string {
+export function homeHeading(rawHtml: string): string {
+  const html = visibleMarkup(rawHtml.slice(0, 400_000))
   const parts: string[] = []
   for (const m of html.slice(0, 400_000).matchAll(/<(title|h1)\b[^>]*>([\s\S]{0,300}?)<\/\1>/gi)) { if (parts.length < 6) parts.push(m[2].replace(/<[^>]+>/g, ' ')) }
   for (const m of html.slice(0, 400_000).matchAll(/<meta\b[^>]*\bproperty\s*=\s*["']og:site_name["'][^>]*\bcontent\s*=\s*["']([^"']{1,200})["']/gi)) { if (parts.length < 8) parts.push(m[1]) }

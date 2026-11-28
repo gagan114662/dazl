@@ -55,3 +55,15 @@ test('#2145 control: the stem only in running text, not in a name field, is refu
   assert.equal(await rf(body('We work with Summit Partners Wealth Management.')), 'name_mismatch')
   assert.notEqual(await rf(body('Summit Partners LLP, chartered accountants.')), 'name_mismatch')
 })
+
+test('#2145 control: a matching name field a visitor cannot see (commented, scripted, templated, hidden) does not satisfy the stem rule', async () => {
+  const rf = async (head: string) => {
+    const html = `<html><head><title>Welcome</title>${head}</head><body><h1>Home</h1>${head.startsWith('<') ? '' : head}<p>400, 123 8 Ave SW, Calgary, AB</p></body></html>`
+    const get: sc.Get = async url => { const u = new URL(url); if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }; return u.pathname === '/' ? { status: 200, body: html, finalUrl: url } : { status: 404, body: '', finalUrl: url } }
+    return (await sc.crawlSite('example-firm.ca', get, 0, 'Summit Partners LLP')).reason
+  }
+  for (const h of ['<!-- <h1>Summit Partners</h1> -->', '<script>var t = "<h1>Summit Partners</h1>"</script>', '<template><h1>Summit Partners</h1></template>', '<h1 hidden>Summit Partners</h1>', '<div aria-hidden="true"><h1>Summit Partners</h1></div>', '<div style="display:none"><title>Summit Partners</title></div>']) {
+    assert.equal(await rf(h), 'name_mismatch', h)
+  }
+  assert.notEqual(await rf('<h1>Summit Partners</h1>'), 'name_mismatch')
+})
