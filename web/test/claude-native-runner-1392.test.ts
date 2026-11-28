@@ -11,7 +11,7 @@ import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { qaClaudeOnlyBudget } from '../lib/scan/qa-provider-policy.ts'
 import { markCompanyFirstBudget } from '../lib/company-first/product-discovery.ts'
 import { claimKeyedJob, runJob } from '../lib/scan/runner.ts'
-import { createQueryJob, pinAdmittedStrictJob } from '../lib/scan/store.ts'
+import { createQueryJob, pinAdmittedStrictJob, reapStaleJobs } from '../lib/scan/store.ts'
 import { isPlanPrompt, planReply, planRequestOf, PLACE, type StubPlace } from './helpers/request-plan-stub.ts'
 import { asStreaming } from './helpers/claude-sse.ts'
 
@@ -59,7 +59,7 @@ const ROUNDUP_CANDS = [
   { name: '', company: 'Applied Carbon', signal: 'Raised a Series A', source_url: ROUNDUP_URL, excerpt: 'Applied Carbon raised a $20M Series A to scale its field operations.', event_date: null, score: 80 },
 ]
 const ROUNDUP_TEXT = ('Funding rounds report. ' + ROUNDUP_CANDS.map(c => c.excerpt).join(' ') + ' More rounds below. ').repeat(4)
-async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp, fundingRoundup = false }: { fundingRoundup?: boolean; mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[]; buyerSource?: string }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
+async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', overage = false, interrupted = false, leaseExpiresDuringSearch = false, sparseUsage = false, noNativeUrls = false, thinPublisher = false, failedPublisher = false, acceptedGeo, diverseFixture, uncertainResponse, rateLimited = false, query = q, where = ['London, UK'], industries = ['Roofing'], signals = [], now, windowDays, ordinary = false, companyFirstTenant, confirmedOffer, inputTokens, secondWave, extractionFixture, reclaimed = false, publisherError = false, useLimitOnly = false, suppliedOnlyFirstWave = false, deepSignal = false, overTokens = 300_000, dayUsd, boardHttp, fundingRoundup = false }: { fundingRoundup?: boolean; mode?: string; trial?: boolean; first5?: boolean; cap?: string; overage?: boolean; interrupted?: boolean; leaseExpiresDuringSearch?: boolean; sparseUsage?: boolean; noNativeUrls?: boolean; thinPublisher?: boolean; failedPublisher?: boolean; acceptedGeo?: string; diverseFixture?: { results: string[]; cited: string[]; blocked: string[]; missing?: string[]; buyerSource?: string }; uncertainResponse?: 'http' | 'body' | 'usage' | 'projected'; rateLimited?: boolean; query?: string | null; where?: string[]; industries?: string[]; signals?: string[]; now?: Date; windowDays?: number; ordinary?: boolean; companyFirstTenant?: string; confirmedOffer?:string; inputTokens?:number; secondWave?:'valid'|'unknown'|'over'; extractionFixture?:boolean; reclaimed?: boolean; publisherError?: boolean; useLimitOnly?: boolean; suppliedOnlyFirstWave?: boolean | 'unreadable'; deepSignal?: boolean; overTokens?: number; dayUsd?: string; boardHttp?: import('../lib/sources/types.ts').SafeGet } = {}) {
   const db = new Database(':memory:')
   const env = {
     DAZL_MASTER_KEY: master.toString('base64'),
@@ -126,6 +126,10 @@ async function simulate({ mode = v3, trial = false, first5 = true, cap = '5', ov
         return Response.json({ type: 'error', error: { type: 'rate_limit_error', message: 'Rate limit exceeded' }, request_id: 'req_fixture' }, { status: 429, headers: { 'request-id': 'req_fixture' } })
       if(sent===2&&secondWave==='unknown')throw Error('fixture second call uncertain, no retry')
       if(sent===2&&secondWave)assert.equal(db.prepare("SELECT count(*) FROM scan_spend_calls WHERE kind='llm.anthropic.web_search' AND status='settled'").pluck().get(),1)
+      if (leaseExpiresDuringSearch) {
+        db.prepare('UPDATE scan_jobs SET claimed_at = 1 WHERE id = ?').run(job.id)
+        reapStaleJobs(db)
+      }
       if (interrupted) throw Error('offline fixture response dropped')
       if (uncertainResponse === 'http') return new Response('raw-response-sentinel', { status: 529 })
       if (uncertainResponse === 'body') return new Response('raw-response-sentinel')
@@ -440,6 +444,16 @@ test('unknown native search billing stops the old play without permanently block
   assert.deepEqual(x.nativeStatus, { status: 'error:transport' })
   assert.deepEqual(x.sequence, ['native-count', 'native-send', 'native-count', 'native-send'])
   assert.deepEqual(x.ledger, [{ status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null }])
+})
+
+test('a native search response arriving after lease recovery cannot settle or replay the interrupted scan', async () => {
+  const run = await simulate({ leaseExpiresDuringSearch: true })
+  assert.deepEqual(run.end, { status: 'failed', error: 'accounting_uncertain' })
+  assert.deepEqual(run.sequence, ['native-count', 'native-send'])
+  assert.deepEqual(run.publisherRequests, [])
+  assert.deepEqual(run.ledger, [{
+    status: 'reserved', reason: null, reserve_usd: claudeSearchEstimate(count).estimatedUsd, actual_usd: null,
+  }])
 })
 
 test('post-send failure diagnostics distinguish response paths without releasing unknown spend', async () => {
