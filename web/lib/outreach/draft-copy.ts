@@ -139,7 +139,7 @@ const allCaps = (t: string): boolean => { const letters = t.replace(/[^a-zA-Z]/g
 function firstSentenceOf(text: string): string {
   const words = text.split(/\s+/).filter(Boolean)
   for (let i = 0; i < words.length; i++) {
-    if (/[.!?]$/.test(words[i]) && !NOT_SENTENCE_END.test(words.slice(0, i + 1).join(' '))) return words.slice(0, i + 1).join(' ')
+    if (/[.!?]$/.test(words[i]) && !/^[A-Za-z]\.$/.test(words[i]) && !NOT_SENTENCE_END.test(words.slice(0, i + 1).join(' '))) return words.slice(0, i + 1).join(' ')
   }
   return text
 }
@@ -171,7 +171,10 @@ const KIND_BRIDGE = {
   launch: 'A launch like that brings a spike of attention, and that is when outside help pays off.',
 } as const
 const SIGNAL_KINDS: [RegExp, keyof typeof KIND_BRIDGE][] = [
-  [/\b(?:hir(?:e|es|ing|ed)|recruit\w*|new roles|openings?|headcount|jobs?|vacanc\w*|positions?)\b/i, 'hiring'],
+  [/\b(?:hir(?:e|es|ing|ed)|recruit\w*|new roles|headcount|jobs?|vacanc\w*|positions?)\b/i, 'hiring'],
+  // "opening" alone names any kind of opening (an office opening is a move); it reads as
+  // hiring only with a staffing object nearby (CodeRabbit).
+  [/\bopen(?:ing|ings)\b[^.;]{0,40}?\b(?:job|jobs|role|roles|position|positions|staff|hire|hiring|career|careers|employee)\b/i, 'hiring'],
   // Weak action verbs read as hiring only with a staffing object nearby (CodeRabbit):
   // "added a glossary" is not a hiring event, "added 10 new roles" is.
   [/\b(?:added|adding|adds|is creating)\b[^.;]{0,60}?\b(?:roles?|jobs?|staff|people|headcount|team\w*|position\w*|sdr\w*|engineers?|salespeople|hire\w*|recruit\w*|technicians?|operators?|workers?)\b/i, 'hiring'],
@@ -197,7 +200,7 @@ const GENERIC_OFFER = /\b(?:software|saas|platform|services?|solutions?|consult\
 // A specialized or equipment-domain offer never rides the generic shortcut (CodeRabbit):
 // "services" in "commercial refrigeration maintenance services" does not make it fit any
 // business moment; it needs the kind's domain or a shared word with the cited signal.
-const SPECIFIC_OFFER = /\b(?:refrigerat\w*|hvac|machin\w*|equipment|industrial|manufactur\w*|automot\w*|dental|medic\w*|clinic\w*|construction|roof\w*|plumb\w*|electric\w*|catering|grocery|restaurant|hospitality|apparel|furniture|farm\w*|agricultur\w*|bakery|forklift\w*)\b/i
+const SPECIFIC_OFFER = /\b(?:refrigerat\w*|hvac|machin\w*|equipment|industrial|manufactur\w*|automot\w*|dental|medic\w*|clinic\w*|construction|roof\w*|plumb\w*|electric\w*|catering|grocery|restaurant|hospitality|apparel|furniture|farm\w*|agricultur\w*|bakery|forklift\w*|veterinar\w*|legal|salon|realt\w*)\b/i
 const KIND_FIT: Record<keyof typeof KIND_BRIDGE, RegExp> = {
   hiring: /\b(?:hir\w*|recruit\w*|talent|jobs?|staff\w*|team\w*|people|headcount|candidate\w*|onboard\w*|payroll|workforce|hr\b|sales)\b/i,
   funding: /\b(?:fund\w*|capital|invest\w*|growth|scal\w*|series|rais\w*|budget|financ\w*|cash|revenue|bank\w*)\b/i,
@@ -247,7 +250,7 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
   // natural news frame, and a short unchanged signal keeps the established wording.
   const newsRef = `I saw the ${signalDay ? `${signalDay} ` : 'recent '}news about ${company || contactName || 'your company'}.`
   const cited = company && seen.startsWith(company) ? seen : lowerFirstSafe(seen, company)
-  const isHeadline = HEADLINE_SHAPE.test(seen) || HEADLINE_SHAPE_SOFT.test(seen) || HEADLINE_SHAPE.test(rawForShape) || HEADLINE_SHAPE_SOFT.test(rawForShape) || (allCaps(excerpt) && HEADLINE_SHAPE_SHOUT.test(rawForShape))
+  const isHeadline = HEADLINE_SHAPE.test(seen) || HEADLINE_SHAPE_SOFT.test(seen) || HEADLINE_SHAPE.test(rawForShape) || HEADLINE_SHAPE_SOFT.test(rawForShape) || (allCaps(rawForShape) && HEADLINE_SHAPE_SHOUT.test(rawForShape))
   const opener = !seen
     ? rawSignal
       ? newsRef

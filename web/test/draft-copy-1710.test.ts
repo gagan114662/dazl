@@ -333,3 +333,39 @@ test('(CodeRabbit) a reporting verb before the cut keeps its complement whole', 
   assert.doesNotMatch(d.body, /news that Fernway Handling showed\./, 'the reporting verb is never left without its complement')
   assert.match(d.body, /news about Fernway Handling\./)
 })
+
+// CodeRabbit round 3 on PR #2157 (four findings on d718e856b), all verified against the code.
+test('(CodeRabbit) a name initial is not a sentence ending', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio appointed J. Smith as its new finance director.',
+  }), 'dazl', OFFER)
+  assert.match(d.body, /appointed J\. Smith as its new finance director/, 'the surname and the appointment stay in the draft')
+})
+
+test('(CodeRabbit) an office opening is a move, not a hiring event', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio announced the opening of its new office.',
+  }), 'dazl', 'HR software (SaaS) in the UK')
+  assert.doesNotMatch(d.body, /hiring push/, 'an office opening is not a hiring event')
+  assert.match(d.body, /A move like that/, 'the move bridge is the one that fits')
+})
+
+test('(CodeRabbit) a veterinary offer stays off the generic shortcut', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio raised a Series A round led by regional investors.',
+  }), 'dazl', 'veterinary appointment scheduling software')
+  assert.doesNotMatch(d.body, /outside help pays off/, 'veterinary software does not ride the generic funding bridge')
+})
+
+test('(CodeRabbit) an all-caps headline after a mixed-case date prefix is still never pasted', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Northline Logistics',
+    evidence_excerpt: 'October 30, 2026, NORTHLINE LOGISTICS TO MOVE REGIONAL HEADQUARTERS',
+    event_date: '2026-10-30', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /headquarters/i, 'the shouting headline is not pasted')
+  assert.match(d.body, /I saw the October 30, 2026 news about Northline Logistics\./)
+})
