@@ -396,9 +396,64 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
   // refusal never stops the name guesses or the web search (crawlJob).
   const anchors = out.length
   for (const h of jsonLdCompanySites(company, evidenceHtml, own)) push(h, labelMatches(nameLabel(h), want) ? 'evidence_link_domain_label' : 'evidence_link_text')
+  // #2145: a site the posting page names for the employer, when no structured record gave one. Same standing as a structured site.
+  if (out.length === anchors) for (const h of postingNamedSites(company, evidenceHtml, own)) push(h, 'evidence_link_text')
   // main's cap of 2 applies to the page's own links; a structured-data site keeps its own slot after them (review of #1219: with 2 anchored
   // company-named links it was cut off), so a lead tries at most 2 linked sites and 1 structured one
   return [...out.slice(0, Math.min(anchors, 2)), ...out.slice(anchors, anchors + 1).map(o => ({ ...o, structured: true }))]
+}
+// #2145: only what a visitor can see. Drops comments, script/style/noscript/template/svg blocks and any element that is hidden (hidden attribute,
+// aria-hidden="true", display:none / visibility:hidden inline, hidden/d-none classes) with everything inside it. One linear pass over the tags.
+const VOID_TAG = /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/
+export function visibleMarkup(html: string): string {
+  const src = html.slice(0, 2_000_000).replace(/<!--[\s\S]*?(?:-->|$)/g, ' ').replace(/<(script|style|noscript|template|svg)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
+  const out: string[] = []; const stack: Array<{ tag: string; hide: boolean }> = []
+  let hiddenDepth = 0, last = 0
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+  for (let m: RegExpExecArray | null; (m = tagRe.exec(src)); ) {
+    if (!hiddenDepth) out.push(src.slice(last, m.index))
+    last = m.index + m[0].length
+    const tag = m[2].toLowerCase()
+    if (m[1]) {
+      const i = stack.map(e => e.tag).lastIndexOf(tag)
+      if (i >= 0) { for (const e of stack.splice(i)) if (e.hide) hiddenDepth-- }
+      if (!hiddenDepth) out.push(m[0])
+      continue
+    }
+    const attrs = m[3]
+    const bare = attrs.replace(/(["'])[^"']*\1/g, ' ')
+    const val = (n: string) => new RegExp(`\\b${n}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)
+    const ariaM = val('aria-hidden'), styleM = val('style'), classM = val('class')
+    const style = styleM ? (styleM[1] ?? styleM[2] ?? styleM[3] ?? '') : ''
+    const cls = classM ? (classM[1] ?? classM[2] ?? classM[3] ?? '') : ''
+    const hide = /(?:^|\s)hidden(?:\s|=|\/|$)/i.test(bare) || (!!ariaM && (ariaM[1] ?? ariaM[2] ?? ariaM[3] ?? '').trim().toLowerCase() === 'true') ||
+      /display\s*:\s*none|visibility\s*:\s*hidden/i.test(style) || /(?:^|\s)(?:hidden|d-none|invisible|sr-only|visually-hidden)(?:\s|$)/i.test(cls)
+    const selfClose = VOID_TAG.test(tag) || /\/\s*$/.test(attrs)
+    if (!selfClose) { stack.push({ tag, hide }); if (hide) hiddenDepth++ }
+    else if (hide) { /* a hidden void element carries no text */ continue }
+    if (!hiddenDepth) out.push(m[0])
+  }
+  if (!hiddenDepth) out.push(src.slice(last))
+  return out.join('')
+}
+// #2145: the site a posting page itself names for the employer, when the name label does not already make it a company link: a link
+// labelled as the employer's website ("Visit employer website"). A "Website:" field or a host in running text is NOT taken here: test/jobbank-printed-domain-crawl-1910 requires a printed site
+// to count only on an exact Job Bank posting read, and cited-homepage-identity refuses a bare mention. Only candidates: the caller marks one `structured`, so the homepage-name check and the
+// place check still decide and the name guesses still run. Social, directory, board, government and the page's own host are never one.
+const EMPLOYER_SITE_LABEL = /^(?:(?:visit|view|see|go to)\s+)?(?:the\s+)?(?:employer|company|organi[sz]ation|firm|our|their)(?:'s)?\s+(?:web\s?site|site|homepage|home page)$/i
+export function postingNamedSites(company: string, html: string, pageHost = ''): string[] {
+  const want = norm(company)
+  const out: string[] = []
+  const add = (raw: string, needsName: boolean) => {
+    let host: string; try { host = registrable(new URL(/^https?:\/\//i.test(raw) ? raw.replace(/&amp;/g, '&') : `https://${raw}`).hostname) } catch { return }
+    if (!host || !siteHostOk(host) || host === pageHost || SOCIAL.test(host) || NOT_OWN_SITE.has(nameLabel(host)) || NOT_A_COMPANY_TLD.test(host) || out.includes(host)) return
+    if (needsName && !(want.length >= 4 && labelMatches(nameLabel(host), want))) return
+    out.push(host)
+  }
+  for (const m of visibleMarkup(html).matchAll(/<a\b[^>]*\bhref\s*=\s*["'](https?:\/\/[^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
+    if (EMPLOYER_SITE_LABEL.test(m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())) add(m[1], false)
+  }
+  return out.slice(0, 1)
 }
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
 // must not cost quadratic time). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
