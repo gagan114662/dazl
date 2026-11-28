@@ -89,7 +89,7 @@ export function atsPosting(url: string | URL): AtsPosting | null {
 
   if (host === 'jobs.smartrecruiters.com' && seg.length >= 2) {
     const m = /^(\d{6,})(?:-|$)/.exec(seg[1])
-    if (m) return { platform: 'smartrecruiters', apiUrl: `https://api.smartrecruiters.com/v1/companies/${enc(seg[0])}/postings/${m[1]}`, read: j => obj(j).releasedDate }
+    if (m) return { platform: 'smartrecruiters', apiUrl: `https://api.smartrecruiters.com/v1/companies/${enc(seg[0])}/postings/${m[1]}`, read: j => obj(j).releasedDate, readTitle: j => obj(j).name }
   }
 
   return null
