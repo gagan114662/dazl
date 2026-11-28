@@ -39,6 +39,9 @@ const nextConfig: NextConfig = {
       { source: '/signin', destination: '/sign-in', permanent: true },
       { source: '/signup', destination: '/sign-up', permanent: true },
       { source: '/register', destination: '/sign-up', permanent: true },
+      { source: '/faq', destination: '/contact', permanent: true },
+      { source: '/blog', destination: '/', permanent: true },
+      { source: '/privacy.html', destination: '/privacy', permanent: true },
     ]
   },
   async headers() {
