@@ -8,7 +8,8 @@
 //    the flat profile fields keep no per-item source.
 // A section with nothing in it says so ("dazl did not find this"); nothing is invented to fill it.
 import type { Icp, ResearchedHyp } from './scan/icp.ts'
-import { compileTargeting, planConditions, conditionRoles } from './scan/targeting.ts'
+import { compileTargeting, planConditions, conditionRoles, readsAsDenial } from './scan/targeting.ts'
+import { roleWordsFor, type SignalReading } from './scan/role-words.ts'
 
 export interface BrainProfile { business_name?: string | null; sells?: string | null; website?: string | null; buyer?: Icp | null }
 export interface BrainMemory { icp?: string; positioning?: string; tone?: string; exclusions?: string[]; objections?: { q: string; a: string }[] }
@@ -77,65 +78,84 @@ export interface BrainPlay { label: string; query: string }
 // a buyer role (or industry) in the first place named with a saved signal, companies hiring the role a saved hiring
 // signal names (a job-posting signal, lib/scan/targeting.ts), and people looking for an alternative to a saved competitor (a plain web-search sentence; the complaint/alternatives
 // connector, lib/signals/competitor-reddit.ts, adds posts only when it is enabled for the workspace). Nothing is suggested when the profile has nothing to build it from.
-export function businessPlays(p: BrainProfile | null, competitors: string[] | null): BrainPlay[] {
+export function businessPlays(p: BrainProfile | null, competitors: string[] | null, readings: Readonly<Record<string, SignalReading>> = {}): BrainPlay[] {
   const b = p?.buyer ?? null
   const who = list(b?.who), ind = list(b?.industries), where = list(b?.where)[0] ?? '', sig = list(b?.signals)
   const place = where ? ` in ${where}` : ''
   const out: BrainPlay[] = []
   const add = (label: string, query: string) => { const q = query.replace(/\s+/g, ' ').trim().slice(0, 300); if (q && !out.some(o => o.query === q) && out.length < 5) out.push({ label, query: q }) }
   // Every play is judged on the signal's own compiled plan (lib/scan/targeting.ts), never joined with the buyer text (a buyer
-  // such as "Hiring manager" would supply a condition itself). The compiler reads many negations the wrong way round
-  // ("Business rejecting venture capital funding", a real saved signal, compiles to a POSITIVE funding condition), and a play
-  // that searches for the opposite of what the user saved is worse than no play. So both kinds of play are refused on wording:
-  // NEGATING is a list of known negating, stopping and shrinking wordings - a list, not a guarantee; the compiler itself is
-  // the follow-up (#1163) - and a signal that has any of them makes no play at all. It still shows on the page.
-  // - a HIRING play, stricter (an allow-list): the signal must START with hiring - only "is / are / now / currently / actively /
-  //   started / just / recently", "not only", "not just" or "never stopped" may come before the hiring word - have none of the
-  //   NEGATING words anywhere else ("hiring SDRs on hold", "hiring nobody", "instead of hiring recruiters": none), be
-  //   followed by a role and nothing else (a shape check, see hiringRole), and compile to a positive hiring condition with a
-  //   real role. The role is the compiler's.
-  // - a PLAIN play: any other signal with a positive condition and no NEGATING word; a hiring condition backs one only as
-  //   "hiring" with no role ("Expanding team, hiring").
-  // Cost, accepted: a mixed but positive signal ("hiring freeze lifted, now hiring SDRs", "raised funding, not hiring a
-  // receptionist") makes no play. A free-form signal the compiler cannot enforce ("attended a trade show") makes none either.
+  // such as "Hiring manager" would supply a condition itself). #1163: the plan decides, so there is no list of negating wordings here.
+  // - a HIRING play: every condition in the plan is a hiring condition, and at least one POSITIVE one names a role. A denial is
+  //   not(...) in the plan ("stopped hiring SDRs", "hiring SDRs on hold", "instead of hiring recruiters"), so it makes none; a
+  //   lifted freeze followed by real hiring ("hiring freeze lifted, now hiring SDRs") holds two positive hiring conditions, the
+  //   second with a role, and makes one. What follows the hiring word in that condition must be a role and nothing else by shape
+  //   (roleShape), and it must be the last thing the signal says.
+  // - a PLAIN play: any other signal with a positive condition; a hiring condition backs one only as "hiring" with no role
+  //   ("Expanding team, hiring"). A mixed signal ("raised a Series A, hiring SDRs") stays a plain play.
+  // A free-form signal the compiler cannot enforce ("attended a trade show", or a signal in a language it does not read) makes none.
   // #1722: an industry that already reads plural keeps its own wording (trailing 's' without 'ss' - the general
   // rule, no word list), and only a role buyer gets the " at companies" qualifier: an industry names companies already.
   const fromRole = !!who[0]
   const ind0 = (ind[0] ?? '').toLowerCase()
-  const buyer = who[0] || (ind[0] ? (ind0.endsWith('s') && !ind0.endsWith('ss') ? ind[0] : `${ind[0]} companies`) : '')
-  const NEGATING = /(?:n['\u2019]t\b|\bpre-|\b(?:not|never|no|nobody|none|nothing|zero|without|sans|lack(?:s|ing)?|fail(?:s|ed|ing|ure)?|fell through|fall(?:s|ing)? through|reject(?:s|ed|ing)?|declin(?:e|es|ed|ing)|avoid(?:s|ed|ing)?|turn(?:s|ed|ing)? down|pass(?:es|ed|ing)? on|away from|refus(?:e|es|ed|ing)|against|opposed to|anti|instead of|rather than|stop(?:s|ped|ping)?|quit(?:s|ting)?|cancel(?:s|led|ed|ling|ing)?|drop(?:s|ped|ping)?|downsiz(?:e|es|ed|ing)|lay(?:s|ing)? off|laid off|layoffs?|freez(?:e|es|ing)|froze|frozen|paus(?:e|es|ed|ing)|halt(?:s|ed|ing)?|ceas(?:e|es|ed|ing)|defer(?:s|red|ring)?|suspend(?:s|ed|ing)?|no longer|on hold|lost|los(?:e|es|ing)|ran out|run(?:s|ning)? out|yet to|before|prior to|fewer|less|few|barely|hardly|rarely|seldom|gave up|giv(?:e|es|ing) up|done|end(?:s|ed|ing)|reduc(?:e|es|ed|ing)|cut(?:s|ting)?|shr(?:ink|inks|ank|unk|inking)|slow(?:s|ed|ing)?|neither|nor|unlikely|impossible|unable|minimal|nil|zilch|postpon\w*|delay\w*|shelv\w*|scrap\w*|abandon\w*|discontinu\w*|terminat\w*|slash\w*|unsuccessful\w*)\b)/i
+  const buyer = who[0] || (ind[0] ? (ind0.endsWith('s') && !ind0.endsWith('ss') ? ind[0] : `${ind0} companies`) : '')
+  // Review on #1850: an affirmative lower bound ("no fewer than ten SDRs", "at least 10 SDRs") is not a denial, and nothing here can
+  // prove a count, so the quantity is dropped before the wording is read: the hire is read, the number is never claimed. The saved text
+  // itself is untouched, so the play still shows the user's own words.
+  const LOWER_BOUND = /\b(?:no\s+(?:fewer|less)\s+than|at\s+least)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a\s+dozen|dozens?\s+of)\s+/gi
+  const read = (x: string) => x.replace(LOWER_BOUND, ' ')
   const HIRING_NOUN = /^(?:slowdown|moratorium|ban|cap|cutbacks?|pullback|restrictions?|drought|embargo|lull|standstill|plans?|budget|freeze|pause)$/i
   const conds = (x: string) => planConditions(compileTargeting(x).root)
-  // the three phrases that contain a NEGATING word but mean the hiring is real
-  const POSITIVE_LEAD = /^(?:not (?:only|just)|never (?:stopped|stops))\s+/i
-  const LEAD_IN = /^(?:(?:is|are|now|currently|actively|started|just|recently)\s+)*$/i
-  const hiringRole = (x: string): string | null => {
-    const t = x.trim(), m = /\bhir(?:e|es|ing|ed)\b/i.exec(t)
-    if (!m) return null
-    const lead = t.slice(0, m.index), rest = t.slice(m.index)
-    if (!(LEAD_IN.test(lead) || (POSITIVE_LEAD.test(lead) && LEAD_IN.test(lead.replace(POSITIVE_LEAD, ''))))) return null
-    if (NEGATING.test(rest) || NEGATING.test(lead.replace(POSITIVE_LEAD, ''))) return null
-    // What follows the hiring word must be a role and nothing else, judged by SHAPE (Hermes review at c12ab77d: "hiring
-    // slowdown", "hiring SDRs postponed", "hiring front-desk staff is off the table" all compiled to a role):
-    // at most 5 words; no digit and no punctuation but a hyphen, & or /; no verb or particle word; no word ending in -ed;
-    // and the last word is not a hiring noun (HIRING_NOUN is a list, like NEGATING).
-    const tail = rest.replace(/^\S+\s*/, '').replace(/^(?:(?:a|an|the|new)\s+|(?:their|our|its)\s+first\s+)/i, '').trim()
-    const words = tail.split(/\s+/).filter(Boolean)
-    if (!words.length || words.length > 5 || /[^A-Za-z\s&/-]/.test(tail)) return null
-    if (words.some(w => /^(?:is|are|was|were|be|been|has|had|off|out|down|up|over|anymore|yet)$/i.test(w) || /ed$/i.test(w))) return null
-    if (HIRING_NOUN.test(words[words.length - 1])) return null
-    const c = conds(x).find(p => p.cond.kind === 'hiring' && !p.negated && (p.cond.role ?? '').trim())
-    // #1122: every role the condition names, in plain words ("SDR or salesperson"), never only the first
-    const all = c ? conditionRoles(c.cond).join(' or ') : ''
-    const role = (all.length > 80 ? all.slice(0, 80).replace(/\s+\S*$/, '') : all) || undefined   // never cut a role mid-word
-    return role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an|of)\b$/i.test(role) && !/^of\s/i.test(role) ? role : null
+  // A word that cannot be part of a role: a function or particle word, or a quantifier or indefinite pronoun that turns the phrase
+  // into a denial ("hiring nobody", "hiring nil SDRs", "hiring minimal staff"), plus the two predicative adjectives a hiring phrase
+  // uses to deny itself ("hiring SDRs impossible"). A word ending in -ed or -ly is a verb or an adverb, not a role word.
+  // #2084: the words that cannot be part of a role come from ONE table for every language (lib/scan/role-words.ts). When the table
+  // cannot read the signal's language, no word rule runs at all: the reading comes from the judge (readings, filled by
+  // lib/scan/signal-reading.ts), and without one the signal makes no play - an unread language is never passed on English rules.
+  // English is the compiler's own language (and dazl's documented default when a request names none); every other language is read
+  // by the judge, and its table row is the guard on the role the judge names.
+  const lang = (b?.language ?? 'en').trim().toLowerCase().slice(0, 2)
+  const english = lang === 'en'
+  const words = roleWordsFor(lang)
+  const judged = (x: string): SignalReading | null => (english ? null : readings[x.trim()] ?? null)
+  const roleShape = (tail: string): boolean => {
+    if (!words) return false
+    const tailWords = tail.trim().split(/\s+/).filter(Boolean)
+    if (!tailWords.length || tailWords.length > 5 || /[^A-Za-z\u00c0-\u024f\s&/-]/.test(tail)) return false
+    if (tailWords.some(w => words.has(w.toLowerCase()) || /ed$/i.test(w) || /ly$/i.test(w))) return false
+    return !HIRING_NOUN.test(tailWords[tailWords.length - 1])
   }
-  const plainOk = (x: string) => !hiringRole(x) && !NEGATING.test(x) && conds(x).some(c => !c.negated && (c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim()))
+  // Every role the plan gives this signal's positive hiring conditions, in plain words ("SDR or salesperson"), never only the first.
+  const hiringRoles = (x: string): string[] => {
+    if (!english) { const r = judged(x); return r?.kind === 'hiring' && r.role && (!words || roleShape(r.role)) ? [r.role] : [] }
+    const plan = conds(read(x))
+    if (!plan.length || plan.some(p => p.cond.kind !== 'hiring')) return []
+    const out: string[] = []
+    for (const p of plan) {
+      if (p.negated) continue
+      const at = read(x).lastIndexOf(p.cond.text), tail = p.cond.text.replace(/^\s*hir(?:e|es|ing|ed)\b\s*/i, '')
+      if (at < 0 || !roleShape(tail)) continue
+      // what follows the condition may only be more roles joined by and/or: "hiring SDRs? Nope" is not a hire
+      const after = read(x).trim().slice(at + p.cond.text.length)
+      if (!/^[\s.,;:!?]*$/.test(after) && !/^[\s.,;:]*\b(?:and|or)\b\s+[A-Za-z][A-Za-z\s&/-]*$/.test(after)) continue
+      const all = conditionRoles(p.cond).join(' or ')
+      const role = all.length > 80 ? all.slice(0, 80).replace(/\s+\S*$/, '') : all   // never cut a role mid-word
+      if (role && role.length >= 2 && !/^(?:the|this|that|our|its|their|a|an|of)\b$/i.test(role) && !/^of\s/i.test(role)) out.push(role)
+    }
+    return out
+  }
+  // a signal that denies anything makes no plain play either: the denial is the user saying what they do NOT want, and a search for
+  // the whole wording searches for it. The plan says so, so no word list is needed.
+  const plainOk = (x: string) => {
+    if (!english) { const r = judged(x); return r?.kind === 'hiring' && !r.role }
+    const plan = conds(read(x))
+    return !hiringRoles(x).length && !readsAsDenial(read(x)) && !plan.some(c => c.negated) && plan.some(c => c.cond.kind !== 'hiring' || !(c.cond.role ?? '').trim())
+  }
   const firstPlain = sig.find(plainOk)
   if (buyer && firstPlain) add(`${buyer}${place}`, `${buyer}${place} - ${firstPlain}`)
   // a hiring play only from a saved signal that IS a hiring signal ("hiring SDRs"): the buyer is the decision-maker, not the
   // person being hired, so a buyer role is never turned into "companies hiring <role>"
-  for (const h of sig.map(hiringRole).filter((x): x is string => !!x).slice(0, 2))
+  for (const h of sig.flatMap(hiringRoles).slice(0, 2))
     add(`${buyer ? `${buyer}${fromRole ? ' at companies' : ''}` : 'Companies'} hiring ${h}${place}`, `${buyer ? `${buyer}${fromRole ? ' at companies' : ''}` : 'Companies'}${place} hiring ${h}`)
   // one play naming every competitor the scan's complaint collector reads (it reads the saved list up to its MAX_COMPETITORS, 5,
   // lib/signals/competitor-reddit.ts; pinned by test), so the play never leaves out a competitor whose complaints it surfaces

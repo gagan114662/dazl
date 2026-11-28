@@ -161,8 +161,10 @@ test('#1043 review: no play from any negated wording the compiler may read the w
   for (const s of ["didn't raise funding", 'failed to raise funding', 'nobody raised funding', 'nobody hiring', 'zero hiring', 'lack of hiring',
     'hiring but not SDRs', 'lacking a CMO, raised funding', 'downsizing, raised funding', "hasn't hired SDRs", 'failed to hire SDRs', 'nobody hiring SDRs'])
     assert.deepEqual(q([s]), [], s)
-  // accepted cost: a mixed signal that is really positive makes no play rather than risk the opposite one
-  for (const s of ['hiring freeze lifted, now hiring SDRs', 'not yet profitable']) assert.deepEqual(q([s]), [], `fail closed: ${s}`)
+  // the plan decides: a lifted freeze followed by real hiring is a positive hiring signal, so it makes its play (#1163 second half,
+  // owner 2026-11-26; this line pinned the old fail-closed cost). A wording with no positive condition still makes none.
+  assert.deepEqual(q(['hiring freeze lifted, now hiring SDRs']), ['Practice owner at companies hiring SDRs'])
+  assert.deepEqual(q(['not yet profitable']), [], 'no positive condition: no play')
   // plain positive signals are unaffected
   assert.deepEqual(q(['raised a Series A', 'opened a new location']), ['Practice owner - raised a Series A', 'Practice owner - opened a new location'])
 })

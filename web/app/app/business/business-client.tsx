@@ -5,6 +5,7 @@
 // in; nothing runs or is charged until the user presses Find leads there and sees the cost.
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
+import { UNREAD_LABEL } from '@/lib/scan/signal-reading'
 import { businessPlays, businessSections, profilePayload, type BrainMemory, type BrainProfile, type BrainSection, type Source } from '@/lib/business-brain'
 import type { Icp } from '@/lib/scan/icp'
 import MemoryPanel from '../settings/memory-panel'
@@ -111,7 +112,11 @@ export default function BusinessClient() {
   useEffect(() => { queueMicrotask(() => void load()) }, [load])
   if (!data) return <div className="p-8 max-w-2xl"><p className="text-sm text-[#555]">Loading what dazl knows about your business...</p></div>
   const sections = businessSections(data.profile, data.memory, data.competitors)
-  const plays = businessPlays(data.profile, data.competitors)
+  // #2084: a signal in a language the compiler cannot read carries the judge's reading, filled by a scan (lib/scan/signal-readings.ts).
+  // A wording the scan could not read says so; it is never silently absent from the list.
+  const readings = Object.fromEntries(Object.entries(data.profile?.buyer?.signal_readings ?? {}).map(([k, v]) => [k, v.kind === 'hiring' ? { kind: 'hiring' as const, role: v.role ?? null } : v.kind === 'other' ? { kind: 'other' as const } : { kind: 'not_hiring' as const }]))
+  const unread = Object.keys(data.profile?.buyer?.signal_unread ?? {})
+  const plays = businessPlays(data.profile, data.competitors, readings)
   const hasSite = sections.some(x => x.items.some(i => i.source.kind === 'site'))
   return (
     <div className="p-4 sm:p-8 max-w-2xl">
@@ -123,6 +128,7 @@ export default function BusinessClient() {
         {plays.length === 0 ? <p className="text-sm text-[#555]" data-testid="no-plays">{data.failed.includes('profile') ? 'Could not load your profile, so no plays yet. Refresh to retry.' : 'Add buyer roles and a buying signal below and dazl will suggest plays from them.'}</p>
           : <><ul className="space-y-2">{plays.map(p => <li key={p.query}><Link className="underline break-words" href={`/app/leads?q=${encodeURIComponent(p.query)}&fresh=1`} data-testid="play">{p.query}</Link><span className="text-xs text-[#555]" data-testid="play-label"> <span aria-hidden="true">{'\u2192'}</span> fills in the search on Leads, starts nothing</span></li>)}</ul>
             <p className="text-xs text-[#555] mt-2">Opens Leads with this search filled in. Nothing runs until you press Find leads and see the cost.</p></>}
+        {unread.map(w => <p key={w} className="text-xs text-[#555] mt-2" data-testid="signal-unread">&ldquo;{w}&rdquo;: {UNREAD_LABEL}</p>)}
       </section>
       {sections.map(s => <Section key={s.id} s={s} data={data} onSaved={() => void load()} open={openId === s.id} setOpen={v => setOpenId(v ? s.id : null)} />)}
     </div>)

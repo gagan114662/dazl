@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
     else {
       const icp = normalizeIcp(body.buyer)
       if (!icp) return NextResponse.json({ error: 'The buyer profile needs a description of who buys' }, { status: 400 })
+      // #2084: readings are a scan-time call on the scan's own metered provider, never a paid call at save.
       buyerJson = JSON.stringify(icp)
     }
   }

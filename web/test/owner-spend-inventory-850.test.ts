@@ -33,6 +33,7 @@ const GUARDED_BY_CALLER: [string, string, string, RegExp][] = [
   ['lib/scan/lead-qualify.ts', 'qualifyLead', 'lib/scan/qualify-run.ts', /qualifyLead\(ownerGuarded\(/],
   ['lib/scan/icp.ts', 'inferIcp', 'lib/scan/runner.ts', /inferIcp\(providers_\[vendor\]/],
   ['lib/scan/request-plan.ts', 'readRequestPlan', 'lib/scan/runner.ts', /readRequestPlan\(planModel,/],   // #1395: planModel = meterProvider + guardProvider over the run, job and owner-pool guards + flagAccounting
+  ['lib/scan/signal-readings.ts', 'fillReadings', 'lib/scan/runner.ts', /fillReadings\(db, job\.user_id, profile, key, profileProvider/],   // #2084: reads signals on the scan's own guarded provider (providers_.anthropic), metered on the scan cap
 ]
 // Scan work: the runner's providers are guarded per job and reserved on the scan cap (#848, scan-spend-cap-paths).
 const SCAN = ['lib/scan/runner.ts', 'lib/scan/buyer-fit.ts', 'lib/scan/score.ts']
