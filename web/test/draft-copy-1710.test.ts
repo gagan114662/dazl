@@ -244,3 +244,92 @@ test('#1710 a vertical offer that shares the signal\'s own words still gets the 
   }), 'dazl', 'forklift maintenance plans')
   assert.match(d.body, /outside help pays off/, 'the offer shares the signal\'s words, so the tie is supported')
 })
+
+// CodeRabbit round 2 on PR #2157 (seven findings) plus Qodo's still-active four, all verified
+// against the code. Each test failed first on 353a332ab.
+test('(CodeRabbit) a sentence-cased headline is never pasted: lowercase verb after to', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Northline Logistics',
+    evidence_excerpt: 'October 30, 2026, Northline Logistics to move Regional Headquarters to the Harbour District at the End of 2026',
+    event_date: '2026-10-30', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /to move Regional/, 'the sentence-cased headline is not pasted')
+  assert.match(d.body, /I saw the October 30, 2026 news about Northline Logistics\./)
+})
+
+test('(CodeRabbit) an all-caps headline survives sentence-casing and is still never pasted', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Northline Logistics',
+    evidence_excerpt: 'NORTHLINE LOGISTICS TO MOVE REGIONAL HEADQUARTERS TO THE HARBOUR DISTRICT AT THE END OF 2026',
+    event_date: '2026-10-30', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /harbour/i, 'the shouting headline is not pasted in any casing')
+  assert.doesNotMatch(d.body, /I saw that on/)
+  assert.match(d.body, /I saw the October 30, 2026 news about Northline Logistics\./)
+})
+
+test('(CodeRabbit) a short first sentence is taken even when a longer one follows', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio won an award. The judging panel noted the studio redesigned its onboarding flow after dozens of new clients complained about slow turnaround times throughout the past busy season.',
+    event_date: '2026-11-20', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.match(d.body, /Cedar Studio won an award/, 'the short first sentence is the cited signal')
+  assert.doesNotMatch(d.body, /onboarding flow|judging panel/, 'the second sentence stays out')
+})
+
+test('(CodeRabbit) a subject-relative cut is rejected: the draft names the news instead', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Northline Logistics',
+    evidence_excerpt: 'Northline Logistics and Cedar Studio, which have worked together for more than twenty years across several European markets on a wide range of regional projects, announced a joint venture.',
+    event_date: '2026-11-18', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /news that Northline Logistics and Cedar Studio\./, 'a subject with no predicate is never pasted')
+  assert.match(d.body, /news about Northline Logistics\./)
+})
+
+test('(CodeRabbit) a generic action verb needs a staffing object before it selects hiring', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio added a glossary to its annual affordability report.',
+  }), 'dazl', 'HR software (SaaS) in the UK')
+  assert.doesNotMatch(d.body, /hiring push|outside help pays off/, 'adding a glossary is not a hiring event')
+  assert.match(d.body, /added a glossary/)
+})
+
+test('(CodeRabbit) a generic word inside a specialized offer does not bypass the fit check', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio is hiring a bookkeeper',
+  }), 'dazl', 'commercial refrigeration maintenance services for grocery stores')
+  assert.doesNotMatch(d.body, /outside help pays off|A hiring push/, 'services does not make refrigeration fit a bookkeeper opening')
+})
+
+test('(CodeRabbit) a verified date survives even when the clause extraction fails', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Fernway Handling',
+    evidence_excerpt: 'November 24, 2026, Fernway Handling confirmed a multi-year distribution partnership covering every region it serves alongside a warehousing expansion and a fleet renewal that together reshape its operating footprint across two provinces starting next spring',
+    event_date: '2026-11-24', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.match(d.body, /I saw the November 24, 2026 news about Fernway Handling\./, 'the verified date is kept when no clause can be cut')
+  assert.doesNotMatch(d.body, /recent news/)
+})
+
+test('(CodeRabbit) a negated event selects no bridge', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio is not hiring any new staff this year.',
+  }), 'dazl', 'HR software (SaaS) in the UK')
+  assert.doesNotMatch(d.body, /hiring push|outside help pays off/, 'a negative statement is not a hiring event')
+  assert.match(d.body, /is not hiring any new staff/)
+})
+
+test('(CodeRabbit) a reporting verb before the cut keeps its complement whole', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Fernway Handling',
+    evidence_excerpt: 'Fernway Handling showed, and the union confirmed, that its depot crew can process forty percent more pallets during peak season than last year according to the audited figures',
+    event_date: '2026-11-24', event_date_proof: 'page_bound',
+  }), 'dazl', 'HR software (SaaS) in the UK')
+  assert.doesNotMatch(d.body, /news that Fernway Handling showed\./, 'the reporting verb is never left without its complement')
+  assert.match(d.body, /news about Fernway Handling\./)
+})
