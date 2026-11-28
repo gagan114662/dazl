@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import Caveat from '@/app/app/caveat'
 import { holdCopy, kindCopy, reasonCopy } from '@/lib/ops/scheduler-copy'
+import { sequenceGmailWaitLabel } from '@/lib/gmail/notice'
 
 type Step = { step: number; subject: string; body: string; status: string }
 type Sequence = { currentness_held?: boolean; id: string; message_id: string; lead_id: string; to_email: string; status: string; stop_reason: string | null; evidence_state?: 'machine' | 'human' | 'unverified'; steps: Step[] }
@@ -34,6 +35,7 @@ const COPY: Record<string,string> = {
 export default function SequencesClient() {
   const [data,setData]=useState<Data|null>(null)
   const [fixtureEligible,setFixtureEligible]=useState(false)
+  const [gmailStatus,setGmailStatus]=useState<string|null>(null)
   const [addresses,setAddresses]=useState('')
   const [note,setNote]=useState('')
   const [busy,setBusy]=useState(false)
@@ -45,6 +47,9 @@ export default function SequencesClient() {
     // Fixture eligibility arrives in the sequences response itself (server-checked): the page
     // never calls the staging-only fixture route just to ask whether it exists.
     setFixtureEligible(j.fixture_eligible === true)
+    // #1804: the wait label needs the account's real gmail status - the gate alone cannot tell a
+    // dead connection ('reconnect') from one that was never connected ('connect').
+    try { const sr=await fetch('/api/outreach/settings'); if (sr.ok) { const sj=await sr.json() as { gmail?: { status?: string } | null }; setGmailStatus(sj.gmail?.status ?? null) } } catch { /* the gate label still shows */ }
   }
   useEffect(() => {
     const refresh = () => void Promise.resolve().then(load).catch(e => setNote(String(e.message)))
@@ -90,6 +95,7 @@ export default function SequencesClient() {
     {data?.freshness&&(data.freshness.state==='stale'||data.freshness.state==='blocked')&&<div className="text-xs mt-2 border border-[#b45309] rounded p-2" role="alert" data-testid="scheduler-freshness"><p className="font-medium">{data.freshness.state==='blocked'?'Scheduled work is blocked.':'Scheduled work is not keeping up.'}</p><ul className="list-disc pl-5">{data.freshness.reasons.map(r=><li key={r}>{reasonCopy(r)}</li>)}</ul></div>}
     {data?.freshness&&data.freshness.state==='held'&&<p className="text-xs text-[#666] mt-2" role="status" data-testid="scheduler-freshness">Scheduled work is on hold: {data.freshness.holds.map(h=>{const [kind,reason]=h.split(':');return `${kindCopy(kind)} (${holdCopy(reason??'unknown')})`}).join(', ')}.</p>}
     {data?.freshness&&data.freshness.state==='healthy'&&<p className="text-xs text-[#666] mt-2" role="status" data-testid="scheduler-freshness">Scheduler progress: {data.freshness.work.filter(w=>w.last_success_at).map(w=>`${w.kind==='reply_sync'?'replies read':kindCopy(w.kind)} ${ago(w.last_success_at!)}`).join(', ')||'no work yet'}.</p>}
+    {data?.gates?.some(g=>g.id==='gmail'&&!g.ok)&&<p className="text-xs mt-2 text-[#555]">Follow-ups send on their own once Gmail is reconnected. You don&apos;t need to press Send for them.</p>}
     {data?.gates&&data.gates.some(g=>!g.ok)&&<ul className="text-xs mt-2 list-disc pl-5" aria-label="Sending prerequisites not met">{data.gates.filter(g=>!g.ok).map(g=><li key={g.id}>{({gmail:'Gmail is not connected or needs reconnecting.',read_consent:'Reply reading is off: dazl connects to Gmail send-only.',sender_identity:'Sender name and mailing address are missing.',uncertain_send:'A send with an unknown outcome is holding all sending on your account until it is reviewed.'} as Record<string,string>)[g.id]}</li>)}</ul>}
     <button disabled={busy} className="btn-ghost text-xs mt-3" onClick={()=>void load().catch(()=>setNote('Could not refresh.'))}>Refresh sequence status</button>
     {fixtureEligible&&<details className="mt-4 text-sm"><summary>Test inbox allowlist</summary>
@@ -112,7 +118,9 @@ export default function SequencesClient() {
     {note&&<p role="status" className="text-sm mt-3 text-[#555]">{note}</p>}
     {data?.sequences.map(s=>{
       const state=data.status[s.lead_id]
-      const label=s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status
+      const gmailDown=!!data.gates?.some(g=>g.id==='gmail'&&!g.ok)
+      const waitLabel=gmailDown&&(s.status==='active'||s.status==='approved')?sequenceGmailWaitLabel(gmailStatus):null
+      const label=waitLabel??(s.status==='active'?`Step ${state?.step??1} sent / awaiting step ${(state?.step??1)+1}`:s.status)
       const reason=state?.stop_reason??s.stop_reason
       return <article key={s.id} className="card p-4 mt-4 text-sm">
         <div className="font-medium">{s.to_email}{data?.test_addresses.map(a=>a.toLowerCase()).includes(s.to_email.toLowerCase()) ? <span className="ml-2 text-[10px] uppercase tracking-wide text-[#111] border border-[#999] px-1 py-0.5">test mode</span> : null}</div><div className="text-xs text-[#555] mt-1">{label}{reason?` (${reason==='evidence_withdrawn'?'lead confirmation withdrawn':reason==='policy_stop'?'stopped by policy':reason})`:''}{state?.next_due_at?` - due ${new Date(state.next_due_at*1000).toLocaleString()}`:''}</div>

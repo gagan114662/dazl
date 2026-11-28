@@ -6,6 +6,7 @@ import Provenance from './provenance'
 import type { OutreachProvenance } from '@/lib/outreach/provenance'
 import SequencesClient from './sequences-client'
 import SendReadiness from './send-readiness'
+import { gmailReconnectNotice } from '@/lib/gmail/notice'
 import { forScan, isJobId } from '@/lib/outreach/scan-drafts'
 import { dailyCapMessage } from '@/lib/outreach/send-cap-copy'
 import Caveat from '@/app/app/caveat'
@@ -45,6 +46,9 @@ export default function OutreachClient() {
   const [sequencesOff,setSequencesOff] = useState(false)
   const [autopilotOn,setAutopilotOn] = useState(false) // whether autopilot may be offered at all (false during the beta); the server decides
   const [creating,setCreating] = useState(false)
+  // #1804: a Gmail connection that was there and is now revoked or expired (status needs_reconnect) gets one
+  // plain banner: queued work is safe, nothing sent, reconnect to resume. Never-connected is SendReadiness's case.
+  const [gmailDown,setGmailDown] = useState(false)
   const [note, setNote] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
@@ -71,8 +75,14 @@ export default function OutreachClient() {
     }
     try { const r = await fetch('/api/outreach'); if (r.ok) { const j = await r.json(); setMsgs(j.messages); setAutopilotOn(j.autopilot_available === true); setLoadFailed(false) } else setLoadFailed(true) } catch { setLoadFailed(true) } finally { setLoaded(true) }
     try { const seq=await fetch('/api/outreach/sequences'); if(seq.ok) { const sj=await seq.json() as { sequences:{message_id:string}[]; gates?:{id:string;ok:boolean}[] }; setSequenceMessages(sj.sequences.map(s=>s.message_id)); setSequencesOff((sj.gates??[]).some(g=>g.id==='read_consent'&&!g.ok)) } } catch { /* sequence markers are optional; the email list above still stands */ }
+    try { const sr=await fetch('/api/outreach/settings'); if (sr.ok) { const sj=await sr.json() as { gmail?: { status?: string } | null }; setGmailDown(gmailReconnectNotice(sj.gmail?.status)) } } catch { /* the banner is optional; SendReadiness still reports readiness */ }
   }
   useEffect(() => { void load(); const refresh=()=>void load(); window.addEventListener('sequences-updated',refresh); window.addEventListener('sender-updated',refresh); return ()=>{ window.removeEventListener('sequences-updated',refresh); window.removeEventListener('sender-updated',refresh) } }, []) // eslint-disable-line react-hooks/set-state-in-effect -- every setState in load() follows an await
+
+  // #1804 (CodeRabbit): if the grant is revoked or reconnected in another tab, refresh the banner
+  // state when this tab regains focus instead of waiting for a reload. Only the settings read runs
+  // here; the full list still reloads on the events above.
+  useEffect(() => { const onFocus=()=>{ void fetch('/api/outreach/settings').then(async sr=>{ if (sr.ok) { const sj=await sr.json() as { gmail?: { status?: string } | null }; setGmailDown(gmailReconnectNotice(sj.gmail?.status)) } }).catch(()=>{}) }; window.addEventListener('focus',onFocus); return ()=>window.removeEventListener('focus',onFocus) }, [])
 
   async function createSequence(id:string) {
     setCreating(true);setNote('Preparing template sequence...')
@@ -124,7 +134,9 @@ export default function OutreachClient() {
     <div className="p-8 max-w-3xl">
       <h1 className="text-2xl font-bold mb-1">Outreach</h1>
       <Caveat className="text-[#555] text-sm mb-6" summary={autopilotOn ? 'Review and approve each email, then send it; only autopilot (if you turn it on) and the later steps of a sequence you approved send without a click.' : 'Review and approve each email, then send it; only the later steps of a sequence you approved send without a click.'}>Review each email, approve it, then send. Manual emails send only after your click. {autopilotOn ? 'If you turn on autopilot, it can send first emails on its own after you approve the first sends (its consent text is in Settings).' : ''} A sequence sends its later steps only after you approve all three steps together. Every email gets your name, mailing address and an unsubscribe link added automatically.</Caveat>
-      <SendReadiness />
+      {gmailDown && <div className="card p-4 mb-4 text-sm" role="alert" data-testid="gmail-reconnect-banner"><p className="font-medium mb-1">Gmail is disconnected</p><p className="text-[#555]">Your approved emails stay queued and nothing is lost. Reconnect Gmail, then press Send again on each approved email.</p><a className="btn-primary inline-block mt-3" href="/app/connect-gmail">Reconnect Gmail</a></div>}
+      {/* #1804 (Qodo): readiness re-reads its settings when the gmail state flips, so the page never says 'Ready to send' beside the disconnect banner. */}
+      <SendReadiness key={gmailDown ? 'gmail-down' : 'gmail-up'} />
       {note && <p className="text-sm text-[#111] border-l-2 border-[#111] pl-3 mb-4" role="status">{note}</p>}
       {!loaded && <p className="text-[#666] text-sm" role="status">Loading your emails...</p>}
       {loaded && loadFailed && <p className="text-sm text-[#111] border-l-2 border-black pl-3 mb-4" role="alert">Could not load your emails. Refresh to retry.</p>}
