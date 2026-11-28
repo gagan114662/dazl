@@ -1263,6 +1263,28 @@ function publishedDisplayOffice(pages: LocationPage[], where: string[], company:
     p.offices.some(o => o.ownSection && officeHeading(o.heading, o.address) && office(o.address)))
 }
 
+function postingStatements(text: string): string[] {
+  return text.split(/(?<!\b(?:inc|ltd|corp|co)\.)(?<=[.!?])\s+/i)
+}
+
+function postingLocationConflicts(statements: string[], where: string[], company: string): boolean {
+  return statements.some(statement => placeAgreement(statement, where, company) === 'mismatch')
+}
+
+function contactOfficeConflicts(pages: LocationPage[], where: string[], company: string): boolean {
+  const key = norm(company)
+  const conflicts = (address: string) => ownAddressElsewhere(address, where) ||
+    placeAgreement(address, where, company) === 'mismatch'
+  return pages.some(({ statements, offices, footerOffices }) =>
+    statements.some(statement => {
+      const owner = /^([^,:]{3,160}),\s*\d/.exec(statement)?.[1]
+      return ((!!owner && norm(owner) === key) || FIRST_PERSON_OFFICE.test(statement)) &&
+        !FOREIGN_SUBJECT.test(statement) && conflicts(statement)
+    }) ||
+    offices.some(({ address, ownSection }) => ownSection && conflicts(address)) ||
+    footerOffices.some(({ address }) => conflicts(address)))
+}
+
 function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean, guessed: boolean): LocationProof | undefined {
   if (!where.length) return undefined
   const key = norm(company)
@@ -2147,7 +2169,8 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
         const named = rec && rec !== 'missing' ? [...recordNamedSites(`${rec.header} ${rec.description}`, l.company), ...[recordCompanyDomain(rec.company, l.company)].filter((s): s is string => !!s)] : []
-        if (rec && rec !== 'missing' && rec.location && placeAgreement(rec.location, where, l.company) === 'agrees') {
+        if (rec && rec !== 'missing' && rec.location && placeAgreement(rec.location, where, l.company) === 'agrees' &&
+            !postingLocationConflicts(postingStatements(rec.html ? plainText(visibleMarkup(rec.description)) : rec.description), where, l.company)) {
           const employerSite = (ev?.status === 200 && ev.finalUrl === l.source_url ? orgSite : null) ?? recordCompanyDomain(rec.company, l.company)
           if (employerSite) postingLocationProof.set(employerSite, { url: l.source_url, excerpt: rec.location, posting: true })
         }
@@ -2293,15 +2316,16 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           : undefined
         // The posting can supply location only for a site it explicitly names and whose
         // homepage passes the identity check without contradicting that location.
-        if (!unread(r) && !guessed && !homeLocationOk && !locationProof && vHome === 'unconfirmed' && !homeElsewhere) {
+        if (!unread(r) && !guessed && !homeLocationOk && !locationProof && vHome === 'unconfirmed' && !homeElsewhere &&
+            !contactOfficeConflicts(r.locationPages ?? [], where, l.company)) {
           locationProof = postingLocationProof.get(cand)
           if (!locationProof && ev?.status === 200 && ev.finalUrl === l.source_url &&
               postingNamedSites(l.company, ev.body, registrable(new URL(ev.finalUrl).hostname)).includes(cand)) {
             const companyName = l.company.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
             const affirmativeHiring = new RegExp(`^\\s*${companyName}\\s+(?:is hiring|is recruiting|seeks)\\b`, 'iu')
-            const sentence = visibleMarkup(ev.body).slice(0, 24_000).split(/<\/(?:p|li|h[1-6]|div|td|dd)\s*>/i)
-              .flatMap(block => plainText(block).split(/(?<!\b(?:inc|ltd|corp|co)\.)(?<=[.!?])\s+/i))
-              .find(part => affirmativeHiring.test(part) && !/\b(?:not|never|no longer|except|excluding)\b/i.test(part) &&
+            const statements = visibleMarkup(ev.body).split(/<\/(?:p|li|h[1-6]|div|td|dd)\s*>/i)
+              .flatMap(block => postingStatements(plainText(block)))
+            const sentence = !postingLocationConflicts(statements, where, l.company) && statements.find(part => affirmativeHiring.test(part) && !/\b(?:not|never|no longer|except|excluding)\b/i.test(part) &&
                 placeAgreement(part, where, l.company) === 'agrees' && !ownAddressElsewhere(part, where))
             if (sentence) locationProof = { url: ev.finalUrl, excerpt: sentence.trim(), posting: true }
           }

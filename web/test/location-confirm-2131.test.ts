@@ -13,7 +13,7 @@ const page = (link: string, desc = '') => html(`<h1>Tax Accountant</h1><h2>Birch
 const postingId = '7387a987-24f3-424c-8dd3-bb7ed16f95e0'
 const atsSource = `https://jobs.ashbyhq.com/birchwood/${postingId}`
 
-async function run(evidence: string, sites: Record<string, Record<string, string>>, atsLocation?: string, company = 'Birchwood Tax LLP', description = 'Birchwood Tax LLP is hiring. Learn more at birchwoodtaxllp.ca.') {
+async function run(evidence: string, sites: Record<string, Record<string, string>>, atsLocation?: string, company = 'Birchwood Tax LLP', description = 'Birchwood Tax LLP is hiring. Learn more at birchwoodtaxllp.ca.', expectedProof?: string | null) {
   const source = atsLocation === undefined ? SRC : atsSource
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
@@ -36,6 +36,11 @@ async function run(evidence: string, sites: Record<string, Record<string, string
   }
   await sc.crawlJob(db, 'A', job, { get, gapMs: 0, env: {}, now: Date.parse('2026-11-27T12:00:00Z'), redirectOf: async () => null })
   const domain = (db.prepare('SELECT company_domain FROM leads WHERE id = ?').get('L1') as { company_domain: string | null }).company_domain
+  if (expectedProof !== undefined) {
+    const proofs = db.prepare("SELECT source_url FROM lead_enrichments WHERE lead_id = ? AND kind = 'domain_check' AND value LIKE '%|identity_checked'")
+      .pluck().all('L1')
+    assert.deepEqual(proofs, expectedProof === null ? [] : [expectedProof])
+  }
   db.close()
   return domain
 }
@@ -94,3 +99,27 @@ test('recognizes a hiring statement with a period in the legal company name', as
   assert.equal(await run(posting, { [site]: { '/': html('<h1>Birchwood Tax Inc.</h1>') } },
     undefined, 'Birchwood Tax Inc.'), site)
 })
+
+for (const [city, shouldKeep] of [['Calgary, AB T2P 1B3', true], ['Halifax, NS B3J 1A1', false]] as const) {
+  test(`checks the named site's contact office in ${city} before using posting evidence`, async () => {
+    const sites = { [site]: {
+      '/': html('<h1>Birchwood Tax LLP</h1><a href="/contact">Contact</a>'),
+      '/contact': html(`<h1>Contact Birchwood Tax LLP</h1><p>Birchwood Tax LLP, 40 Queen St, ${city}</p><p>Our office is at 40 Queen St, ${city}.</p>`),
+    } }
+    assert.equal(await run(page(namedLink), sites, undefined, undefined, undefined,
+      shouldKeep ? `https://${site}/contact` : null), shouldKeep ? site : null)
+  })
+}
+
+test('holds a named site if the posting later corrects the role location', async () => {
+  const posting = page(namedLink, '<p>Correction: Birchwood Tax LLP is hiring for this role in Halifax, Nova Scotia.</p>')
+  assert.equal(await run(posting, { [site]: { '/': noPlace } }), null)
+})
+
+for (const [city, shouldKeep] of [['Calgary, Alberta', true], ['Halifax, Nova Scotia', false]] as const) {
+  test(`requires the ATS role description in ${city} to agree with the location field`, async () => {
+    const description = `Birchwood Tax LLP is hiring a Tax Accountant in ${city}. Learn more at birchwoodtaxllp.ca.`
+    assert.equal(await run(atsEmployerPage, { 'birchwoodtaxllp.ca': { '/': noPlace } },
+      'Calgary, Alberta', undefined, description), shouldKeep ? 'birchwoodtaxllp.ca' : null)
+  })
+}
