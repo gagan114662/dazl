@@ -56,9 +56,21 @@ function employerAlternate(lead: DiscoveredLead, seen: SeenPage[]): DiscoveredLe
   const urls = new Set(seen.map(page => employerPostingUrl(page.url, lead, aggregator)).filter(url => url !== null))
   const preferred = alternative && employerPostingUrl(alternative.url, lead, aggregator)
   const explicit = preferred && urls.has(preferred)
-  const evidence_url = explicit ? preferred : urls.size === 1 ? [...urls][0] : null
   const evidence_quote = explicit ? alternative?.quote : lead.evidence_quote
-  if (!evidence_url || !evidence_quote) return null
+  if (!evidence_quote?.trim()) return null
+  let evidence_url = explicit ? preferred : urls.size === 1 ? [...urls][0] : null
+  if (!evidence_url && urls.size > 1) {
+    // Only disambiguate with the cited opening in text already read during this run.
+    const quote = evidence_quote.trim().toLowerCase()
+    const matching = new Set<string>()
+    for (const page of seen) {
+      if (!page.text?.toLowerCase().includes(quote)) continue
+      const url = employerPostingUrl(page.url, lead, aggregator)
+      if (url) matching.add(url)
+    }
+    if (matching.size === 1) evidence_url = [...matching][0]
+  }
+  if (!evidence_url) return null
   return { ...lead, evidence_url, evidence_quote, signal_date: null, alternate_evidence: undefined }
 }
 

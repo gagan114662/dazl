@@ -15,5 +15,5 @@ test('reply-reading consent lifecycle through the real /api/outreach/replies rou
   assert.equal(r.error, undefined, String(r.error))
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /(# |ℹ )fail 0/)
-  assert.match(r.stdout, /(# |ℹ )pass 4/)
+  assert.match(r.stdout, new RegExp(`(# |ℹ )pass ${env.DAZL_TEST_PG_URL ? 5 : 4}\\b`))
 })
