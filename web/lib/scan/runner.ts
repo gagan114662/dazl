@@ -1543,14 +1543,27 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   } catch (e) {
     // An SDK preflight can throw before it invokes fetch. Give back the hold only with that evidence.
     await hold?.settle(providerDispatchStarted ? null : 0)
+    // #2124: a SpendRefused is a pre-send refusal (a budget/limit/accounting stop) - report the honest refusal code, never source_error.
+    if (e instanceof SpendRefused) {
+      const code = refusalCode(e, ledger)
+      ledger.report({ stop: { code, spend_refusal_reason: e.reason } })
+      finish(db, job, 'failed', code, null, null, ledger)
+      return 'failed'
+    }
     ledger.record(source, 'error')
     const status = (e as { status?: number })?.status
     finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)
     return 'failed'
   }
-  // #2124: 'uncertain' with no provider request ever dispatched billed nothing - settle to what was actually spent (0), never hold the
-  // full reservation and fail accounting_uncertain for a request that was never sent.
-  await hold?.settle(run.accountingUncertain && providerDispatchStarted ? null : run.usd)
+  await hold?.settle(run.accountingUncertain ? null : run.usd)
+  if (run.accountingUncertain) {
+    // #2124: a dispatched call whose usage was unknown is terminal uncertainty (#1157). The hold stays kept (settled null above), partial
+    // results are never saved, and the scan ends accounting_uncertain - never 'done'. It is not re-run (that could bill it twice).
+    ledger.report({ discover: { stop: run.stop, note: run.note, budget: small ? (room < DISCOVER_SMALL_MIN_USD ? 'smallest' : 'small') : 'full', searches: run.searches, source_urls: new Set(run.pages.map(url => canonicalUrl(url) ?? url)).size, requests: run.requests, passes: run.passes, returned: run.leads.length, shown: 0, ...(run.parse_counts ? { parse_counts: run.parse_counts } : {}), usd: null, ...(run.emailDropped ? { email_dropped: 'not_on_source', emails_dropped: run.emailDropped } : {}) } })
+    if (hasCompanyFirstBudget(job.run_budget)) db.prepare("UPDATE scan_jobs SET run_budget = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?").run(unmarkCompanyFirstBudget(job.run_budget ?? null), job.id, job.user_id, job.attempts)
+    finish(db, job, 'failed', 'accounting_uncertain', null, null, ledger)
+    return 'failed'
+  }
   assertOwned(db, job)
   const checked = run.leads.filter(l => l.evidence_url.length <= 500)
   const now = Math.floor(Date.now() / 1000)
