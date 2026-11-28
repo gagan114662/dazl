@@ -38,7 +38,7 @@ test('campaign and CSV links wait for results or a resolved scan', () => {
 
 test('hold copy states the reason and LinkedIn guidance is visible', () => {
   assert.match(leads, /data-testid="approve-hold"[^>]*>Can&apos;t approve yet\. <span>\{approval\.reason\}/)
-  assert.match(leads, /data-testid="linkedin-ready"[^>]*>[^<]*\{c\.linkedin\.name\}&apos;s profile and send the first message yourself\./)
+  assert.match(leads, /data-testid="linkedin-ready"[^>]*>Open \{c\.linkedin\.name\}&apos;s profile and send the first message yourself\./)
 })
 
 test('ready rows show the returned signal, date, contact and email', () => {
