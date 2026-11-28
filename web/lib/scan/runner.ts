@@ -7,6 +7,7 @@ import { isShown, type CheckedLead } from '../discover/check.ts'
 import { enrichLeads, samePerson } from '../discover/enrich.ts'
 import { runDiscovery, type DiscoveryRun } from '../discover/run.ts'
 import { enqueuePostEngagement } from '../linkedin-tasks/engagers.ts'
+import { enqueueCompetitorPages } from '../linkedin-tasks/competitors.ts'
 import { enqueueLanePeople, type LaneLead } from '../linkedin-tasks/lane-people.ts'
 import { COMPANY_FIRST_EXTRACTION, COMPANY_FIRST_SEARCH, companyFirstDiscoveryEnabled, hasCompanyFirstBudget, unmarkCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { qaClaudeOnlyNativeSearchJob } from './qa-provider-policy.ts'
@@ -1661,6 +1662,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   // LinkedIn posts the run turned up: when this workspace has connected dazl Connect, the user's own browser reads who engaged with
   // them, and those people arrive later as leads of this request (lib/linkedin-tasks/engagers.ts). Never fails the scan.
   try { await enqueuePostEngagement(sqliteDb(db), job.user_id, job.id, [...checked.map(l => l.evidence_url), ...run.pages]) } catch { /* the scan's own leads stand */ }
+  // ...and the competitor pages Settings carries (#1588): one read of each per week, only with dazl Connect paired.
+  // The same gate (working hours, one page at a time, 40 a day) paces them; nothing is queued otherwise.
+  try { await enqueueCompetitorPages(sqliteDb(db), job.user_id) } catch (e) { captureError(e, { source: 'worker', where: 'scan:enqueue-competitor-pages', tenantId: job.user_id, ref: job.id }) }
   // ...and the company People page of a lead whose person has no LinkedIn profile yet (lib/linkedin-tasks/lane-people.ts)
   try { await enqueueLanePeople(sqliteDb(db), job.user_id, job.id, forLinkedIn) } catch { /* the scan's own leads stand */ }
   return 'done'

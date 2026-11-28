@@ -8,12 +8,13 @@ const first = (root, sels) => { for (const s of sels) { const e = root.querySele
 async function scroll(times) {
   for (let i = 0; i < times; i++) { window.scrollBy(0, Math.round(window.innerHeight * 0.9)); await sleep(1500) }
 }
-function cards(cardSel, nameSels, titleSels) {
+function cards(cardSel, nameSels, titleSels, commentSels) {
   const out = []
   for (const card of document.querySelectorAll(cardSel)) {
     const a = card.querySelector('a[href*="/in/"]')
     if (!a) continue
-    out.push({ href: a.getAttribute('href'), name: text(first(card, nameSels)) || text(a), title: text(first(card, titleSels)) })
+    out.push({ href: a.getAttribute('href'), name: text(first(card, nameSels)) || text(a), title: text(first(card, titleSels)),
+      comment: commentSels ? text(first(card, commentSels)) : '' })
   }
   return out
 }
@@ -23,9 +24,23 @@ function companyPeople() {
     ['.artdeco-entity-lockup__subtitle', '.lt-line-clamp--multi-line', '.org-people-profile-card__profile-info .t-14']))
 }
 function postEngagement() {
-  return X.people(cards('article.comments-comment-entity, article.comments-comment-item, .comments-comment-item',
+  return X.postEngagers(cards('article.comments-comment-entity, article.comments-comment-item, .comments-comment-item',
     ['.comments-comment-meta__description-title', '.comments-post-meta__name-text', '[aria-hidden="true"]'],
-    ['.comments-comment-meta__description-subtitle', '.comments-post-meta__headline']))
+    ['.comments-comment-meta__description-subtitle', '.comments-post-meta__headline'],
+    ['.comments-comment-item__content-body', '.attributed-text.text-body-medium', '.update-components-text-view']))
+}
+// #1588: the posts a competitor's own page links to, each with its own date and the page that authored it. A post whose
+// author the card does not name is dropped in extract.js: a link alone is not proof the competitor wrote it.
+function companyPosts() {
+  const out = []
+  for (const a of document.querySelectorAll('a[href*="/posts/"], a[href*="/feed/update/urn:li:activity:"]')) {
+    const card = a.closest('div[data-urn], article, .feed-shared-update-v2, li') || a
+    const t = card.querySelector('time[datetime]')
+    const actor = card.querySelector('.update-components-actor__image a, .update-components-actor__meta-link, a[data-test-id="actor-menu-trigger"], .feed-shared-actor__image a, .feed-shared-actor__meta-link')
+    out.push({ href: a.getAttribute('href'), date: t ? t.getAttribute('datetime') : text(card.querySelector('time, .update-components-actor__sub-description')),
+      author: actor ? actor.getAttribute('href') : null })
+  }
+  return X.companyPosts(out)
 }
 function profile() {
   const name = text(first(document, ['main h1', 'h1']))
@@ -51,6 +66,7 @@ async function read(kind) {
   const why = X.pageProblem(pageFacts())
   if (why) return { error: why }
   if (kind === 'profile') { const person = profile(); return person ? { person } : { error: 'extract_failed' } }
+  if (kind === 'company_posts') { await scroll(3); return { posts: companyPosts() } }
   await scroll(kind === 'company_people' ? 5 : 3)
   return { people: kind === 'company_people' ? companyPeople() : postEngagement() }
 }

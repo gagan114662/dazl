@@ -960,7 +960,7 @@ CREATE TABLE system_mail_outbox (
   );
 
 CREATE TABLE tenant_competitors (
-    tenant_id TEXT NOT NULL, name TEXT NOT NULL, position BIGINT NOT NULL,
+    tenant_id TEXT NOT NULL, name TEXT NOT NULL, position BIGINT NOT NULL, page_url TEXT,
     PRIMARY KEY (tenant_id, name)
   );
 

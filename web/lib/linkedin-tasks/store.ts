@@ -13,7 +13,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { Db, Tx, TxBody } from '../db/client.ts'
-import { LIMITS, MAX_PEOPLE, endOfLocalDay, inWorkingHours, isTaskKind, nextGapS, personOk, taskUrlOk, validZone, type ReadPerson, type TaskKind } from './limits.ts'
+import { LIMITS, MAX_PEOPLE, MAX_POSTS_PER_PAGE, endOfLocalDay, engagerOk, inWorkingHours, isTaskKind, nextGapS, personOk, postOk, taskUrlOk, validZone, type ReadPost, type ReadPerson, type TaskKind } from './limits.ts'
 
 export function migrateLiTasks(db: Database.Database): void {
   const first = !db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'li_task_gate'").get()
@@ -142,20 +142,28 @@ export async function nextTask(db: Db, tenantId: string, now = nowS(), rand: () 
   })
 }
 
-// What the extension may report. A read: the people it saw (company People page, post reactors/commenters) or the one person
-// (profile). A failure: one of the named reasons; "blocked" and "challenge" stop every read for this workspace for a day.
+// What the extension may report. A read: the people it saw (company People page, post reactors/commenters), the posts a
+// competitor's own page linked to (company_posts), or the one person (profile). A failure: one of the named reasons;
+// "blocked" and "challenge" stop every read for this workspace for a day.
 export const FAILURES = ['login_required', 'not_found', 'blocked', 'challenge', 'throttled', 'extract_failed'] as const
 type Failure = typeof FAILURES[number]
-export type CompleteBody = { people?: unknown; person?: unknown; error?: unknown }
-export type Parsed = { ok: true; people: ReadPerson[] } | { ok: false; error: Failure } | null
+export type CompleteBody = { people?: unknown; person?: unknown; posts?: unknown; error?: unknown }
+export type Parsed = { ok: true; people: ReadPerson[]; posts?: undefined } | { ok: true; people?: undefined; posts: ReadPost[] } | { ok: false; error: Failure } | null
 
 export function parseResult(kind: TaskKind, body: CompleteBody): Parsed {
   if (!body || typeof body !== 'object') return null
   if (body.error !== undefined) return (FAILURES as readonly unknown[]).includes(body.error) ? { ok: false, error: body.error as Failure } : null
   if (kind === 'profile') { const p = personOk(body.person); return p ? { ok: true, people: [p] } : null }
+  if (kind === 'company_posts') {
+    if (!Array.isArray(body.posts) || body.posts.length > MAX_POSTS_PER_PAGE) return null
+    const seen = new Set<string>(), posts: ReadPost[] = []
+    for (const raw of body.posts) { const p = postOk(raw); if (p && !seen.has(p.url)) { seen.add(p.url); posts.push(p) } }
+    return { ok: true, posts }
+  }
   if (!Array.isArray(body.people) || body.people.length > MAX_PEOPLE) return null
+  // Only a post's people carry engagement fields (#1588): a People page or a profile stays the plain shape it always was.
   const seen = new Set<string>(), people: ReadPerson[] = []
-  for (const raw of body.people) { const p = personOk(raw); if (p && !seen.has(p.profile_url)) { seen.add(p.profile_url); people.push(p) } }
+  for (const raw of body.people) { const p = kind === 'post_engagement' ? engagerOk(raw) : personOk(raw); if (p && !seen.has(p.profile_url)) { seen.add(p.profile_url); people.push(p) } }
   return { ok: true, people }
 }
 
@@ -173,8 +181,10 @@ export async function completeTask(db: Db, tenantId: string, taskId: unknown, bo
       if (r.error === 'blocked' || r.error === 'challenge' || r.error === 'throttled') yield* t.run('UPDATE li_task_gate SET next_allowed_at = ? WHERE tenant_id = ?', [now + COOLDOWN_S, tenantId])
       return 'failed_recorded'
     }
-    yield* t.run('INSERT INTO li_results (task_id, tenant_id, kind, source_url, fetched_at, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (task_id) DO NOTHING', [taskId, tenantId, task.kind, task.url, now, JSON.stringify({ people: r.people })])
-    yield* t.run("UPDATE li_tasks SET status = 'done', outcome = ?, done_at = ?, lease_until = NULL WHERE id = ? AND tenant_id = ?", [r.people.length ? 'ok' : 'empty', now, taskId, tenantId])
+    yield* t.run('INSERT INTO li_results (task_id, tenant_id, kind, source_url, fetched_at, payload) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (task_id) DO NOTHING',
+      [taskId, tenantId, task.kind, task.url, now, JSON.stringify(r.posts ? { posts: r.posts } : { people: r.people })])
+    yield* t.run("UPDATE li_tasks SET status = 'done', outcome = ?, done_at = ?, lease_until = NULL WHERE id = ? AND tenant_id = ?",
+      [r.posts ? (r.posts.length ? 'ok' : 'empty') : r.people.length ? 'ok' : 'empty', now, taskId, tenantId])
     return 'stored'
   })
 }

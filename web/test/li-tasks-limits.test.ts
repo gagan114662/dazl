@@ -17,7 +17,7 @@ async function ready(db: Db, tenant = 'A') { assert.equal(await setTimezone(db, 
 async function serve(db: Db, now: number, tenant = 'A') { const r = await nextTask(db, tenant, now, mid); assert.ok('task' in r, JSON.stringify(r)); return r.task }
 
 test('only read kinds exist: no connection or message task kind', () => {
-  assert.deepEqual([...TASK_KINDS], ['company_people', 'profile', 'post_engagement'])
+  assert.deepEqual([...TASK_KINDS], ['company_people', 'profile', 'post_engagement', 'company_posts'])
 })
 
 test('URLs: only www.linkedin.com https pages of the shape each kind reads', () => {
@@ -30,6 +30,12 @@ test('URLs: only www.linkedin.com https pages of the shape each kind reads', () 
   assert.equal(taskUrlOk('profile', 'https://www.linkedin.com/in/jane-doe/overlay/contact-info/'), null)
   assert.equal(taskUrlOk('post_engagement', 'https://www.linkedin.com/feed/update/urn:li:activity:7212345678901234567/'), 'https://www.linkedin.com/feed/update/urn:li:activity:7212345678901234567/')
   assert.equal(taskUrlOk('post_engagement', 'https://www.linkedin.com/messaging/thread/1/'), null)
+  // #1588: a competitor's own page read - a company page or a founder profile, and nothing else.
+  assert.equal(taskUrlOk('company_posts', 'https://www.linkedin.com/company/acme/'), 'https://www.linkedin.com/company/acme/')
+  assert.equal(taskUrlOk('company_posts', 'https://www.linkedin.com/company/acme/?trk=x'), 'https://www.linkedin.com/company/acme/')
+  assert.equal(taskUrlOk('company_posts', 'https://www.linkedin.com/in/acme-founder/'), 'https://www.linkedin.com/in/acme-founder/')
+  assert.equal(taskUrlOk('company_posts', 'https://www.linkedin.com/company/acme/people/'), null)
+  assert.equal(taskUrlOk('company_posts', 'https://www.linkedin.com/posts/acme-activity-1/'), null)
 })
 
 test('a read person needs a name, a title and their own profile URL; hidden members are not people', () => {
