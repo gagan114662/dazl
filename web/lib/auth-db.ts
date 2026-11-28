@@ -3,6 +3,7 @@ import { getDb } from './db/client.ts'
 import type { Db } from './db/client.ts'
 import { createPersonalWorkspace, resolveMembership } from './workspaces.ts'
 import type { Role } from './workspaces.ts'
+import { validZone } from './account-zone.ts'
 import { SEEN_EVERY_S, newPublicId } from './sessions.ts'
 
 // The auth schema's SQLite half and the store opener live in lib/db/sqlite-store.ts (engine code, #354).
@@ -54,14 +55,20 @@ export async function findPasswordUser(email: string, d?: Db): Promise<{ id: str
   return (d ?? await getDb()).get('SELECT id, password_hash, salt, email_verified_at, email_confirmation_required FROM users WHERE email = ?', [email])
 }
 
+// #2054 follow-up: users.timezone only ever holds a real IANA zone or NULL - every write of it goes through this,
+// so no caller can store junk a reader would have to distrust (lib/account-zone.ts still validates on read).
+const zoneOrNull = (tz: string | null | undefined): string | null => (typeof tz === 'string' && validZone(tz) ? tz : null)
+
 // 'exists' when the email is taken; the route must not reveal which. The account and its personal workspace are made
 // together. requireConfirmation (#357): only the sign-up route sets it, and only when a confirmation link can be mailed;
-// absent or false, the account signs in as on main.
-export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string; requireConfirmation?: boolean }, d?: Db): Promise<'created' | 'exists'> {
+// absent or false, the account signs in as on main. timezone (#2054 follow-up): the browser's IANA zone from the
+// sign-up form, kept only when it is a zone Intl can use (zoneOrNull) - an invalid or absent one stores NULL and the
+// sign-up never fails over it; Google and native-form sign-ups start with NULL until the Settings capture fills it.
+export async function createPasswordUser(u: { id: string; email: string; name: string; business_name: string; password_hash: string; salt: string; requireConfirmation?: boolean; timezone?: string | null }, d?: Db): Promise<'created' | 'exists'> {
   return (d ?? await getDb()).tx(function* (t) {
     const r = yield* t.run(
-      'INSERT INTO users (id, email, name, business_name, password_hash, salt, email_confirmation_required) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
-      [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt, u.requireConfirmation === true ? 1 : 0])
+      'INSERT INTO users (id, email, name, business_name, password_hash, salt, email_confirmation_required, timezone) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (email) DO NOTHING',
+      [u.id, u.email, u.name, u.business_name, u.password_hash, u.salt, u.requireConfirmation === true ? 1 : 0, zoneOrNull(u.timezone)])
     if (r.changes !== 1) return 'exists' as const
     yield* createPersonalWorkspace(t, u.id, u.business_name)
     return 'created' as const
@@ -106,6 +113,18 @@ export async function readSellerLine(db: Db, userId: string): Promise<string> {
 }
 export async function writeSellerProfile(db: Db, userId: string, sells: string, website: string): Promise<void> {
   await db.run(SET_SELLER_SQL, [sells.slice(0, 150), website.slice(0, 200), userId])
+}
+
+// The account's IANA time zone (#2054 follow-up), saved at signup or in Settings and read by lib/account-zone.ts
+// for the account's own day. Null when none is saved: every caller falls back to UTC.
+const ZONE_SQL = 'SELECT timezone FROM users WHERE id = ?'
+const SET_ZONE_SQL = 'UPDATE users SET timezone = ? WHERE id = ?'
+
+export async function readUserTimezone(db: Db, userId: string): Promise<string | null> {
+  return zoneOrNull((await db.get<{ timezone: string | null }>(ZONE_SQL, [userId]))?.timezone)
+}
+export async function writeUserTimezone(db: Db, userId: string, timezone: string | null): Promise<void> {
+  await db.run(SET_ZONE_SQL, [zoneOrNull(timezone), userId])
 }
 
 // The signed-in actor and the workspace they act in. actorId is the person (users.id); tenantId is the workspace every

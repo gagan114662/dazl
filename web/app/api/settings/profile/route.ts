@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUser } from '@/lib/scan/service'
-import { readBusinessName, readBuyerProfile, readSellerProfile, writeBusinessName, writeBuyerProfile, writeSellerProfile } from '@/lib/auth-db'
+import { readBusinessName, readBuyerProfile, readSellerProfile, readUserTimezone, writeBusinessName, writeBuyerProfile, writeSellerProfile, writeUserTimezone } from '@/lib/auth-db'
+import { validZone } from '@/lib/account-zone'
 import { getDb } from '@/lib/db/client'
 import type { Db } from '@/lib/db/client'
 import { normalizeIcp } from '@/lib/scan/icp'
@@ -22,7 +23,7 @@ export async function GET() {
   const db = await getDb()
   // new_play_offer: what a new play starts from (lib/scan/play-offer.ts newPlayOffer), for the review step's conflict check
   const seller = await readSellerProfile(db, user.tenantId)
-  return NextResponse.json({ ...seller, business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId), new_play_offer: await newPlayOffer(db, user.tenantId, seller.sells) })
+  return NextResponse.json({ ...seller, business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId), new_play_offer: await newPlayOffer(db, user.tenantId, seller.sells), timezone: await readUserTimezone(db, user.tenantId) })
 }
 
 export async function POST(req: NextRequest) {
@@ -47,13 +48,23 @@ export async function POST(req: NextRequest) {
       buyerJson = JSON.stringify(icp)
     }
   }
+  // Optional account time zone (#2054 follow-up): the account's own day for caps and reset times. Omitted keeps the
+  // stored one, null clears it back to the UTC fallback, anything else must be a zone Intl can use - an invalid one
+  // is refused here, before any write, never silently stored or dropped (the buyer-profile rule above).
+  let timezone: string | null | undefined
+  if (body && typeof body === 'object' && 'timezone' in body) {
+    if (body.timezone === null) timezone = null
+    else if (typeof body.timezone === 'string' && validZone(body.timezone)) timezone = body.timezone
+    else return NextResponse.json({ error: 'Enter a valid time zone' }, { status: 400 })
+  }
   if (website && !/^https:\/\/[\w.-]+\.[a-z]{2,}([/?#]\S*)?$/i.test(website)) return NextResponse.json({ error: 'Website must be a full https URL, like https://acme.com' }, { status: 400 })
   await writeSellerProfile(db, user.tenantId, sells, website)
   if (buyerJson !== undefined) await writeBuyerProfile(db, user.tenantId, buyerJson)
+  if (timezone !== undefined) await writeUserTimezone(db, user.tenantId, timezone)
   // Optional: the name used in drafts. Only changed when the caller sends it; blank clears it (drafts then refuse).
   if (typeof body?.business_name === 'string') await writeBusinessName(db, user.tenantId, body.business_name)
   // which parts changed, never their text
-  await audit(user, req, { action: 'settings.changed', resource: 'profile', summary: { buyer: buyerJson !== undefined, business_name: typeof body?.business_name === 'string' } })
+  await audit(user, req, { action: 'settings.changed', resource: 'profile', summary: { buyer: buyerJson !== undefined, business_name: typeof body?.business_name === 'string', timezone: timezone !== undefined } })
   // Return the canonical stored values so the page never shows text the server did not keep.
-  return NextResponse.json({ ok: true, ...await readSellerProfile(db, user.tenantId), business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId) })
+  return NextResponse.json({ ok: true, ...await readSellerProfile(db, user.tenantId), business_name: await readBusinessName(db, user.tenantId), buyer: await buyer(db, user.tenantId), timezone: await readUserTimezone(db, user.tenantId) })
 }

@@ -34,6 +34,9 @@ export default function SignUpForm({ trialRule = '', sentWithoutScript = false, 
         password: fd.get('password'),
         name: fd.get('name'),
         business_name: fd.get('business_name'),
+        // #2054 follow-up: the browser's IANA zone, saved as the account's zone (its day for caps and reset times).
+        // Only this hydrated path can read it; a native post carries none and the account starts on UTC.
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       })
     })
     const data = await res.json()

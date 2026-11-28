@@ -63,6 +63,10 @@ export function migrateAuth(d: Database.Database): void {
   // (app/api/auth/signup/route.ts). Every row that existed before the column gets 0 and keeps its sessions and password
   // sign-in as before; nothing is marked verified. PG: the numbered email_confirmation_required migration.
   try { d.exec('ALTER TABLE users ADD COLUMN email_confirmation_required INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  // #2054 follow-up: the account's IANA time zone, saved at signup or later in Settings (lib/account-zone.ts reads
+  // it for the account's own day). Nullable, no default: rows that existed before it read NULL, which every reader
+  // treats as no saved zone (UTC fallback), the same shape as buyer_profile. PG: 0077_users_timezone.sql.
+  try { d.exec('ALTER TABLE users ADD COLUMN timezone TEXT') } catch { /* exists */ }
   d.exec(EMAIL_TOKENS_DDL)
   d.exec(OUTBOX_DDL)
   // Durable audit trail (lib/audit.ts). PG: 0041_audit_events.sql.
