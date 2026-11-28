@@ -39,16 +39,6 @@ test('#2145 a site the posting names under a plain "employer website" label is t
   assert.equal(d, 'birchwoodlp.ca')
 })
 
-test('#2145 a "Website:" header field names the site even when its name differs from the firm', async () => {
-  const d = await run(page('', '<dl><dt>Website:</dt><dd>bwlp.ca</dd></dl>'), { 'bwlp.ca': { '/': HOME_CALGARY, '/contact': html('Email: partners@bwlp.ca') } })
-  assert.equal(d, 'bwlp.ca')
-})
-
-test('#2145 a site written in the description text, or an address at it, is tried when its name is the firm\'s', async () => {
-  const d = await run(page('', '<p>Learn more at www.birchwoodtax.ca or write to careers@birchwoodtax.ca.</p>'), { 'birchwoodtax.ca': { '/': HOME_CALGARY, '/contact': html('Email: partners@birchwoodtax.ca') } })
-  assert.equal(d, 'birchwoodtax.ca')
-})
-
 test('#2145 control: the same page with no named site leaves a same-name guessed domain held (the search place alone proves nothing)', async () => {
   const noPlace = html('<h1>Birchwood Tax LLP</h1><p>Tax and advisory services.</p><a href="/contact">Contact</a>')
   const d = await run(page(''), { 'birchwoodtaxllp.com': { '/': noPlace, '/contact': html('Email: info@birchwoodtaxllp.com') } })
@@ -58,17 +48,17 @@ test('#2145 control: the same page with no named site leaves a same-name guessed
 test('#2145 control: a named site whose homepage is another business is refused', async () => {
   const d = await run(page('<a href="https://northline.example/">Visit employer website</a>'), { 'northline.example': { '/': HOME_OTHER_FIRM } })
   assert.equal(d, null)
-  const d2 = await run(page('', '<p>Website: northline.example</p>'), { 'northline.example': { '/': HOME_OTHER_FIRM } })
+  const d2 = await run(page('', '<p>Questions? Visit northline.example</p>'), { 'northline.example': { '/': HOME_OTHER_FIRM } })
   assert.equal(d2, null)
 })
 
 test('#2145 control: a named site with the firm\'s name that is in another city is refused', async () => {
   const halifax = html('<h1>Birchwood Tax LLP</h1><p>Suite 5, 40 Queen St, Halifax, NS B3J 1A1</p>')
-  const d = await run(page('', '<p>See www.birchwoodtax.ca</p>'), { 'birchwoodtax.ca': { '/': halifax } })
+  const d = await run(page('<a href="https://birchwoodtax.ca/">Visit employer website</a>'), { 'birchwoodtax.ca': { '/': halifax } })
   assert.equal(d, null)
 })
 
-test('#2145 control: a link without an employer-website label, and a host that is not the firm\'s name, are not taken', async () => {
+test('#2145 control: a link without an employer-website label, and a host only mentioned in running text, are not taken', async () => {
   assert.equal(await run(page('<a href="https://birchwoodlp.ca/">Apply now</a>'), { 'birchwoodlp.ca': { '/': HOME_CALGARY, '/contact': html('Email: partners@birchwoodlp.ca') } }), null)
-  assert.equal(await run(page('', '<p>Questions: hr@somevendor.ca</p>'), { 'somevendor.ca': { '/': HOME_CALGARY } }), null)
+  assert.equal(await run(page('', '<p>Questions: hr@somevendor.ca, or see www.birchwoodlp.ca</p>'), { 'somevendor.ca': { '/': HOME_CALGARY }, 'birchwoodlp.ca': { '/': HOME_CALGARY } }), null)
 })
