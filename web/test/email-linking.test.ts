@@ -17,18 +17,19 @@ bothEngines("Google linking: only the account with the identity's email links it
   await createPasswordUser(user('A'), db); await createPasswordUser(user('B'), db); await createPasswordUser(user('C'), db)
   await verified(db, 'A'); await verified(db, 'B')
   const ga = G('a@example.test')
+  const { createSession } = await import('../lib/auth-db.ts')
+  const sessionA = await createSession('A', db), sessionB = await createSession('B', db)
   // Google sign-in with A's email does not reach A's account until A links it
   assert.deepEqual(await resolveUser(db, ga), { error: 'email_exists' })
-  assert.equal(await linkGoogle(db, 'B', ga), 'mismatch', "B cannot take a Google identity carrying A's email")
+  assert.equal(await linkGoogle(db, 'B', ga, sessionB), 'mismatch', "B cannot take a Google identity carrying A's email")
   // #1095: an unconfirmed account with the identity's own (Google-verified) email links and is confirmed by it; see
   // the #1095 test below for the cases that must leave it unconfirmed
-  assert.equal(await linkGoogle(db, 'C', G('c@example.test')), 'unverified', 'without a session the link never confirms the address')
-  const { createSession } = await import('../lib/auth-db.ts')
+  assert.equal(await linkGoogle(db, 'C', G('c@example.test'), ''), 'signed_out', 'without a session the link never confirms the address')
   assert.equal(await linkGoogle(db, 'C', G('c@example.test'), await createSession('C', db)), 'linked', 'Google proves the same address the confirmation link would')
-  assert.equal(await linkGoogle(db, 'A', ga), 'linked')
+  assert.equal(await linkGoogle(db, 'A', ga, sessionA), 'linked')
   assert.deepEqual(await resolveUser(db, ga), { user_id: 'A', created: false })
-  assert.equal(await linkGoogle(db, 'A', ga), 'already')
-  assert.equal(await linkGoogle(db, 'B', ga), 'taken')
+  assert.equal(await linkGoogle(db, 'A', ga, sessionA), 'already')
+  assert.equal(await linkGoogle(db, 'B', ga, sessionB), 'taken')
   assert.equal(Number((await db.get<{ n: number }>('SELECT count(*) AS n FROM oauth_identities'))!.n), 2)
   assert.deepEqual(await emailStatus(db, 'A'), { email: 'a@example.test', verified: true, google: true })
 })
@@ -101,4 +102,15 @@ bothEngines('#1095 verify and link in one step: an unconfirmed password account 
   await createPasswordUser(user('U5'), db); await verified(db, 'U5')
   assert.equal(await linkGoogle(db, 'U5', G('u5@example.test'), await createSession('U5', db)), 'linked')
   assert.equal(Number(await verifiedAt(db, 'U5')), 1)
+})
+
+bothEngines('#843 identity linking requires fresh session proof for a verified account', async ({ db }) => {
+  await createPasswordUser(user('FreshProof'), db)
+  await verified(db, 'FreshProof')
+  const identity = G('freshproof@example.test')
+  const { createSession } = await import('../lib/auth-db.ts')
+
+  assert.equal(await Reflect.apply(linkGoogle, undefined, [db, 'FreshProof', identity]), 'signed_out')
+  assert.deepEqual(await resolveUser(db, identity), { error: 'email_exists' })
+  assert.equal(await linkGoogle(db, 'FreshProof', identity, await createSession('FreshProof', db)), 'linked')
 })
