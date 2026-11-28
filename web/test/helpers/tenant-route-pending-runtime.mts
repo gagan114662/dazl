@@ -130,6 +130,15 @@ test("tenant B cannot read or change tenant A's rows through the list, body-id a
     swept++
   }
   assert.deepEqual(failures, [])
+  setUser(B)
+  const rewrite = (id: string) => polish.POST(req('/api/outreach/polish', 'POST', { message_id: id }))
+  const foreignDraft = await rewrite(f.draft)
+  const missingDraft = await rewrite(randomBytes(12).toString('hex'))
+  assert.equal(foreignDraft.status, 404)
+  assert.equal(missingDraft.status, 404)
+  assert.equal(foreignDraft.headers.get('content-type'), missingDraft.headers.get('content-type'))
+  assert.equal(await foreignDraft.text(), await missingDraft.text())
+  assert.equal(aRows(db), before, 'both rewrite denials leave the other workspace unchanged')
   assert.equal(fetchCalls.length, 0, `the sweep made network attempts: ${fetchCalls.join(', ')}`)
   console.log('SWEPT', swept)
 
