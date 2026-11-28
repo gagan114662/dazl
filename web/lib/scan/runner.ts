@@ -1543,6 +1543,8 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   } catch (e) {
     // An SDK preflight can throw before it invokes fetch. Give back the hold only with that evidence.
     await hold?.settle(providerDispatchStarted ? null : 0)
+    // #2124: a SpendRefused is a pre-send refusal (a budget/limit/accounting stop) - report the honest refusal code, never source_error.
+    if (e instanceof SpendRefused) { const code = refusalCode(e, ledger); ledger.report({ stop: { code, spend_refusal_reason: e.reason } }); finish(db, job, 'failed', code, null, null, ledger); return 'failed' }
     ledger.record(source, 'error')
     const status = (e as { status?: number })?.status
     finish(db, job, 'failed', status === 401 || status === 403 ? 'key_rejected' : status === 429 ? 'provider_rate_limited' : 'source_error', null, null, ledger)
@@ -1571,7 +1573,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   // #1579 (production, 2026-11-23): a request accepted as company-first and answered here is the lane's scan. Left marked, every page, the
   // leads API and the spreadsheet hold its leads for the older rollout's final checks, which this lane never runs: 7 and 5 paid leads, none shown.
   if (hasCompanyFirstBudget(job.run_budget)) db.prepare("UPDATE scan_jobs SET run_budget = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?").run(unmarkCompanyFirstBudget(job.run_budget ?? null), job.id, job.user_id, job.attempts)
-  if (!finish(db, job, 'done', null, out, checked.length, ledger)) return 'failed'
+  // #2124: when the paid discovery/enrich step's usage was unknown, the scan ends accounting_uncertain but keeps the leads already found
+  // (for review) - never 'done' with no error, never re-run (that could bill it twice).
+  if (!finish(db, job, run.discoveryUncertain ? 'failed' : 'done', run.discoveryUncertain ? 'accounting_uncertain' : null, out, checked.length, ledger)) return 'failed'
   // What the lead row has no column for at insert time: the lane's tag, the company's own website, and the person with the page that names them.
   const rows = db.prepare('SELECT id, company, source_url FROM leads WHERE scan_job_id = ?').all(job.id) as { id: string; company: string; source_url: string }[]
   const tag = db.prepare('UPDATE leads SET source_kind = ?, company_domain = COALESCE(?, company_domain) WHERE id = ?')
