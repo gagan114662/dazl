@@ -23,6 +23,7 @@ globalThis.fetch = (async (u: unknown) => { fetchCalls.push(String(u)); throw ne
 const evidence = await import('../../app/api/leads/evidence/route.ts')
 const sourceMetrics = await import('../../app/api/leads/source-metrics/route.ts')
 const pageSignals = await import('../../app/api/leads/page-signals/route.ts')
+const commenters = await import('../../app/api/scan/commenters/[batch]/route.ts')
 const domainReview = await import('../../app/api/leads/[lead]/domain-review/route.ts')
 
 const A = { id: 'tenantA_leads', business_name: 'Acme' }, B = { id: 'tenantB_leads', business_name: 'Beta' }
@@ -103,6 +104,54 @@ async function bindingFor(db: Db, lead: string): Promise<string> {
 async function scenario(db: Db): Promise<{ out: Out[]; rows: Record<string, unknown> }> {
   const out: Out[] = []
   const as = async (u: typeof A | null, name: string, res: () => Promise<Response>) => { setUser(u); out.push(await call(name, res())) }
+  const importedJob = id('d1')
+  await db.run("INSERT INTO scan_jobs (id, user_id, business_name, industry, location, query, created_at) VALUES (?, ?, 'Seller', 'software', 'Anywhere', 'Imported contacts', ?)", [importedJob, A.id, T0])
+  await db.run("UPDATE scan_jobs SET status = 'running', attempts = 1 WHERE id = ?", [importedJob])
+  for (const [batch, tenant] of [['batch-a', A.id], ['batch-b', B.id]]) {
+    await db.run('INSERT INTO commenter_batches (id, user_id, context, total, created_at, job_id) VALUES (?, ?, ?, 2, ?, ?)', [batch, tenant, 'Imported contacts', T0, tenant === A.id ? importedJob : JOB_B])
+    for (const slug of ['z-first', 'a-second']) {
+      await db.run("INSERT INTO commenter_rows (id, batch_id, profile_url, slug, name, name_source) VALUES (?, ?, ?, ?, ?, 'csv')",
+        [batch + slug, batch, 'https://example.test/' + slug, slug, slug])
+    }
+  }
+  const leadA = id('d2'), leadB = id('d3')
+  for (const [lead, job, tenant] of [[leadA, importedJob, A.id], [leadB, JOB_B, B.id]]) {
+    await db.run("INSERT INTO leads (id, scan_job_id, name, company, signal, source_url) VALUES (?, ?, 'Buyer', 'Seller', 'Hiring', 'https://example.test')", [lead, job])
+    await db.run("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES (?, ?, ?, 'sitecrawl', 'contact', 'Buyer', 'https://example.test', '2026-10-01', ?)", [lead, lead, tenant, T0])
+    await db.run("INSERT INTO work_email_lookups (tenant_id, lead_id, target, status, updated_at) VALUES (?, ?, 'Buyer', 'not_found', ?)", [tenant, lead, T0])
+    await db.run("INSERT INTO email_candidates (tenant_id, lead_id, person, address, format) VALUES (?, ?, 'Buyer', 'buyer@example.test', 'first')", [tenant, lead])
+    await db.run("INSERT INTO email_patterns (tenant_id, lead_id, site, format, support) VALUES (?, ?, 'example.test', 'first', 1)", [tenant, lead])
+  }
+  const assertImportRows = async (lead: string, present: boolean) => {
+    for (const table of ['leads', 'lead_enrichments', 'work_email_lookups', 'email_candidates', 'email_patterns']) {
+      const key = table === 'leads' ? 'id' : 'lead_id'
+      const rows = await db.all(`SELECT ${key} FROM ${table} WHERE ${key} = ?`, [lead])
+      assert.deepEqual(rows, present ? [{ [key]: lead }] : [], table)
+    }
+  }
+  const batchCtx = (batch: string) => ({ params: Promise.resolve({ batch }) })
+  const batchGet = (batch: string) => () => commenters.GET(req('/api/scan/commenters/' + batch), batchCtx(batch))
+  const batchDelete = (batch: string) => () => commenters.DELETE(req('/api/scan/commenters/' + batch, 'DELETE', undefined, { origin: 'http://localhost' }), batchCtx(batch))
+  await as(B, 'foreign batch get', batchGet('batch-a'))
+  await as(B, 'foreign batch delete', batchDelete('batch-a'))
+  await as(A, 'owner batch get', batchGet('batch-a'))
+  // Force a late failure after dependent rows have been deleted inside the transaction.
+  await db.run('CREATE TABLE commenter_delete_guard (batch_id TEXT REFERENCES commenter_batches(id) ON DELETE RESTRICT)')
+  await db.run('INSERT INTO commenter_delete_guard (batch_id) VALUES (?)', ['batch-a'])
+  await assert.rejects(batchDelete('batch-a')(), /foreign key/i)
+  await assertImportRows(leadA, true)
+  assert.ok(await db.get('SELECT id FROM commenter_batches WHERE id = ?', ['batch-a']))
+  assert.equal((await db.all('SELECT id FROM commenter_rows WHERE batch_id = ?', ['batch-a'])).length, 2)
+  assert.ok(await db.get('SELECT id FROM scan_jobs WHERE id = ?', [importedJob]))
+  await db.run('DROP TABLE commenter_delete_guard')
+  await as(A, 'owner batch delete', batchDelete('batch-a'))
+  await assertImportRows(leadA, false)
+  await assertImportRows(leadB, true)
+  await as(A, 'deleted batch get', batchGet('batch-a'))
+  await as(B, 'unrelated batch get', batchGet('batch-b'))
+  assert.equal(await db.get('SELECT id FROM scan_jobs WHERE id = ?', [importedJob]), undefined)
+  assert.deepEqual(await db.get('SELECT id FROM scan_jobs WHERE id = ?', [JOB_B]), { id: JOB_B })
+  assert.deepEqual(await db.all('SELECT id FROM commenter_rows WHERE batch_id = ?', ['batch-a']), [])
   // evidence: the preserved copy, an integrity mismatch, expired, purged on request, foreign, malformed ids, signed out.
   const ev = (q: string) => () => evidence.GET(req(`/api/leads/evidence${q}`))
   await as(A, 'evidence copy', ev(`?lead_id=${L.copy}`))
@@ -166,6 +215,12 @@ const by = (out: Out[], n: string) => { const o = out.find(x => x.name === n); a
 function check(r: { out: Out[]; rows: Record<string, unknown> }, engine: string) {
   const o = (n: string) => by(r.out, n)
   const st = (n: string) => o(n).status
+  assert.deepEqual(['foreign batch get', 'foreign batch delete', 'owner batch get', 'owner batch delete', 'deleted batch get', 'unrelated batch get'].map(st),
+    [404, 404, 200, 200, 404, 200])
+  const batch = o('owner batch get').body as { rows: { name: string }[]; total: number; created_at: number }
+  assert.deepEqual(batch.rows.map(row => row.name), ['z-first', 'a-second'])
+  assert.equal(batch.total, 2)
+  assert.equal(batch.created_at, T0)
   const copy = o('evidence copy').body as Record<string, unknown>
   assert.equal(st('evidence copy'), 200)
   assert.deepEqual([copy.lead_id, copy.text, copy.integrity, copy.attempt, copy.expires_at, copy.own_fetch_failure], [L.copy, 'Acme Roofing is hiring a sales rep.', 'ok', 1, FAR, 'blocked'], `${engine}: the preserved copy`)

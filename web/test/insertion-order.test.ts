@@ -3,6 +3,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
+import { migrateCommenterImport } from '../lib/scan/commenter-import.ts'
 import { migrateScan } from '../lib/scan/store.ts'
 import { migrateOutreach } from '../lib/outreach/store.ts'
 import { migrateConnectors } from '../lib/connectors/store.ts'
@@ -10,11 +11,11 @@ import { migrateWarm } from '../lib/warm/connections.ts'
 import { migrateAllSqlite } from '../lib/db/sqlite-migrations.ts'
 import { migrateInsertionOrder, INSERTION_ORDER_TABLES } from '../lib/db/insertion-order.ts'
 
-// A store as it is today, before the migration: the four tables with rows, ids deliberately out of insertion order,
+// A store from before the migration, with rows in every tracked table and ids deliberately out of insertion order,
 // and a deleted row so rowids have a gap.
 function existingStore() {
   const db = new Database(':memory:')
-  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateWarm(db)
+  migrateScan(db); migrateOutreach(db); migrateConnectors(db); migrateWarm(db); migrateCommenterImport(db)
   // The owning migrations add insert_seq themselves now: take it out again, as a store from before it existed.
   for (const t of INSERTION_ORDER_TABLES) {
     db.exec(`DROP TRIGGER IF EXISTS ${t}_insert_seq; DROP INDEX IF EXISTS ${t}_insert_seq_idx; ALTER TABLE ${t} DROP COLUMN insert_seq`)
@@ -28,6 +29,11 @@ function existingStore() {
   db.prepare("INSERT INTO lead_enrichments (id, lead_id, tenant_id, connector, kind, value, source_url, source_date, retrieved_at) VALUES ('e1', 'l7', 'u', 'sitecrawl', 'person', 'Dana', 'https://e.example/t', '2026-10-01', 1)").run()
   db.prepare("INSERT INTO warm_user_paths (id, tenant_id, lead_id, contact_url, mutual_name) VALUES ('w1', 'u', 'l7', 'linkedin.com/in/x', 'Mx')").run()
   for (const id of ['a9', 'a1']) db.prepare("INSERT INTO connector_audit (id, tenant_id, connector, lookup, status) VALUES (?, 'u', 'enrich:apollo', 'x', 'ok')").run(id)
+  db.prepare("INSERT INTO commenter_batches (id, user_id, context, total) VALUES ('batch', 'u', 'Imported contacts', 2)").run()
+  for (const id of ['row9', 'row1']) {
+    db.prepare("INSERT INTO commenter_rows (id, batch_id, profile_url, slug, name, name_source) VALUES (?, 'batch', ?, ?, ?, 'csv')")
+      .run(id, 'https://example.test/' + id, id, id)
+  }
   return db
 }
 
