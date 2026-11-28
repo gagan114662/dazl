@@ -26,12 +26,15 @@ OTHER when it says neither, or you cannot tell.`
 
 const HIRING_LINE = /^\s*hiring\s*:?\s*(.*)$/i
 const NOT_HIRING_LINE = /^\s*not[_\s-]?hiring\b/i
-// The judge's one line as a reading; anything unrecognised is null (no reading), never a guess.
+const OTHER_LINE = /^\s*other\b/i
+// The judge's one line as a reading; anything unrecognised is null (no reading), never a guess. OTHER is a real answer (neither hiring
+// nor a denial): it is kept as a no-play reading so the same wording is not paid for again on the next scan (#2084 B5).
 export function parseReading(text: string): SignalReading | null {
   const line = text.trim().split(/\r?\n/).map(s => s.trim()).find(Boolean) ?? ''
   const hiring = HIRING_LINE.exec(line)
   if (hiring) return { kind: 'hiring', role: hiring[1].trim().slice(0, 80) || null }
   if (NOT_HIRING_LINE.test(line)) return { kind: 'not_hiring' }
+  if (OTHER_LINE.test(line)) return { kind: 'other' }
   return null
 }
 

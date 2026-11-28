@@ -34,7 +34,7 @@ test('#2084 the judge answer is parsed from a fixed shape; anything else is no r
   assert.deepEqual(parseReading('  hiring:  \n'), { kind: 'hiring', role: null })
   assert.deepEqual(parseReading('NOT_HIRING'), { kind: 'not_hiring' })
   assert.deepEqual(parseReading('not hiring'), { kind: 'not_hiring' })
-  assert.equal(parseReading('OTHER'), null)
+  assert.deepEqual(parseReading('OTHER'), { kind: 'other' })
   assert.equal(parseReading(''), null)
   assert.equal(parseReading('Sure! Here is what I think'), null, 'prose is not a reading')
 })
@@ -53,7 +53,7 @@ test('#2084 readings are stored with the profile and reused; an English profile 
   const de = normalizeIcp({ ...buyer('de', ['Wir stellen SDRs ein', 'Einstellungsstopp']), summary: 'Dental practices in Ohio' })!
   const { read, asked } = stub({ 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs' }, Einstellungsstopp: { kind: 'not_hiring' } })
   const saved = await withReadings(de, read, 1000)
-  assert.deepEqual(saved.signal_readings, { 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs', at: 1000 }, Einstellungsstopp: { kind: 'not_hiring', at: 1000 } })
+  assert.deepEqual(saved.signal_readings, { 'Wir stellen SDRs ein': { kind: 'hiring', role: 'SDRs', at: 1000, lang: 'de' }, Einstellungsstopp: { kind: 'not_hiring', at: 1000, lang: 'de' } })
   assert.equal(asked.length, 1, 'both wordings went in one call')
   assert.deepEqual(asked[0], ['Wir stellen SDRs ein', 'Einstellungsstopp'])
   const again = await withReadings(saved, read, 2000)

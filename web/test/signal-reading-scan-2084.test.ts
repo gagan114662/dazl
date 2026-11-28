@@ -27,7 +27,7 @@ test('#2084 all uncompiled wordings go in ONE call, numbered, and each answer is
   assert.match(prompts[0], /one line per wording/i)
   assert.deepEqual(got['Wir stellen SDRs ein'], { kind: 'hiring', role: 'SDRs' })
   assert.deepEqual(got['keine Einstellungen'], { kind: 'not_hiring' })
-  assert.equal(got.Kaffee, null, 'OTHER is no reading')
+  assert.deepEqual(got.Kaffee, { kind: 'other' }, 'OTHER is a persisted no-play reading')
 })
 
 test('#2084 the call is bounded: at most MAX_WORDINGS wordings, and a missing answer is no reading, never a guess', async () => {
@@ -67,7 +67,7 @@ test('#2084 the scan does the reading: the discover lane passes its own metered 
 test('#2084 a refused or unanswered wording is kept with the honest label and makes no play', async () => {
   const read = async () => '1. HIRING: SDRs'
   const got = await withReadings(icp('de', ['Wir stellen SDRs ein', 'Wir haben eine Kaffeemaschine']), read)
-  assert.deepEqual(got.signal_readings?.['Wir stellen SDRs ein'], { kind: 'hiring', role: 'SDRs', at: got.signal_readings!['Wir stellen SDRs ein'].at })
+  assert.deepEqual(got.signal_readings?.['Wir stellen SDRs ein'], { kind: 'hiring', role: 'SDRs', at: got.signal_readings!['Wir stellen SDRs ein'].at, lang: 'de' })
   assert.ok(got.signal_unread?.['Wir haben eine Kaffeemaschine'], 'the unanswered wording is recorded as unread')
   assert.equal(got.signal_unread!['Wir stellen SDRs ein'], undefined, 'the answered one is not')
   assert.match(UNREAD_LABEL, /couldn't be turned into a search/)

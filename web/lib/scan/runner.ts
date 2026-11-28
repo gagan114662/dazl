@@ -115,7 +115,7 @@ import { resolveBounded } from './resolution.ts'
 import { fallbackTargets, mergeFallback, rescuedNotes, recordFallbacks, recordRecovery, type FallbackNote, type FallbackTarget } from './blocked-fallback.ts'
 import { companyFirstJobWindow, parseWindowDays, splitByWindow, windowStatus } from './window.ts'
 import { applyBuyerFitGate, failClosedBuyerFit, nativeBuyerFitTarget } from './buyer-fit.ts'
-import { fillReadings } from './signal-readings.ts'
+import { fillReadings, stripReadings } from './signal-readings.ts'
 import { dropKnown, lookalikeOf } from './lookalike-discovery.ts'
 import { freshBoardPostings, orderByBoardDate, dateBoards } from '../company-first/board-postings.ts'
 import { fundingSourceVerdicts, type FundingSourceReason } from '../company-first/funding-source.ts'
@@ -1479,7 +1479,9 @@ function isJobBankPosting(raw: string): boolean {
 
 async function runDiscoverLane(db: Database.Database, job: Job, key: string, spendGuards: SpendGuard[], ledger: SourceRunLedger, profileProvider: Provider, { fetchImpl, crawlGet, freeSiteFetch, onApolloEvidence }: Pick<RunDeps, 'fetchImpl' | 'crawlGet' | 'freeSiteFetch' | 'onApolloEvidence'>, discover: typeof discoverLeads = discoverLeads, enrich: typeof enrichLeads | null = enrichLeads, trialReserveUsd: number | null = null): Promise<'done' | 'failed'> {
   const sells = db.prepare('SELECT offer, seller, icp_inferred FROM scan_jobs WHERE id = ? AND user_id = ?').get(job.id, job.user_id) as { offer: string | null; seller: string | null; icp_inferred: number | null } | undefined
-  let profile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
+  // #2084 B1: readings are server state - strip any that a scan input carries, so a planted reading never reaches discovery or the merge.
+  const initialProfile = job.icp ? normalizeIcp(safeJson(job.icp)) : null
+  let profile = initialProfile ? stripReadings(initialProfile) : null
   const savedSource = sells?.icp_inferred
   let profileCarried = savedSource !== 1 && savedSource !== 2 && discoverProfileCarried(savedSource, job.watch_id)
   if (job.query && profile && profileCarried) {
@@ -1502,10 +1504,6 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
     db.prepare("UPDATE scan_jobs SET icp = ?, icp_inferred = ? WHERE id = ? AND user_id = ? AND status = 'running' AND attempts = ?")
       .run(JSON.stringify(profile), source, job.id, job.user_id, job.attempts)
   }
-  // #2084: a saved signal in a language the compiler cannot read is read here, once for the whole run, on this scan's own key and through
-  // the same guarded, metered provider as its other model calls (Ziggy's call on the PR: no operator-key side channel). The readings and
-  // the labels for wordings that could not be read are kept per wording text, so the next scan does not pay for them again.
-  if (profile) profile = await fillReadings(db, job.user_id, profile, key, profileProvider, fetchImpl)
   // What this run may still spend: the tightest of the job's own budget, the account's limits and the scan's cap. With room for a full
   // run it gets the full search budget; with less (a free-trial run, or a request that set its own lower limit) it gets the smaller
   // budget and reserves what there is; with too little for even that, the scan stops and says so.
@@ -1555,6 +1553,9 @@ async function runDiscoverLane(db: Database.Database, job: Job, key: string, spe
   }
   await hold?.settle(run.accountingUncertain ? null : run.usd)
   assertOwned(db, job)
+  // #2084 B2: the optional reading call runs AFTER discovery has reserved and spent, so a refused or unknown-usage reading can never latch
+  // the attempt and stop discovery. It only persists readings for the plays card; the run itself never waits on it.
+  if (profile) { try { await fillReadings(db, job.user_id, profile, key, profileProvider, fetchImpl) } catch { /* readings are optional */ } }
   const checked = run.leads.filter(l => l.evidence_url.length <= 500)
   const now = Math.floor(Date.now() / 1000)
   // Quest's lead score on production, 2026-11-24 (job 7e5605365113): 2 of 6 listed leads had a dead proof link (a 404, a job board's

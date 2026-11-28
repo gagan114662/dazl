@@ -39,3 +39,4 @@ export const readsLanguage = (lang: string | null | undefined): boolean => roleW
 export type SignalReading =
   | { kind: 'hiring'; role: string | null }
   | { kind: 'not_hiring' }
+  | { kind: 'other' }   // #2084 B5: judged, but neither hiring nor a denial - a persisted no-play result, never re-asked

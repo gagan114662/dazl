@@ -114,7 +114,7 @@ export default function BusinessClient() {
   const sections = businessSections(data.profile, data.memory, data.competitors)
   // #2084: a signal in a language the compiler cannot read carries the judge's reading, filled by a scan (lib/scan/signal-readings.ts).
   // A wording the scan could not read says so; it is never silently absent from the list.
-  const readings = Object.fromEntries(Object.entries(data.profile?.buyer?.signal_readings ?? {}).map(([k, v]) => [k, v.kind === 'hiring' ? { kind: 'hiring' as const, role: v.role ?? null } : { kind: 'not_hiring' as const }]))
+  const readings = Object.fromEntries(Object.entries(data.profile?.buyer?.signal_readings ?? {}).map(([k, v]) => [k, v.kind === 'hiring' ? { kind: 'hiring' as const, role: v.role ?? null } : v.kind === 'other' ? { kind: 'other' as const } : { kind: 'not_hiring' as const }]))
   const unread = Object.keys(data.profile?.buyer?.signal_unread ?? {})
   const plays = businessPlays(data.profile, data.competitors, readings)
   const hasSite = sections.some(x => x.items.some(i => i.source.kind === 'site'))

@@ -34,10 +34,10 @@ export interface Icp {
   lookalike?: LookalikeBlock
   // #2084: the judge's reading of each saved signal the compiler cannot read (a language other than English). Filled when the profile
   // is saved, bounded to the signals saved with it, so a play in any language costs one short call per signal, not one per page view.
-  signal_readings?: Record<string, { kind: 'hiring' | 'not_hiring'; role?: string; at: number }>
+  signal_readings?: Record<string, { kind: 'hiring' | 'not_hiring' | 'other'; role?: string; at: number; lang?: string }>
   // #2084: wordings a scan tried to read and could not (refused, over cap, or no answer). They make no play, and the card says why
   // (lib/scan/signal-reading.ts UNREAD_LABEL) instead of dropping them in silence.
-  signal_unread?: Record<string, { at: number }>
+  signal_unread?: Record<string, { at: number; retry_after?: number }>
 }
 
 // Compact persisted shape (short keys: the whole icp JSON shares one 4000-char column with a hard budget).
@@ -274,7 +274,8 @@ function normalizeUnread(raw: unknown): Icp['signal_unread'] | undefined {
     if (!key || !v || typeof v !== 'object') continue
     const at = (v as Record<string, unknown>).at
     if (typeof at !== 'number' || !Number.isFinite(at)) continue
-    out[key] = { at: Math.floor(at) }
+    const ra = (v as Record<string, unknown>).retry_after
+    out[key] = { at: Math.floor(at), ...(typeof ra === 'number' && Number.isFinite(ra) ? { retry_after: Math.floor(ra) } : {}) }
     if (Object.keys(out).length >= 8) break
   }
   return Object.keys(out).length ? out : undefined
@@ -291,8 +292,11 @@ function normalizeReadings(raw: unknown): Icp['signal_readings'] | undefined {
     const o = v as Record<string, unknown>
     if (typeof o.at !== 'number' || !Number.isFinite(o.at)) continue
     const at = Math.floor(o.at)
-    if (o.kind === 'not_hiring') out[key] = { kind: 'not_hiring', at }
-    else if (o.kind === 'hiring') out[key] = { kind: 'hiring', ...(typeof o.role === 'string' && o.role.trim() ? { role: o.role.replace(/\s+/g, ' ').trim().slice(0, 80) } : {}), at }
+    const lang = typeof o.lang === 'string' && /^[A-Za-z]{2}$/.test(o.lang.trim()) ? o.lang.trim().toLowerCase() : undefined
+    const l = lang ? { lang } : {}
+    if (o.kind === 'not_hiring') out[key] = { kind: 'not_hiring', at, ...l }
+    else if (o.kind === 'other') out[key] = { kind: 'other', at, ...l }
+    else if (o.kind === 'hiring') out[key] = { kind: 'hiring', ...(typeof o.role === 'string' && o.role.trim() ? { role: o.role.replace(/\s+/g, ' ').trim().slice(0, 80) } : {}), at, ...l }
     if (Object.keys(out).length >= 8) break
   }
   return Object.keys(out).length ? out : undefined
