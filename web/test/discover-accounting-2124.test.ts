@@ -65,10 +65,10 @@ test('#2124 runner: first-pass pre-dispatch SpendRefused is an honest budget sto
 test('#2124 runner: a dispatched unknown-usage call ends accounting_uncertain with the hold kept (not done, not $0, no retry)', async () => {
   const { db, job, id, master } = setup()
   let n = 0
-  const r = await runJob(db, job, { master, discover: true, enrichImpl: null, discoverImpl: async () => { n++; if (n === 1) return answer(0.05); throw new ProviderError('retry', 'server_error', 'uncertain') } })
-  assert.equal(r, 'failed')
+  await runJob(db, job, { master, discover: true, enrichImpl: null, discoverImpl: async () => { n++; if (n === 1) return answer(0.05); throw new ProviderError('retry', 'server_error', 'uncertain') } })
   const j = jobOf(db, id)
-  assert.equal(j.status, 'failed', 'a dispatched uncertain call never ends done')
+  assert.equal(n, 2, 'the second dispatch ran')
+  assert.equal(j.status, 'failed', 'a dispatched uncertain call never persists done')
   assert.equal(j.error, 'accounting_uncertain', 'the terminal uncertainty contract')
   assert.equal(j.attempts, 1, 'never auto-retried')
   assert.deepEqual(spendOf(db, id), [null], 'the hold is kept, never turned into $0')

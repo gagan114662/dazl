@@ -16,7 +16,7 @@ import { SpendRefused } from '../llm/spend-guard.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
-export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; emailDropped: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean; parse_counts?: ParseDropCounts }
+export interface DiscoveryRun { pages: string[]; leads: CheckedLead[]; usd: number; searches: number; requests: number; passes: number; enriched: number; emailDropped: number; stop: string; model: string; note: string | null; accountingUncertain?: boolean; discoveryUncertain?: boolean; parse_counts?: ParseDropCounts }
 export interface DiscoveryDeps {
   apiKey: string
   fetch?: typeof fetch
@@ -142,6 +142,8 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
   const model = first.model
   let stop = first.stop
   let passes = 1, note = first.note, accountingUncertain = judge?.usage.accountingUncertain === true
+  // #2124: the paid discovery/enrich step (not the proof judge) may have been billed without a settleable cost - a distinct, terminal signal.
+  let discoveryUncertain = false
   // A second pass for different companies, when the first came up short and a pass of the same size still fits the budget.
   if (!accountingUncertain && leads.filter(isShown).length < want && first.stop !== 'refusal' && first.stop !== 'search_cap' && first.usage.usd + PEOPLE_PASS_USD <= remaining()) {
     try {
@@ -160,7 +162,7 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     } catch (e) {
       // #2124: a SpendRefused is thrown BEFORE the request is sent - nothing was dispatched or billed, so it is a clean refusal, not
       // accounting_uncertain. Only a genuine failure (a request that may have been billed) marks the attempt uncertain.
-      if (!(e instanceof SpendRefused)) accountingUncertain = true
+      if (!(e instanceof SpendRefused)) { accountingUncertain = true; discoveryUncertain = true }
     }
   }
   // People, websites and published emails for the leads that lack them: the shown ones first, then the ones that wait for the person's
@@ -197,13 +199,13 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
     } catch (e) {
       // #2124: a SpendRefused is thrown BEFORE the request is sent - nothing was dispatched or billed, so it is a clean refusal, not
       // accounting_uncertain. Only a genuine failure (a request that may have been billed) marks the attempt uncertain.
-      if (!(e instanceof SpendRefused)) accountingUncertain = true
+      if (!(e instanceof SpendRefused)) { accountingUncertain = true; discoveryUncertain = true }
     }
   }
   if (judge) {
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })
     accountingUncertain ||= judge.usage.accountingUncertain === true
   }
-  return { pages, leads, ...(parseCounts ? { parse_counts: parseCounts } : {}), usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, emailDropped, stop: accountingUncertain ? 'accounting_uncertain' : stop, model,
+  return { pages, leads, ...(parseCounts ? { parse_counts: parseCounts } : {}), usd: usage.usd, searches: usage.searches, requests: usage.requests, passes, enriched, emailDropped, stop: accountingUncertain ? 'accounting_uncertain' : stop, model, ...(discoveryUncertain ? { discoveryUncertain: true } : {}),
     note: accountingUncertain ? 'Some research could not be accounted for. Earlier evidence is kept; the full spending reservation remains held.' : note, accountingUncertain }
 }
