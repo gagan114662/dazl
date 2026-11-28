@@ -1,9 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { pgDb } from '../lib/db/client.ts'
+import { runPgMigrations } from '../lib/db/migrate-pg.ts'
+import { freshSchema, PG_URL, pgSkip } from './helpers/pg-test.ts'
 import Database from 'better-sqlite3'
 import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
-import { migrateOutreach } from '../lib/outreach/store.ts'
-import { migrateBounceLedger, applyBounceVerdict, bounceCount } from '../lib/outreach/bounce-ledger.ts'
+import { migrateOutreach, norm } from '../lib/outreach/store.ts'
+import { migrateBounceLedger, applyBounceVerdict, applyBounceVerdictInTx, bounceCount, replySyncBounceCallbacks } from '../lib/outreach/bounce-ledger.ts'
 import type { DsnVerdict } from '../lib/outreach/dsn.ts'
 
 const db = () => { const d = new Database(':memory:'); migrateOutreach(d); migrateAutopilot(d); migrateBounceLedger(d); return d }
@@ -63,4 +66,31 @@ test('tenants and recipients are isolated in the ledger', () => {
   assert.equal(bounceCount(d, 'A'), 1)
   assert.equal(bounceCount(d, 'B'), 1)
   assert.ok(!suppressed(d, 'lead@y.example'), "tenant A's suppression never names another address")
+})
+
+test('Postgres reply-sync callbacks preserve tenant audit fields and run bounce effects once', { skip: pgSkip }, async () => {
+  const { schema, drop } = await freshSchema()
+  const store = pgDb({ connectionString: PG_URL!, searchPath: schema, max: 1 })
+  try {
+    await runPgMigrations(store.pool)
+    const callbacks = replySyncBounceCallbacks(store, 'A', function* (tx, tenant, recipient) {
+      yield* tx.run('INSERT INTO suppressions (tenant_id, email, reason) VALUES (?, ?, ?)', [tenant, recipient, 'bounce'])
+    })
+    const detail = '🙂'.repeat(201)
+    await callbacks.audit('bounce_review', detail, 'lead', 'm1', 42)
+    assert.deepEqual(await store.all('SELECT tenant_id, action, detail, lead_id, message_id, created_at FROM autopilot_audit'), [
+      { tenant_id: 'A', action: 'bounce_review', detail: '🙂'.repeat(200), lead_id: 'lead', message_id: 'm1', created_at: 42 },
+    ])
+    const verdict = perm('m1', 'Lead@X.Example')
+    const apply = (gmailId: string) => store.tx(tx =>
+      applyBounceVerdictInTx(tx, 'A', verdict, 'dsn', gmailId, 42, callbacks.recordBounce))
+    assert.equal(await apply('provider-1'), 'recorded')
+    assert.equal(await apply('provider-2'), 'duplicate')
+    assert.deepEqual(await store.all('SELECT tenant_id, email FROM suppressions'), [{ tenant_id: 'A', email: 'lead@x.example' }])
+    assert.deepEqual(await store.all('SELECT recipient FROM bounce_records'), [{ recipient: 'lead@x.example' }])
+    assert.ok(await store.get('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?', ['A', norm('LEAD@x.example')]))
+  } finally {
+    await store.close()
+    await drop()
+  }
 })
