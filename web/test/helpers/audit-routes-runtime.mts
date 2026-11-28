@@ -219,7 +219,7 @@ test("privileged requests leave attributable, redacted events; 'GET /api/workspa
   await step('profile saved', t.D, () => profile.POST(req('/api/settings/profile', 'POST', { sells: 'MARKER sells text', business_name: 'MARKER business name' })))
   await step('memory saved', t.D, () => memory.PUT(req('/api/settings/memory', 'PUT', { icp: 'MARKER icp text for memory', positioning: 'MARKER positioning' })))
   const cfg = ((await (await read(t.A, '?action=settings.&limit=2')).json()) as { events: Ev[] }).events.reverse()
-  assert.deepEqual(cfg.map(e => [e.actor_id, e.resource_type, e.summary]), [['D', 'profile', { buyer: false, business_name: true }], ['D', 'memory', {}]])
+  assert.deepEqual(cfg.map(e => [e.actor_id, e.resource_type, e.summary]), [['D', 'profile', { buyer: false, business_name: true, timezone: false }], ['D', 'memory', {}]])
   const trail = JSON.stringify(raw.prepare('SELECT * FROM audit_events').all())
   for (const text of ['MARKER sells', 'MARKER business', 'MARKER icp', 'MARKER positioning', 'Rival Co']) assert.ok(!trail.includes(text), `${text} is not in the trail`)
 

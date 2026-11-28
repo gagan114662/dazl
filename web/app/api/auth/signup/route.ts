@@ -63,7 +63,10 @@ export async function POST(req: NextRequest) {
     const hash = scryptSync(String(body!.password), salt, 64).toString('hex')
     const id = randomBytes(16).toString('hex')
 
-    const made = await createPasswordUser({ id, email, name: cleanText(body!.name, 100), business_name: cleanText(body!.business_name, 150), password_hash: hash, salt, requireConfirmation: mail })
+    // #2054 follow-up: the browser's IANA zone, sent only by the hydrated form's JSON body. The native form post
+    // carries none (no script ran to read it) and an invalid one is dropped inside createPasswordUser - either way
+    // the account is made with no saved zone and the Settings capture can fill it later; sign-up never fails over it.
+    const made = await createPasswordUser({ id, email, name: cleanText(body!.name, 100), business_name: cleanText(body!.business_name, 150), password_hash: hash, salt, requireConfirmation: mail, timezone: typeof body?.timezone === 'string' ? body.timezone : null })
     if (made === 'exists') {
       if (!mail) {
         // Same response shape as other failures: do not reveal which emails exist.

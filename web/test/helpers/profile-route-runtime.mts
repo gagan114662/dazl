@@ -26,7 +26,7 @@ test('the reviewed buyer profile is saved, survives a fresh read (reload) and st
   const r = await post({ sells: 'Front-desk software for clinics', website: 'https://clinicdesk.example', business_name: 'ClinicDesk', buyer: BUYER })
   assert.equal(r.status, 200)
   assert.deepEqual((await r.json()).buyer, BUYER, 'the response is what was stored')
-  assert.deepEqual(await get(), { sells: 'Front-desk software for clinics', website: 'https://clinicdesk.example', business_name: 'ClinicDesk', buyer: BUYER, new_play_offer: 'Front-desk software for clinics' })
+  assert.deepEqual(await get(), { sells: 'Front-desk software for clinics', website: 'https://clinicdesk.example', business_name: 'ClinicDesk', buyer: BUYER, new_play_offer: 'Front-desk software for clinics', timezone: null })
   // A reload is a fresh GET; also read the row itself so this is not just an in-memory echo.
   assert.deepEqual(JSON.parse((db.prepare('SELECT buyer_profile FROM users WHERE id = ?').get('A') as { buyer_profile: string }).buyer_profile), BUYER)
   as('B')
@@ -149,6 +149,28 @@ test('#420: a complete manual profile (no website) completes the checklist miles
 
 // #1043: the "Your business" editor's payload through the REAL route: a new user saves company fields with no buyer;
 // an existing profile's research, window and lookalike survive an edit of the buyer roles.
+// #2054 follow-up: the account's time zone rides the same route - the sign-up capture and the Settings field's
+// Save both land here. A valid zone is stored and returned; an invalid one is refused (400) and changes nothing; omitting the
+// field keeps the stored zone; null clears it back to the UTC fallback. Per tenant, like everything else here.
+test('#2054 the account time zone: saved, reloaded, refused when invalid, kept when omitted, cleared by null, per tenant', async () => {
+  as('A')
+  const r = await post({ timezone: 'America/Toronto' })
+  assert.equal(r.status, 200)
+  assert.equal((await r.json()).timezone, 'America/Toronto', 'the response is what was stored')
+  assert.equal((await get()).timezone, 'America/Toronto')
+  assert.equal((db.prepare('SELECT timezone FROM users WHERE id = ?').get('A') as { timezone: string }).timezone, 'America/Toronto', 'the row itself carries it')
+  const bad = await post({ timezone: 'Not/AZone' })
+  assert.equal(bad.status, 400, 'an invalid zone is refused, never silently stored or dropped')
+  assert.equal((await get()).timezone, 'America/Toronto')
+  assert.equal((await post({ timezone: 42 })).status, 400)
+  assert.equal((await post({ business_name: 'ClinicDesk' })).status, 200)
+  assert.equal((await get()).timezone, 'America/Toronto', 'omitting the field keeps the stored zone')
+  assert.equal((await post({ timezone: null })).status, 200)
+  assert.equal((await get()).timezone, null, 'null clears back to the UTC fallback')
+  as('B')
+  assert.equal((await get()).timezone, null, "another tenant never sees A's zone")
+})
+
 test('#1043 the Your business editor payload: saved by the real route without losing research, window or lookalike', async () => {
   const { profilePayload } = await import('../../lib/business-brain.ts')
   db.prepare("INSERT INTO users (id, email, password_hash, salt) VALUES ('N1043', 'n1043@example.test', 'x', 'y')").run()
