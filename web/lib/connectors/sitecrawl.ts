@@ -609,7 +609,8 @@ function jsonLdEmails(html: string): string[] {
       if (!node || typeof node !== 'object') continue
       if (Array.isArray(node)) { stack.push(...node); continue }
       const rec = node as Record<string, unknown>
-      if (typeof rec.email === 'string') out.push(rec.email.replace(/^mailto:/i, ''))
+      // an email field may carry several addresses at once (a contactPoint lists them as an array)
+      for (const e of Array.isArray(rec.email) ? rec.email : [rec.email]) if (typeof e === 'string') out.push(e.replace(/^mailto:/i, ''))
       for (const v of Object.values(rec)) if (v && typeof v === 'object') stack.push(v)
     }
   }
@@ -635,7 +636,9 @@ export function extractContacts(html: string, pageUrl: string, site: string): Fo
   const emails: string[] = [...social.parseHandlesFromHtml(body).emails, ...jsonLdEmails(html), ...deobfuscatedEmails(body)]
   for (const e of emails) {
     const m = /^([^@\s]+)@([^@\s]+)$/.exec(e.trim().toLowerCase()); if (!m) continue
-    if (!sameSite(m[2], site) || !ROLE.test(m[1].replace(/[._-]/g, '')) ) continue
+    // the role test reads the mailbox's base name: separators and a +tag are part of the address, not of
+    // the role word ("info+site" is the info mailbox; "jane+news" is still a personal mailbox)
+    if (!sameSite(m[2], site) || !ROLE.test(m[1].replace(/\+.*$/, '').replace(/[._-]/g, ''))) continue
     if (/\.(png|jpe?g|gif|svg|webp)$/i.test(m[2])) continue
     add({ kind: 'email', value: `${m[1]}@${m[2]}`, label: contextLabel(contactContext(html, `${m[1]}@${m[2]}`,pageUrl)), url: pageUrl })
   }
@@ -742,7 +745,11 @@ function jsonLdPeople(html: string): { name: string; title: string }[] {
   for (const org of orgs) for (const k of ['employee', 'employees', 'founder', 'founders', 'member', 'members']) {
     for (const p of flat(org[k])) {
       // only the person node itself; nothing nested under it (spouse, knows, worksFor...) is read
-      if (typesOf(p).includes('Person') && typeof p.name === 'string' && typeof p.jobTitle === 'string') out.push({ name: p.name.trim(), title: p.jobTitle.trim() })
+      if (!typesOf(p).includes('Person') || typeof p.name !== 'string') continue
+      if (typeof p.jobTitle === 'string') out.push({ name: p.name.trim(), title: p.jobTitle.trim() })
+      // the founders key states the role itself, so a founder listed with no jobTitle is still a founder;
+      // any other key states no role, so a title-less person under one of those stays unlisted
+      else if (k === 'founder' || k === 'founders') out.push({ name: p.name.trim(), title: 'Founder' })
     }
   }
   return out
@@ -832,13 +839,17 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   // or a destination, never a person, wherever else the same words appear (a "Contact Us" button beside the CEO's title).
   const norm = (t: string) => t.replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
   const linkText = new Set<string>()
+  // A label carried inside a heading (h1-h3) is the page presenting its own content — a team grid prints
+  // each name as a linked heading — not a control, so control labels are collected with headings left
+  // out; the same words in a real control (a nav entry, a button) still reject the name.
+  const controlText = visible.replace(/<h[1-3]\b[^>]*>[\s\S]*?<\/h[1-3]>/gi, ' ')
   // Every control is matched on the whole page, nested in a nav or not; a nav's own entries split only at block/list boundaries, so
   // "Meet <b>Jane</b>" stays one label (Qodo #1542).
-  for (const m of visible.matchAll(/<(a|button|label|summary|option)\b[^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
+  for (const m of controlText.matchAll(/<(a|button|label|summary|option)\b[^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
   for (const m of visible.matchAll(/<nav\b[^>]*>([\s\S]*?)<\/nav>/gi)) {
     for (const part of m[1].split(/<\/?(?:li|ul|ol|div|p|br|section|header|footer|h[1-6])\b[^>]*>/i)) { const t = norm(part); if (t) linkText.add(t) }
   }
-  for (const m of visible.matchAll(/<([a-z]+)\b[^>]*\brole\s*=\s*["'](?:button|link|menuitem|tab)["'][^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
+  for (const m of controlText.matchAll(/<([a-z]+)\b[^>]*\brole\s*=\s*["'](?:button|link|menuitem|tab)["'][^>]*>([\s\S]*?)<\/\1>/gi)) linkText.add(norm(m[2]))
   // a hidden input is form data, not a shown control (Qodo #1542): it never removes a person named on the page
   for (const m of visible.matchAll(/<input\b[^>]*>/gi)) {
     if (/\btype\s*=\s*["']?hidden\b/i.test(m[0])) continue
@@ -851,6 +862,7 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
   const rawLines = text.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean)
   // A heading names a section of former people (alumni, past team, in memoriam) for everything under it until the next
   // heading of the same or a higher level that is not itself a person's name. Advisory boards and the like stay current.
+  const isTitleLine = (l: string) => l.length < 45 && (isLeadershipTitle(l) || buyerTitle(l, buyerRoles))
   const lines: string[] = [], inFormer: boolean[] = []
   let formerLevel = 0
   for (const l of rawLines) {
@@ -858,7 +870,10 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
       const level = Number(l[HEAD_MARK.length]), head = l.slice(HEAD_MARK.length + 1).trim()
       if (FORMER_SECTION.test(head)) { formerLevel = formerLevel === 0 ? level : Math.min(formerLevel, level) }
       else if (formerLevel && level <= formerLevel && !extractionName(head)) formerLevel = 0
-      if (!extractionName(head) || FORMER_SECTION.test(head)) continue
+      if (FORMER_SECTION.test(head)) continue
+      // a heading that is a whole leadership title is a title line like any other: a team grid prints the
+      // title in the heading under the name, and dropping it leaves the name with nothing to pair with
+      if (!extractionName(head) && !isTitleLine(head)) continue
       lines.push(head); inFormer.push(formerLevel > 0); continue
     }
     lines.push(l); inFormer.push(formerLevel > 0)
@@ -890,7 +905,6 @@ export function extractPeople(html: string, pageUrl: string, buyerRoles?: string
     return true
   }
   for (const p of jsonLdPeople(clean)) add(p.name, p.title, true)
-  const isTitleLine = (l: string) => l.length < 45 && (isLeadershipTitle(l) || buyerTitle(l, buyerRoles))
   const paired: boolean[] = [] // paired[j]: line j was accepted as the title of the person on line j-1
   for (let i = 0; i < lines.length; i++) {
     const same = /^([^,\u2013\u2014|]{3,45}?)\s*(?:,|\u2013|\u2014|-|\|)\s*([^,\u2013\u2014|]{3,40})$/.exec(lines[i])
