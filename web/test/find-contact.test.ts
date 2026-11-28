@@ -9,9 +9,9 @@ import type { Get } from '../lib/connectors/sitecrawl.ts'
 const html = (b: string) => `<html><body>${b}</body></html>`
 function fixture(confirmed: number | null, confidence: number | null = null) {
   const db = new Database(':memory:'); migrateConnectors(db)
-  db.exec("CREATE TABLE scan_jobs (id TEXT, user_id TEXT); CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, source_kind TEXT)")
+  db.exec("CREATE TABLE scan_jobs (id TEXT, user_id TEXT); CREATE TABLE leads (id TEXT, scan_job_id TEXT, company TEXT, source_url TEXT, review_reason TEXT, confidence INTEGER, score INTEGER, company_domain TEXT, human_confirmed_at INTEGER, human_confirmed_from TEXT, source_kind TEXT, contact TEXT)")
   db.prepare("INSERT INTO scan_jobs VALUES ('j1','u1'),('j2','u2')").run()
-  db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://jobs.example/a','source_review_required',?,50,NULL,?,'source_review_required',NULL),('l2','j2','Stabyl','https://jobs.example/a',NULL,NULL,50,NULL,1,NULL,NULL)").run(confidence, confirmed)
+  db.prepare("INSERT INTO leads VALUES ('l1','j1','Stabyl','https://jobs.example/a','source_review_required',?,50,NULL,?,'source_review_required',NULL,NULL),('l2','j2','Stabyl','https://jobs.example/a',NULL,NULL,50,NULL,1,NULL,NULL,NULL)").run(confidence, confirmed)
   return db
 }
 const pages: Record<string, string> = {

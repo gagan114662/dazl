@@ -9,7 +9,7 @@
 // the address is on the lead's own site, printed on an https page of that site, and the name is not shared by two buyers on the lead.
 // Nothing here creates a contact, a draft or a send: drafting stays on published addresses only (#899 boundary).
 import type Database from 'better-sqlite3'
-import { NON_COMPANY_REVIEW } from '../scan/find-contact-eligible.ts'
+import { NON_COMPANY_REVIEW, counterpartySettledPath, counterpartySignal } from '../scan/find-contact-eligible.ts'
 import { enrichmentsForLeads, type Enrichment } from '../connectors/store.ts'
 import { sameSite } from '../connectors/sitecrawl.ts'
 import { publishedDisplayCountry, publishedDisplayRows } from './published-display.ts'
@@ -18,7 +18,7 @@ import { identityOf } from '../scan/opportunity.ts'
 import { countriesIn } from '../scan/countries.ts'
 import { US_STATES } from '../scan/place-agreement.ts'
 import { PUBLISHED_EMAIL_RE } from '../outreach/published-email.ts'
-import { isWorkEmailFixtureLead, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
+import { domainMatchesCompany, isWorkEmailFixtureLead, siteSettled, targetKey, TARGET_KEY_MAX, workEmailLeadEligible, workEmailTargets } from './work-email-eligible.ts'
 import { currentnessHeld } from '../outreach/currentness.ts'
 import { hasCompanyFirstBudget } from '../company-first/product-discovery.ts'
 import { companyFirstDisplayQueries, companyFirstDisplayRow, missingDisplayTable, type CompanyFirstDisplayStored, type CompanyFirstPublishedDisplayRow } from './company-first-published-display.ts'
@@ -143,7 +143,10 @@ export function strictPublishedWorkEmailsForLeads(db: Database.Database, tenantI
     const candidates = { ...withUsCompanyFirst(db, tenantId, publishedCandidateRowsForLeads(db, tenantId, idsFor(null)), idsFor(null).filter(id => companyFirstIds.has(id) && usScoped(id)), now, enriched),
       ...publishedDisplayRows(db, tenantId, 'CA', idsFor('CA')), ...publishedDisplayRows(db, tenantId, 'GB', idsFor('GB')) }
     for (const { l, ctx } of projected) {
-      if (!eligibleWorkEmailLead(l) || isWorkEmailFixtureLead(l)) continue
+      // #1177: a customer-mention row shows its published addresses when its own site is settled (ctx) and the
+      // settled domain matches its company name, like the lookup. A rejected (quarantined) row shows nothing:
+      // the lookup itself refuses it ('this lead was rejected'), so the reader must not publish its address.
+      if ((!eligibleWorkEmailLead(l) && !(ctx && !l.quarantined_at && counterpartySettledPath(l, domainMatchesCompany(ctx.site, l.company)))) || isWorkEmailFixtureLead(l)) continue
       if (!ctx) continue
       out[l.id] = ctx.people.map(person => strictPublishedRow(targetKey(person), person.name, ctx, candidates[l.id] ?? [], now)).filter(r => r.status === 'published')
     }
@@ -207,12 +210,18 @@ export async function findWorkEmail(db: Database.Database, tenantId: string, lea
   // #1036: a lead still in review may be looked up (the review is about the signal), except one held because its "company" is a
   // person's handle or the other side of a post (the cited page is about someone else, so the row is not established as this
   // company's lead; the same rule as the Leads page and Find contact). It fails closed even when a website was recorded.
-  if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '')) return { status: 'not_eligible', detail: 'this row is not a company' }
+  // #1177: a customer-mention row (counterparty_signal) is the one exception: it passes these gates and is refused below
+  // unless its own site is settled (the target context), which establishes the company independently of the cited page.
+  if (NON_COMPANY_REVIEW.includes(lead.review_reason ?? '') && lead.review_reason !== 'counterparty_signal') return { status: 'not_eligible', detail: 'this row is not a company' }
   if (lead.quarantined_at) return { status: 'not_eligible', detail: 'this lead was rejected' }
-  if (!workEmailLeadEligible(lead)) return { status: 'not_eligible', detail: 'this row is not a company' }
-  if (isWorkEmailFixtureLead(lead)) return { status: 'not_eligible', detail: 'a result must come from the company website' }
   const rows = enrichmentsForLeads(db, tenantId, [lead.id])[lead.id] ?? []
   const ctx = workEmailTargetContext(lead, rows, now)
+  // #1177: the counterparty pass-through above only holds when the settled site is this company's own, judged
+  // by the company name matching the domain - the same judgement the crawl made when it labelled the row. A
+  // settled row naming another company is that company's crawl, and the lookup must not run on it.
+  if (counterpartySignal(lead) && ctx && !domainMatchesCompany(ctx.site, lead.company)) return { status: 'not_eligible', detail: 'this row is not a company' }
+  if (!workEmailLeadEligible(lead) && !counterpartySettledPath(lead, !!ctx)) return { status: 'not_eligible', detail: 'this row is not a company' }
+  if (isWorkEmailFixtureLead(lead)) return { status: 'not_eligible', detail: 'a result must come from the company website' }
   if (!ctx) return { status: 'site_unsettled', detail: "the company's website is not settled yet, so an address on it cannot be checked" }
   const person = ctx.people.find(p => targetKey(p) === target)
   if (!person) return { status: 'not_eligible', detail: 'no such buyer-role person on this lead' }

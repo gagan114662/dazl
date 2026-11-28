@@ -155,6 +155,20 @@ export function shownWorkEmails(initial: unknown, own: PanelClicks): Record<stri
 export const siteSettled = (id: { state: string; site: string | null } | null | undefined): id is { state: 'fact' | 'user_confirmed'; site: string } =>
   !!id && !!id.site && (id.state === 'fact' || id.state === 'user_confirmed')
 
+// Does the settled domain actually belong to this company? The crawl only labels a domain evidence_own_domain
+// when the domain's name label matches the company name (connectors/sitecrawl.ts: the same norm and label rule
+// below), but a stored row is not re-judged when it is read back, and a row naming ANOTHER company (the citing
+// company's own crawl, attached to a customer-mention row) carries the same label. The #1177 counterparty
+// exception re-checks the match wherever it is applied, so such a row never establishes this lead.
+const companyNorm = (s: string): string => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|gmbh|ag|sa|sl|corp|corporation|co|company|plc|pty|group|holdings|the)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
+export const domainMatchesCompany = (site: string | null | undefined, company: string | null | undefined): boolean => {
+  if (!site || !company) return false
+  const want = companyNorm(company)
+  const label = site.toLowerCase().replace(/^www\./, '').split('.').slice(0, -1).join('')
+  if (want.length < 4 || label.length < 4) return false
+  return label === want || (want.startsWith(label) && label.length >= 6) || (label.startsWith(want) && want.length >= 6)
+}
+
 // What the lead panel says for one buyer (shared by the UI and tests, #1036 / #1250): the address the company prints on its own website,
 // or that it prints none for this person. Nothing else is ever an answer.
 export interface WorkEmailView { status: string; provider: string | null; address: string | null; detail: string | null; source_url: string | null; checked_at: number | null }

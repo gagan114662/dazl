@@ -21,7 +21,10 @@ test('#1036 a lead still under "Needs your review" offers Find work email for it
 
 test('#1036 review lane: no block for a rejected lead, a non-company row, an unsettled site, a fixture row or a person outside the buyer roles', () => {
   assert.deepEqual(reviewLaneWorkEmailTargets(lead({ quarantined_at: 1 }), WHO, NOW), [])
-  for (const reason of ['author_post', 'counterparty_signal']) assert.deepEqual(reviewLaneWorkEmailTargets(lead({ review_reason: reason }), WHO, NOW), [], reason)
+  assert.deepEqual(reviewLaneWorkEmailTargets(lead({ review_reason: 'author_post' }), WHO, NOW), [], 'author_post')
+  // #1177: counterparty_signal is no longer refused here — this fixture's site is settled (evidence_own_domain), so the
+  // exception applies and the buyer is offered; the unsettled cases are pinned in counterparty-settled-1177.test.ts.
+  assert.equal(reviewLaneWorkEmailTargets(lead({ review_reason: 'counterparty_signal' }), WHO, NOW).length, 1, 'counterparty_signal with a settled own site')
   assert.deepEqual(reviewLaneWorkEmailTargets(lead({ source_kind: 'test' }), WHO, NOW), [])
   const guessed = row('domain', 'beneschlaw.example|name_probe', { label: 'domain-basis-v1:name_probe' })
   assert.deepEqual(reviewLaneWorkEmailTargets(lead({ enrichments: [guessed, row('person', 'Jordan Hammond, Chief Marketing Officer')] }), WHO, NOW), [], 'website only guessed from the name')
@@ -72,11 +75,16 @@ test('#1036 server: Find work email runs on a lead still under review, and the l
   assert.deepEqual(s.db.prepare('SELECT review_reason, human_confirmed_at, human_confirmed_from, contact FROM leads WHERE id = ?').get(s.id), before, 'still in review, no contact stored')
   assert.deepEqual(before, { review_reason: 'outside_window_undated', human_confirmed_at: null, human_confirmed_from: null, contact: null })
 })
-test('#1036 server: a row held as author_post / counterparty_signal is refused before any provider call (page and server agree)', async () => {
-  for (const reason of ['author_post', 'counterparty_signal']) {
-    const s = seeded(reason); const calls: string[] = []
-    const r = await findWorkEmail(s.db, 'A', s.id, 'Jordan Hammond|Chief Marketing Officer', { fetchImpl: apollo(calls), master: s.master, now: Math.floor(NOW / 1000) })
-    assert.equal(r.status, 'not_eligible', reason); assert.deepEqual(calls, [], reason)
-    assert.equal((s.db.prepare('SELECT count(*) AS n FROM work_email_lookups').get() as { n: number }).n, 0)
-  }
+test('#1036 server: a row held as author_post is refused before any provider call (page and server agree)', async () => {
+  const s = seeded('author_post'); const calls: string[] = []
+  const r = await findWorkEmail(s.db, 'A', s.id, 'Jordan Hammond|Chief Marketing Officer', { fetchImpl: apollo(calls), master: s.master, now: Math.floor(NOW / 1000) })
+  assert.equal(r.status, 'not_eligible'); assert.deepEqual(calls, [])
+  assert.equal((s.db.prepare('SELECT count(*) AS n FROM work_email_lookups').get() as { n: number }).n, 0)
+})
+
+test('#1177 server: a counterparty_signal row with a settled own site runs the lookup (no provider call; nothing printed here)', async () => {
+  const s = seeded('counterparty_signal'); const calls: string[] = []
+  const r = await findWorkEmail(s.db, 'A', s.id, 'Jordan Hammond|Chief Marketing Officer', { fetchImpl: apollo(calls), master: s.master, now: Math.floor(NOW / 1000) })
+  assert.equal(r.status, 'not_found', JSON.stringify(r)); assert.deepEqual(calls, [], 'published addresses only, no provider call')
+  assert.equal((s.db.prepare('SELECT count(*) AS n FROM work_email_lookups').get() as { n: number }).n, 0)
 })
