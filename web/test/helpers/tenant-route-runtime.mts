@@ -107,11 +107,25 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   const cohort: string[] = []
   const hit = async (name: string, f: () => Promise<Response>, status: number, code?: string) => { cohort.push(name); setUser(B); const r = await f(); const j = await r.json().catch(() => ({})) as { error?: string }; assert.equal(r.status, status, `${name}: B got ${r.status} ${JSON.stringify(j)}`); if (code) assert.equal(j.error, code, `${name}: error code`); assert.equal(snapshot(db), before, `${name}: tenant A data byte-unchanged`) }
 
-  await hit('PATCH /api/outreach/[id]', () => outreachPATCH(req(`/api/outreach/${draft}`, 'PATCH', { subject: 'HIJACK', body: 'HIJACK body text long enough to pass the guard here.' }), ctx({ id: draft })), 404, 'not_found')
-  await hit('POST /api/outreach/[id] skip', () => outreachPOST(req(`/api/outreach/${draft}`, 'POST', { action: 'skip' }), ctx({ id: draft })), 404, 'not_found')
-  await hit('POST /api/outreach/[id] approve', () => outreachPOST(req(`/api/outreach/${draft3}`, 'POST', { action: 'approve' }), ctx({ id: draft3 })), 404, 'not_found')
-  await hit('POST /api/outreach/reopen skip', () => reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'skip', thread_id: 'tA' })), 404, 'not_found')
-  await hit('POST /api/outreach/reopen edit', () => reopenPOST(req('/api/outreach/reopen', 'POST', { action: 'edit', thread_id: 'tA4', body: 'HIJACK body long enough to pass.' })), 404, 'not_found')
+  const edit = (id: string) => outreachPATCH(req(`/api/outreach/${id}`, 'PATCH', { subject: 'Fixture edit', body: 'Fixture body long enough to pass the guard here.' }), ctx({ id }))
+  const draftAction = (action: string) => (id: string) => outreachPOST(req(`/api/outreach/${id}`, 'POST', { action }), ctx({ id }))
+  const reopenAction = (action: 'skip' | 'edit') => (id: string) => reopenPOST(req('/api/outreach/reopen', 'POST', { action, thread_id: id, ...(action === 'edit' ? { body: 'Fixture body long enough to pass.' } : {}) }))
+  for (const [name, call, id] of [
+    ['PATCH /api/outreach/[id]', edit, draft],
+    ['POST /api/outreach/[id] skip', draftAction('skip'), draft],
+    ['POST /api/outreach/[id] approve', draftAction('approve'), draft3],
+    ['POST /api/outreach/reopen skip', reopenAction('skip'), 'tA'],
+    ['POST /api/outreach/reopen edit', reopenAction('edit'), 'tA4'],
+  ] as const) {
+    await hit(name, async () => {
+      const foreign = await call(id)
+      const missing = await call(hex())
+      assert.equal(missing.status, 404, name)
+      assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), name)
+      assert.equal(await foreign.clone().text(), await missing.text(), name)
+      return foreign
+    }, 404, 'not_found')
+  }
   await hit('DELETE /api/leads/[lead]/confirm', () => confirmDELETE(req(`/api/leads/${lead}/confirm`, 'DELETE'), ctx({ lead })), 404, undefined)
   await hit('GET /api/monitors/[id]', () => monitorGET(req(`/api/monitors/${mon}`, 'GET'), ctx({ id: mon })), 404, undefined) // #387 detection report
   await hit('PATCH /api/monitors/[id]', () => monitorPATCH(req(`/api/monitors/${mon}`, 'PATCH', { enabled: false }), ctx({ id: mon })), 404, undefined)
