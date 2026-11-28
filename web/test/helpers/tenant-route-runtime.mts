@@ -120,8 +120,18 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   await hit('GET /api/plays/[kind]/[id]/runs (watch)', () => playRunsGET(req(`/api/plays/watch/${watch}/runs`, 'GET'), ctx({ kind: 'watch', id: watch })), 404, undefined) // #351
   await hit('GET /api/plays/[kind]/[id]/new', () => playNewGET(req(`/api/plays/monitor/${mon}/new?since=0`, 'GET'), ctx({ kind: 'monitor', id: mon })), 404, undefined) // #1042
   await hit('GET /api/plays/[kind]/[id]/new (watch)', () => playNewGET(req(`/api/plays/watch/${watch}/new?since=0`, 'GET'), ctx({ kind: 'watch', id: watch })), 404, undefined) // #1042
-  await hit('POST /api/plays/[kind]/[id]/run', () => playRunPOST(req(`/api/plays/monitor/${mon}/run`, 'POST', {}), ctx({ kind: 'monitor', id: mon })), 404, 'not_found') // #1042
-  await hit('POST /api/plays/[kind]/[id]/run (watch)', () => playRunPOST(req(`/api/plays/watch/${watch}/run`, 'POST', {}), ctx({ kind: 'watch', id: watch })), 404, 'not_found') // #1042
+  const runPlay = (kind: 'monitor' | 'watch', id: string) =>
+    playRunPOST(req(`/api/plays/${kind}/${id}/run`, 'POST', {}), ctx({ kind, id }))
+  for (const [kind, id] of [['monitor', mon], ['watch', watch]] as const) {
+    await hit(`POST /api/plays/[kind]/[id]/run (${kind})`, async () => {
+      const foreign = await runPlay(kind, id)
+      const missing = await runPlay(kind, hex())
+      assert.equal(missing.status, 404, kind)
+      assert.equal(foreign.headers.get('content-type'), missing.headers.get('content-type'), kind)
+      assert.equal(await foreign.clone().text(), await missing.text(), kind)
+      return foreign
+    }, 404, 'not_found')
+  }
   await hit('POST /api/scan/cancel', () => cancelPOST(req('/api/scan/cancel', 'POST', { job_id: pending })), 404, undefined)
   assert.equal(snapshot(db), before)
   // Positive controls for the two negative-only actions run on their own valid fixtures before the final checks below.
@@ -154,8 +164,10 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   assert.equal(newA.status, 200)
   assert.deepEqual(await newA.json(), { since: 0, total: 0, latest_at: null, seen_through: null, truncated: false, items: [] })
   const beforeRun = snapshot(db)
-  const runA = await playRunPOST(req(`/api/plays/monitor/${mon}/run`, 'POST', {}), ctx({ kind: 'monitor', id: mon }))
-  assert.deepEqual([runA.status, (await runA.json() as { error: string }).error], [400, 'no_api_key'])
+  for (const [kind, id] of [['monitor', mon], ['watch', watch]] as const) {
+    const run = await runPlay(kind, id)
+    assert.deepEqual([run.status, (await run.json() as { error: string }).error], [400, 'no_api_key'], kind)
+  }
   assert.equal(snapshot(db), beforeRun, 'a refused Find leads now writes nothing')
   // #351: a viewer member of workspace A (a different person from the owner) reads the workspace's play runs too
   setUser({ ...A, actorId: 'M', role: 'viewer' })
