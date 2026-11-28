@@ -38,7 +38,7 @@ const DB_PATH = path.join(tmp, 'app.db')
 const marker = (t: number) => `LTMARK${String(t).padStart(5, '0')}Q`
 interface Tenant { id: string; cookie: string; job: string; mark: string }
 async function seed(): Promise<Tenant[]> {
-  const Database = require('better-sqlite3') as typeof import('better-sqlite3').default
+  const Database = require('better-sqlite3') as typeof import('better-sqlite3')
   const { migrateAllSqlite } = await import('../web/lib/db/sqlite-migrations.ts')
   const db = new Database(DB_PATH)
   db.pragma('journal_mode = WAL')
@@ -176,7 +176,12 @@ async function main() {
 }
 
 let code = 2
-try { code = await main() } catch (e) { console.error(e) } finally {
+try {
+  if (process.env.LOAD_STAGING_SHA && !process.env.LOAD_PG_URL) throw new Error('Staging acceptance requires LOAD_PG_URL')
+  code = process.env.LOAD_PG_URL
+    ? await (await import('./app-load-postgres.ts')).runPostgresLoad(web)
+    : await main()
+} catch (e) { console.error(e) } finally {
   for (const p of procs) p.kill('SIGINT')
   await new Promise(r => setTimeout(r, 3000))
   rmSync(tmp, { recursive: true, force: true })

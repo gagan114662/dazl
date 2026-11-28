@@ -115,6 +115,7 @@ async function main() {
   const fetchPage = mockFetchPage(pageIndex, { providerMs: PROVIDER_MS, fetchMs: FETCH_MS })
   const deps = {
     providers: { anthropic: provider },
+    discover: false, // This benchmark injects Provider.research, not the Discovery SDK.
     fetchPage,
     judge: async () => 'supports' as const,
     fetchImpl: fencedFetch(),

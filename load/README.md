@@ -53,6 +53,31 @@ LOAD_FETCH_MS LOAD_BASELINE_S LOAD_LEADS_PER_SCAN SCAN_MAX_CONCURRENT` for the b
 `http-smoke` against `next dev` includes compile time in latencies; use
 `next build && next start` for steadier read-path numbers.
 
+## Postgres acceptance on the isolated load host
+
+Use a local production build of the exact candidate deployed to staging. Build it
+from the matching checkout and retain its `.build-commit` marker. Configure a
+disposable loopback Postgres 16 database with a `dazl_load_` name and a local role
+that can create schemas. The runner uses a unique schema and removes that schema
+on exit. The hosted staging app keeps its own database and receives no load.
+
+From the repository root, with Node 22:
+
+```bash
+LOAD_STAGING_SHA="$(git rev-parse HEAD)" LOAD_PG_URL=postgresql://load@127.0.0.1/dazl_load_acceptance LOAD_JSON=/tmp/dazl-pg-load.json node --experimental-strip-types load/app-load.ts
+```
+
+The runner checks PostgreSQL readiness, applied migrations and the served build
+SHA. A nonempty raw-SQLite manifest aborts before any workload. It signs in 100
+real test users across 20 workspaces, reads Home and Leads, and submits a fresh
+search for each user. Each workspace queues its users behind the existing
+one-active-search rule. The external network stays fenced; the provider result
+is synthetic and empty. Each workspace's seeded Leads job holds 100 hiring-trigger
+leads with stored buying-need verdicts. The owner API probe requires all 100 verdicts
+so its latency includes per-lead revalidation. The report includes this sample as
+`routes.own-leads`, along with completion and aggregate API latency. Deliberate
+foreign-ID reads must be denied, and any returned foreign row fails the run.
+
 ## What these numbers mean - and what they do not
 
 The bench answers: does the app's own machinery (job claiming, verification, sync
