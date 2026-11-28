@@ -245,6 +245,16 @@ export function parseRobots(text: string, site = 'example.com'): Robots {
 
 // ---- finding the company's own site: a domain linked from the evidence page whose name matches the company ----
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, 'and').replace(/\b(inc|ltd|llc|limited|gmbh|ag|sa|sl|corp|corporation|co|company|plc|pty|group|holdings|the)\b/g, ' ').replace(/[^a-z0-9]+/g, '')
+// #2145: the name the homepage identity check looks for. A lead's company can end in a professional-form word that a firm's own homepage drops
+// ("CompassTAX LLP" -> "CompassTAX"); norm() keeps llp/cpa, so the firm's correct site was refused. Trailing forms only, and a stem that folds to
+// fewer than 5 characters keeps the whole name. Used for the identity check alone: domain probes and slug matching keep norm().
+const FORM_TAIL = /[\s,.(-]+(?:llp|l\.l\.p|lp|pllc|p\.?c|cpas?|c\.p\.a|professional\s+(?:corporation|corp|association|services)|chartered\s+professional\s+accountants?|chartered\s+accountants?)[\s.,)]*$/i
+export function identityNorm(company: string): string {
+  let t = company.trim()
+  for (let i = 0; i < 3; i++) { const n = t.replace(FORM_TAIL, ''); if (n === t) break; t = n }
+  const stem = norm(t)
+  return stem.length >= 5 ? stem : norm(company)
+}
 const SOCIAL = /(^|\.)(facebook|instagram|linkedin|twitter|x|youtube|tiktok|wikipedia|google|bing|apple|medium|github|crunchbase|pitchbook|glassdoor|indeed|bloomberg|reuters|techcrunch|forbes|yelp|tripadvisor|eventbrite|wa|t|bit|goo|lnkd)\.[a-z.]+$/i
 
 const registrable = (host: string) => { const h = host.toLowerCase().replace(/^www\./, ''); return getDomain(h) ?? h }
@@ -1342,7 +1352,7 @@ export async function crawlSite(site: string, get: Get = (url, opts) => rawGet(u
     const homeNorm = norm(homePlain)
     // Case-preserved text (capped) for the place-agreement check: an address like "Rome, NY 13440" needs its capitals.
     const homeText = homePlain.replace(/\s+/g, ' ').trim().slice(0, 30_000)
-    if (expectName && !homeNorm.includes(norm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
+    if (expectName && !homeNorm.includes(identityNorm(expectName))) return { found: [], reason: 'name_mismatch', pages: 1, homeNorm, homeText }
     // Qodo #1553: a home that lands on the site's own subdomain (uare.ai -> app.uare.ai/site) is crawled as that host: its own robots.txt
     // decides every later read, a login/app-shell landing is no company page, and later paths are requested on the landing origin.
     let crawlOrigin = origin
@@ -1846,7 +1856,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         (sharedReads.get(cand)?.deadline ?? 0) > Date.now()
       if (c) {
         if (c.homeNorm === undefined) return c
-        if (!c.homeNorm.includes(norm(company))) return { found: [], reason: 'name_mismatch', pages: 0 }
+        if (!c.homeNorm.includes(identityNorm(company))) return { found: [], reason: 'name_mismatch', pages: 0 }
         if (c.reason !== 'name_mismatch' && !canReplay) return c
       }
       const locals = new Set<string>(); localsBySite.set(cand, locals)
