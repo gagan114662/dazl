@@ -324,8 +324,8 @@ const schemaRoot = (type: string): string => {
   for (let i = 0; i < 8 && SCHEMA_PARENT[t]; i++) t = SCHEMA_PARENT[t]
   return t
 }
-export interface StructuredDay { day: string; field: string; title: string | null; url: string | null; postings: number }
-export function structuredDay(html: string, now: Date, hiringOnly: boolean): StructuredDay | null {
+export interface StructuredDay { day: string; field: string; title: string | null; url: string | null; postings: number; names_page?: boolean }
+export function structuredDay(html: string, now: Date, hiringOnly: boolean, pageUrl: URL | null = null): StructuredDay | null {
   let found: StructuredDay | null = null, postings = 0
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) { for (const item of value) visit(item); return }
@@ -334,14 +334,17 @@ export function structuredDay(html: string, now: Date, hiringOnly: boolean): Str
     const types = (Array.isArray(o['@type']) ? o['@type'] : [o['@type']]).filter((t): t is string => typeof t === 'string')
     const posting = types.some(t => schemaRoot(t) === 'JobPosting')
     if (posting) postings++
-    const type = found ? undefined : types.find(t => schemaRoot(t) === (hiringOnly ? 'JobPosting' : 'Article'))
+    const type = types.find(t => schemaRoot(t) === (hiringOnly ? 'JobPosting' : 'Article'))
     const field = hiringOnly ? 'datePosted' : 'datePublished'
     const raw = type ? o[field] : undefined
     if (type && typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
       const day = validDay(Date.parse(`${raw.slice(0, 10)}T00:00:00Z`), now)
       const page = o.mainEntityOfPage
       const names = typeof o.url === 'string' ? o.url : page && typeof page === 'object' && typeof (page as Record<string, unknown>)['@id'] === 'string' ? (page as Record<string, unknown>)['@id'] as string : typeof page === 'string' ? page : null
-      if (day) found = { day, field: `${type}.${field}`, title: typeof o.title === 'string' ? o.title : null, url: names, postings: 0 }
+      // A careers page carries a related-jobs rail of other postings' nodes, and the rail can come first. The node that names THIS page is
+      // the page's own posting and outranks any other; with no node naming it, the first node still wins and is checked later.
+      const own = day ? namesThisPage(names, pageUrl) : false
+      if (day && (found === null || (own && !found.names_page))) found = { day, field: `${type}.${field}`, title: typeof o.title === 'string' ? o.title : null, url: names, postings: 0, names_page: own }
     }
     if (o['@graph']) visit(o['@graph'])
   }
@@ -350,18 +353,28 @@ export function structuredDay(html: string, now: Date, hiringOnly: boolean): Str
   }
   return found === null ? null : { ...(found as StructuredDay), postings }
 }
-// A page can carry another posting's markup (a careers index, a related-jobs rail): a JobPosting node dates this lead only when it is the
-// page's only posting and either names this page or states a title the page's own text prints. Anything else is not this posting's day.
+// Whether a typed node's own url names the page being read: same host, same path (a trailing slash and a query or fragment do not matter).
+function namesThisPage(url: string | null, pageUrl: URL | null): boolean {
+  if (!url || !pageUrl) return false
+  try {
+    const a = new URL(url, pageUrl)
+    if (a.hostname.replace(/^www\./, '') !== pageUrl.hostname.replace(/^www\./, '')) return false
+    if (a.pathname.replace(/\/+$/, '') !== pageUrl.pathname.replace(/\/+$/, '')) return false
+    // A posting whose identity is in the query (?posting=this vs ?posting=other) is a different page from a related one on the same path.
+    // Only when BOTH sides carry a query must it match, so a tracking parameter on one side still names the same page.
+    return !a.search || !pageUrl.search || a.search === pageUrl.search
+  } catch { return false }
+}
+// A page can carry another posting's markup (a careers index, a related-jobs rail): a JobPosting node dates this lead when it names this
+// page - that is this posting whatever else the page carries - or, failing that, when it is the page's only posting and states a title
+// the page's own text prints. Anything else is not this posting's day.
 export function datesThisPosting(n: StructuredDay, pageText: string, u: URL | null): boolean {
-  if (n.postings !== 1) return false
-  if (n.url && u) {
-    try {
-      const a = new URL(n.url)
-      if (a.hostname === u.hostname && a.pathname.replace(/\/+$/, '') === u.pathname.replace(/\/+$/, '')) return true
-    } catch { /* an unparseable url is not attribution */ }
-  }
   const title = (n.title ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
-  return !!title && pageText.toLowerCase().replace(/\s+/g, ' ').includes(title)
+  const printed = !!title && pageText.toLowerCase().replace(/\s+/g, ' ').includes(title)
+  const names = n.names_page || namesThisPage(n.url, u)
+  // One posting on the page: either fact places it. A careers page that also carries a related-jobs rail: the node must both name this
+  // page and print the title the page shows, so a rail node (another url, another title) never dates this lead.
+  return n.postings === 1 ? names || printed : names && printed
 }
 export function embeddedDay(html: string, now: Date, hiringOnly = false): string | null {
   const posted = /"datePosted"\s*:\s*"(\d{4}-\d{2}-\d{2})/.exec(html)
@@ -461,7 +474,7 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
   // The page's own typed markup names the day before any visible-date guess does (#2004): a date read from the text after this would
   // have to call itself printed, and a typed day is never printed.
   if (!out.date_on_page && !fromBoard) {
-    const markup = await page(), hiring = isDiscoveryHiringLead(c), typed = markup ? structuredDay(markup, now, hiring) : null
+    const markup = await page(), hiring = isDiscoveryHiringLead(c), typed = markup ? structuredDay(markup, now, hiring, u) : null
     const own = typed !== null && (!hiring || datesThisPosting(typed, text(markup!), u)) ? typed : null
     if (own) out = { ...out, date: own.day, date_source: 'page', date_on_page: true, date_on_page_field: own.field }
   }
