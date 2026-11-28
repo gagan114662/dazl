@@ -259,6 +259,36 @@ function backfillKindTags(db: Database.Database): void {
   for (const r of rows) { const k = primarySignalKind(r.signals); if (k) upd.run(k, r.id) }
 }
 
+// Rebuild `table` as `createNewSql` (a CREATE TABLE for `${table}_new`), copy its rows with
+// `copySql`, and preserve every dependent schema object verbatim. SQLite cannot alter a column
+// CHECK, so a widened definition means a new table: create, copy, drop, rename. The rename is
+// the trap - SQLite reparses every trigger and view in the schema at RENAME, and refuses to
+// parse one that names a table that does not exist, and `table` does not exist between the
+// DROP and the RENAME: the tenant guard's triggers on other tables name `leads` in their
+// bodies, so a bare rebuild aborts the whole migration on any database that carries them.
+// Capture every dependent first - the table's own indexes and triggers (dropped with it) and
+// every trigger and view whose SQL names it - drop the ones on other tables inside the same
+// transaction, and recreate them all once the table is back: the database keeps exactly the
+// indexes, triggers and views it had, none invented and none lost.
+function rebuildTablePreservingDependents(db: Database.Database, table: string, createNewSql: string, copySql: string): void {
+  const dependents = (db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ('index', 'trigger', 'view')").all() as { type: string; name: string; tbl_name: string; sql: string }[])
+    .filter(o => o.tbl_name === table || new RegExp(`\\b${table}\\b`).test(o.sql))
+  const dropName = (o: { type: string; name: string }) => `DROP ${o.type.toUpperCase()} IF EXISTS "${o.name.replaceAll('"', '""')}"`
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      for (const o of dependents) if (o.tbl_name !== table) db.exec(dropName(o))
+      db.exec(createNewSql)
+      db.exec(copySql)
+      db.exec(`DROP TABLE "${table}"`)
+      db.exec(`ALTER TABLE "${table}_new" RENAME TO "${table}"`)
+      for (const o of dependents) db.exec(o.sql)
+    })()
+  } finally {
+    db.pragma('foreign_keys = ON')
+  }
+}
+
 // Score reasoning grew from one sentence to 2-3 (cap 300 -> 600). SQLite cannot alter a
 // column CHECK, so databases that already carry the 300 cap get the leads table rebuilt
 // with the wider one. The rebuild preserves every row, index and trigger. No-op on
@@ -267,26 +297,7 @@ function widenWhyCap(db: Database.Database): void {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leads'").get() as { sql: string } | undefined
   if (!row || !row.sql.includes('length(why) <= 300)')) return
   const widened = row.sql.replace(/CREATE TABLE leads\b/, 'CREATE TABLE leads_new').replace('length(why) <= 300)', 'length(why) <= 600)')
-  db.pragma('foreign_keys = OFF')
-  try {
-    db.transaction(() => {
-      db.exec(widened)
-      db.exec('INSERT INTO leads_new SELECT * FROM leads')
-      db.exec('DROP TABLE leads')
-      db.exec('ALTER TABLE leads_new RENAME TO leads')
-    })()
-  } finally {
-    db.pragma('foreign_keys = ON')
-  }
-  // Indexes and triggers on leads were dropped with the old table; restore them.
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS leads_job ON leads (scan_job_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS leads_dedup ON leads (scan_job_id, dedup_key) WHERE dedup_key IS NOT NULL;
-    CREATE TRIGGER IF NOT EXISTS leads_only_while_running
-    BEFORE INSERT ON leads
-    WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
-    BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
-  `)
+  rebuildTablePreservingDependents(db, 'leads', widened, 'INSERT INTO leads_new SELECT * FROM leads')
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput & { id?: string }, runBudget: string | null = null): string {
