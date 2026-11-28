@@ -6,8 +6,8 @@ import type { Db } from '../db/client.ts'
 import { discoverCounts, discoverState, type DiscoverCounts, type DiscoverState } from './card.ts'
 
 // The columns of a lead its state is read from, for a caller that reads the workspace's own lead rows itself (aliased `l`).
-export const DISCOVER_LEAD_COLUMNS = 'l.name, l.company_domain, l.event_date, l.timing_note, l.fit, l.intent, l.source_kind'
-export type DiscoverLeadRow = { id: string; scan_job_id: string; name: string | null; company_domain: string | null; review_reason: string | null; human_confirmed_from?: string | null; event_date: string | null; timing_note?: string | null; fit: number | null; intent: number | null; quarantined_at: number | null; source_kind?: string | null }
+export const DISCOVER_LEAD_COLUMNS = 'l.name, l.company_domain, l.event_date, l.event_date_proof, l.signal, l.signal_kind, l.human_confirmed_at, l.date_status, l.timing_note, l.fit, l.intent, l.source_kind'
+export type DiscoverLeadRow = { id: string; scan_job_id: string; name: string | null; company_domain: string | null; review_reason: string | null; human_confirmed_from?: string | null; human_confirmed_at?: number | null; date_status?: string | null; event_date: string | null; event_date_proof?: string | null; signal?: string | null; signal_kind?: string | null; timing_note?: string | null; fit: number | null; intent: number | null; quarantined_at: number | null; source_kind?: string | null }
 export type DiscoverStoredRow = { lead_id: string; kind: string; connector: string; value: string; label: string | null; source_url: string | null; retrieved_at?: number | null; suppressed?: number | null }
 const marks = (n: number) => Array.from({ length: n }, () => '?').join(',')
 const leadsSql = (n: number) => `SELECT l.id, l.scan_job_id, l.review_reason, l.human_confirmed_from, l.quarantined_at, ${DISCOVER_LEAD_COLUMNS}

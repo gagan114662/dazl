@@ -12,22 +12,28 @@
 //
 //   Shapes 1+2 — "1 ready (1 by email), 0 research only" / "1 with no contact yet, 0 research only", but the
 //   cards sit under Research only. The card side of that split is the page's timing rule (surfaceStoredIntent):
-//   a stored date with no stored proof token (event_date_proof NULL) is timing-unconfirmed there. But that
-//   stored shape is also exactly what the writer leaves for a date the checker CONFIRMED from the page's own
-//   structured markup or a printed relative age (date_on_page false at check time, so no proof token is stored;
-//   probe-verified against lib/discover/check.ts + lib/scan/runner.ts discoveredLead), and #1910 pins the state
-//   Ready for it (timing-proof-1910). date_status cannot separate the two — it covers structured postings and
-//   legacy dates as well as index dates (lib/discover/timing.ts says so) — and the index dates it could identify
-//   are already held by their timing_note. So the state does NOT re-hold that shape; the two boundary tests
-//   below pin both facts (the counts' verdict, and the card's Research placement by the page's own split) so
-//   the disagreement is on record and neither side is "fixed" into the other from here. What the state holds
-//   for a date is unchanged: no date, an index date (its note), a stale date, a required check, a rejection.
+//   a stored date with no stored proof token (event_date_proof NULL) is timing-unconfirmed there. That stored
+//   shape was also exactly what the writer left for a date the checker had CONFIRMED from the page's own
+//   markup or a printed relative age — checkLead named no proof for those days (date_on_page false at check
+//   time), so no token was stored — while #1910 pins the state Ready for the checker's confirmation.
+//   FIXED by Ziggy's ruling (option (a)): the checker names the proof when it confirms a date from markup or
+//   relative age (date_proof 'page_structured' / 'page_bound', the scoreboard's existing tokens) and returns
+//   the day as the page's own; the writer stores the token under the proof's own name (migration 0079 widened
+//   the leads column's CHECK to admit 'page_structured' alongside the 0025 pair; the proof note keeps markup,
+//   age and print apart); and the state checks the stored token as the
+//   single source of truth (discoverProofHold) — a dated lead with no accepted token is research in the
+//   counts as on its card, unless the person confirmed it themselves. The agreement tests below drive the
+//   real checkLead through the real discoveredLead, so their rows are the rows production stores; the legacy
+//   test stores the pre-token shape by hand. date_status never separates anything — it covers structured
+//   postings and legacy dates as well as index dates (lib/discover/timing.ts says so) — and the index dates
+//   are already held by their timing_note, as the control below pins.
 //
 // Every scan below is built from stored rows the way the discovery writer leaves them (lib/scan/runner.ts
 // discoveredLead: a page-printed date gets event_date_proof 'page_bound' and date_status 'verified'; a
-// checker-confirmed structured/relative-age date keeps the date with event_date_proof NULL, date_status
-// 'unverified' and no index note; an index date carries the index note in timing_note; intent is the saved
-// grade, fit 4). Controls pin the shapes that must not move.
+// checker-confirmed markup date keeps the date WITH its 'page_structured' token, a relative-age date with
+// its 'page_bound' token, both with date_status 'verified'; a legacy row — written before the writer stored the token —
+// keeps event_date_proof NULL, date_status 'unverified' and no index note; an index date carries the index
+// note in timing_note; intent is the saved grade, fit 4). Controls pin the shapes that must not move.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
@@ -37,6 +43,9 @@ import { addEnrichment, enrichmentsForLeads } from '../lib/connectors/store.ts'
 import { getJob, listLeads } from '../lib/scan/store.ts'
 import { discoverCounts, discoverCountsLine, discoverNotReady, discoverState } from '../lib/discover/card.ts'
 import { discoverJobCounts } from '../lib/discover/state-db.ts'
+import { parseLeads } from '../lib/discover/agent.ts'
+import { checkLead } from '../lib/discover/check.ts'
+import { discoveredLead, type VerifiedLead } from '../lib/scan/runner.ts'
 import { isUnconfirmedTimingResearch } from '../lib/lead-state.ts'
 import { reviewListSplit } from '../lib/scan/leads-view.ts'
 import { leadCardSummary } from '../lib/scan/lead-card.ts'
@@ -63,7 +72,8 @@ function job(db: Database.Database): string {
 }
 const finish = (db: Database.Database, id: string) => db.prepare("UPDATE scan_jobs SET status = 'done' WHERE id = ?").run(id)
 // A discovery lead as the lane's writer stores it. proof: 'page_bound' (printed date), null with note null
-// (checker-confirmed structured/relative-age date), or null with the index note (search-index date).
+// (a legacy row, stored before the writer kept the checker's proof token), or null with the index note
+// (search-index date).
 function lead(db: Database.Database, jobId: string, id: string, o: { proof?: string | null; note?: string | null; review?: string | null } = {}) {
   const proof = o.proof === undefined ? 'page_bound' : o.proof
   db.prepare(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, event_date_proof, date_status, timing_note, fit, intent, company_domain, source_kind)
@@ -75,6 +85,31 @@ const row = (db: Database.Database, id: string, kind: string, value: string, lab
 const person = (db: Database.Database, id: string) => row(db, id, 'person', 'Dana Ruiz, Founder', 'named on a public page')
 const ownEmail = (db: Database.Database, id: string) => row(db, id, 'email', `dana.ruiz@${id}.example`, 'published on a public page')
 const profile = (db: Database.Database, id: string) => row(db, id, 'linkedin', 'https://www.linkedin.com/in/dana-ruiz/', 'linked from a public page')
+
+// The shapes 1+2 fixtures, driven end to end: the real checkLead reads the page (the fetch stub serves it),
+// the real writer (discoveredLead) turns the checked lead into the stored row. The page mirrors
+// timing-proof-1910's readiness fixture: a hiring posting the index dates at '5 days ago', its day now-5d.
+const FIXTURE_SITE = 'example-dental.test'
+async function writerStored(markup: (day: string) => string): Promise<VerifiedLead> {
+  const now = new Date()
+  const day = new Date(now.getTime() - 5 * 86_400_000).toISOString().slice(0, 10)
+  const url = `https://${FIXTURE_SITE}/careers/hygienist`
+  const lead = parseLeads(JSON.stringify({ leads: [{
+    company: 'Example Dental Clinic', signal: 'Hiring a registered dental hygienist',
+    evidence_quote: 'Hiring a registered dental hygienist', evidence_url: url, signal_date: day,
+  }] }), 1).leads[0]
+  const html = `<h1>Example Dental Clinic</h1><p>Hiring a registered dental hygienist</p>${markup(day)}`
+  const seen = [{ url, title: 'Example Dental Clinic', text: null, page_age: '5 days ago' }]
+  const checked = await checkLead(lead, seen as never, async () => new Response(html), undefined, now)
+  return discoveredLead(checked, Math.floor(now.getTime() / 1000))
+}
+// A stored row carrying the writer's own date fields (event_date, event_date_proof, date_status,
+// timing_note, fit, intent); the contact rows are the test's own, as in every scan above.
+function storedLead(db: Database.Database, jobId: string, id: string, stored: VerifiedLead) {
+  db.prepare(`INSERT INTO leads (id, scan_job_id, name, company, signal, source_url, confidence, evidence_excerpt, review_reason, event_date, event_date_proof, date_status, timing_note, fit, intent, company_domain, source_kind)
+    VALUES (?, ?, ?, ?, 'opening another site', ?, 85, 'is opening another site', NULL, ?, ?, ?, ?, ?, ?, ?, 'discover')`)
+    .run(id, jobId, 'Dana Ruiz', `Co ${id}`, `https://news.example/${id}`, stored.event_date, stored.event_date_proof, stored.date_status, stored.timing_note, stored.fit ?? null, stored.intent ?? null, `${id}.example`)
+}
 
 // The scan's leads as GET /api/leads hands them to the page: the stored row, its stored rows, the timing the
 // route computes from the stored proof, the server's recipient verdict, the saved grade beside the shown one.
@@ -166,25 +201,52 @@ test('the captured Austin lead with its date proven afterwards: the counts name 
     'Home holds it with the no-contact words: date proof alone cannot supply a named buyer\'s published work email (#1910)')
 })
 
-test('boundary (shapes 1+2): a checker-confirmed structured/relative-age date is counted by its contact, as #1910 pins — its card\'s Research place is the page timing split\'s, not the state\'s', async () => {
+test('agreement (shapes 1+2): a date the checker confirmed from a printed relative age is stored with its proof token — the counts and the card both call it ready', async () => {
   const db = buildDb()
   const J = job(db)
-  lead(db, J, 'b1', { proof: null }); person(db, 'b1'); ownEmail(db, 'b1')
-  lead(db, J, 'b2', { proof: null })
-  finish(db, J)
+  const stored = await writerStored(() => '<p>Posted 5 days ago</p>')
+  assert.equal(stored.event_date_proof, 'page_bound', 'the writer stores the checker\'s proof token for the age-derived day')
+  assert.equal(stored.event_date_proof_note, 'the proof page prints the posting\'s age; the day is counted back from it', 'the note names the actual proof: a printed age, not a printed day')
+  assert.equal(stored.date_status, 'verified')
+  assert.equal(stored.timing_note, null)
+  storedLead(db, J, 'w1', stored); person(db, 'w1'); ownEmail(db, 'w1'); finish(db, J)
   const counts = await discoverJobCounts(sqliteDb(db), T, J)
   const b = buckets(db, J)
-  // The state's verdicts, pinned by timing-proof-1910 for this exact stored shape: the date was confirmed by
-  // the checker, so the state judges the contact, not the missing proof token.
-  assert.equal(counts?.ready_email, 1, 'the dated lead with a usable published email counts ready by email (#1910)')
+  assert.equal(counts?.ready_email, 1, 'the summary counts it ready by email, as #1910 pins for the checker-confirmed date')
+  assert.equal(counts?.research, 0)
+  assert.equal(b.research.has('w1'), false, 'the card is not under Research only')
+  assert.equal(b.cards.get('w1')!.approve.ok, true, 'Approve is on')
+  assert.equal(b.byId.get('w1')!.timing, 'proof_backed', 'the page timing split reads the same stored token as proof')
+})
+
+test('agreement (shapes 1+2): a date the checker confirmed from the page\'s own markup is stored with its proof token — counted by its contact, split proof-backed', async () => {
+  const db = buildDb()
+  const J = job(db)
+  const stored = await writerStored(day => `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"${day}"}</script>`)
+  assert.equal(stored.event_date_proof, 'page_structured', 'the writer stores the markup day under its own proof token (\'page_structured\', the token migration 0079 admits for a day the page\'s own markup proves)')
+  assert.equal(stored.event_date_proof_note, 'the day is stated in the proof page\'s own markup', 'the note names the actual proof: the page\'s markup, not a printed day')
+  assert.equal(stored.date_status, 'verified')
+  assert.equal(stored.timing_note, null)
+  storedLead(db, J, 'w2', stored); person(db, 'w2'); finish(db, J)
+  const counts = await discoverJobCounts(sqliteDb(db), T, J)
+  const b = buckets(db, J)
   assert.equal(counts?.no_contact, 1, 'the dated lead with nobody to reach counts as no contact yet (#1910)')
   assert.equal(counts?.research, 0)
-  // The page's own split still places both cards under Research only: its timing rule reads the stored proof
-  // token, which the writer does not store for this date kind. Recorded here so the residual is a pinned fact,
-  // not a surprise; aligning it belongs to the writer/route, and re-holding the date in the state is what
-  // broke #1910 (and, through discoverLinkedIn, the LinkedIn card action).
-  assert.equal(b.research.has('b1'), true, 'the page timing split places the proof-token-less card under Research only')
-  assert.equal(b.research.has('b2'), true)
+  assert.equal(b.research.has('w2'), false, 'the card is not under Research only')
+  assert.equal(b.byId.get('w2')!.timing, 'proof_backed', 'the page timing split reads the same stored token as proof')
+})
+
+test('agreement (shapes 1+2): a legacy row stored before the writer kept a proof token (no token, unverified, no note) is research in the counts, as its card is', async () => {
+  const db = buildDb()
+  const J = job(db)
+  lead(db, J, 'lg', { proof: null }); person(db, 'lg'); ownEmail(db, 'lg'); finish(db, J)
+  const counts = await discoverJobCounts(sqliteDb(db), T, J)
+  const b = buckets(db, J)
+  // The contact is usable and the date is recent; only the missing token holds this lead, and now both
+  // readers say so: the state checks the stored token exactly as the page's timing split does.
+  assert.equal(counts?.research, 1, 'the summary counts the token-less legacy row research, like its card')
+  assert.equal(counts?.ready_email, 0)
+  assert.equal(b.research.has('lg'), true, 'the card sits under Research only')
 })
 
 test('control: an index-dated lead is research in the counts, as its card is — held by its note, not by date_status', async () => {

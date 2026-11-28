@@ -1458,15 +1458,31 @@ export function discoveredLead(l: CheckedLead, now: number): VerifiedLead {
   // structured date for that posting (ats_structured, hiring only), cited by the record's URL - never page_bound, because the page text
   // does not carry it.
   const record = l.date_proof === 'ats_structured' && !!l.date_record_url && l.proof === 'confirmed'
+  // #1926: a day the checker confirmed from the page's own markup or a printed relative age carries the checker's
+  // own proof token (date_proof), and the row stores that same token, so every reader judges the stored date by
+  // the token alone. The stored token is the proof's own name: a board record's day is 'ats_structured', a day
+  // counted back from a printed age is 'page_bound', a day printed on the page is 'page_bound', and a day the
+  // page's own typed markup states is 'page_structured' - named by the typed field when the checker read one
+  // (date_on_page_field), else by the checker's markup token. Migration 0079 widened the leads column's CHECK
+  // to admit 'page_structured' alongside the 0025 pair, so the token the checker names is the token the row
+  // can hold. The note below keeps the proofs apart — never a printed day for an age or a markup day.
+  const checkerProof = (l.date_proof === 'page_bound' || l.date_proof === 'page_structured') && l.proof === 'confirmed' ? l.date_proof : null
+  const proof = record ? 'ats_structured'
+    : checkerProof === 'page_structured' ? 'page_structured'
+    : l.date_on_page && l.proof === 'confirmed' ? (printed ? 'page_bound' : 'page_structured')
+    : checkerProof
   return {
     name: (l.person ?? '').slice(0, 150), company: l.company.slice(0, 150), contact: null, signal: l.signal.slice(0, 500), source_url: l.evidence_url,
     score: DISCOVER_SCORE[l.confidence], confidence: DISCOVER_SCORE[l.confidence], excerpt: (l.evidence_quote ?? l.signal).slice(0, 400),
     event_date: l.date,
-    event_date_proof: record ? 'ats_structured' : l.date_on_page && l.proof === 'confirmed' ? (printed ? 'page_bound' : 'page_structured') : null,
+    event_date_proof: proof,
     event_date_proof_note: record ? `the day comes from the posting's own board record ${l.date_record_url}`.slice(0, 200)
+      : proof === 'page_structured' && l.date_on_page_field ? `the proof page's own typed ${l.date_on_page_field} states the day`
+      : checkerProof === 'page_bound' ? 'the proof page prints the posting\'s age; the day is counted back from it'
+      : checkerProof === 'page_structured' ? 'the day is stated in the proof page\'s own markup'
       : !l.date_on_page ? null : printed ? 'the date is printed on the proof page' : `the proof page's own typed ${l.date_on_page_field} states the day`,
     timing_note: record ? `event date ${l.date}: read from the posting's own board record ${l.date_record_url}`.slice(0, 200) : l.date_source === 'index' ? 'The page prints no date. This is the day the search index dates the page.' : null,
-    date_status: dated ? (record || l.date_on_page ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
+    date_status: dated ? (record || l.date_on_page || proof !== null ? 'verified' : 'unverified') : 'undated', retrieved_at: now,
     fit: l.confidence === 'low' ? 3 : 4, intent: dated ? 4 : 3, why: l.why.slice(0, 600) || undefined,
   }
 }

@@ -223,11 +223,13 @@ function addColumns(db: Database.Database): void {
   // #1040 Home's 30-day results: a scan's leads found since a date, a range seek (not every lead the scan ever found)
   db.exec('CREATE INDEX IF NOT EXISTS leads_job_created ON leads (scan_job_id, created_at)')
   // #460 how a surviving event_date was established: page_bound (the fetched page or its held copy ties the day to this
-  // company and event) or ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
-  // posting day only, never funding or a general company event). NULL: unproven; consumers fail closed. No backfill.
-  add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured'))")
+  // company and event), ats_structured (a job board's structured publish date for exactly this posting URL - a hiring
+  // posting day only, never funding or a general company event) or page_structured (a day the proof page's own typed
+  // markup states, #2004). NULL: unproven; consumers fail closed. No backfill.
+  add('leads', 'event_date_proof', "TEXT CHECK (event_date_proof IS NULL OR event_date_proof IN ('page_bound','ats_structured','page_structured'))")
   add('leads', 'event_date_proof_note', 'TEXT CHECK (event_date_proof_note IS NULL OR length(event_date_proof_note) <= 200)')
   widenWhyCap(db)
+  widenEventDateProof(db)
   backfillKindTags(db)
 }
 
@@ -287,6 +289,41 @@ function widenWhyCap(db: Database.Database): void {
     WHEN (SELECT status FROM scan_jobs WHERE id = NEW.scan_job_id) IS NOT 'running'
     BEGIN SELECT RAISE(ABORT, 'leads can only be added to a running job'); END;
   `)
+}
+
+// The event_date_proof CHECK learned 'page_structured' (#1926; migration 0079 widens the same CHECK on
+// Postgres). SQLite cannot alter a column CHECK, so databases that already carry the 0025 pair get the leads
+// table rebuilt with the wider one - the same rebuild widenWhyCap performs for the why cap. The rebuild
+// preserves every row, index and trigger. No-op on fresh databases (the add above already writes the wider
+// CHECK) and on databases already widened.
+function widenEventDateProof(db: Database.Database): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leads'").get() as { sql: string } | undefined
+  if (!row || !row.sql.includes("event_date_proof IN ('page_bound','ats_structured')")) return
+  const widened = row.sql.replace(/CREATE TABLE leads\b/, 'CREATE TABLE leads_new').replace("event_date_proof IN ('page_bound','ats_structured')", "event_date_proof IN ('page_bound','ats_structured','page_structured')")
+  // Every schema object that names `leads`: its own indexes and triggers (dropped with the table) and
+  // triggers and views on other tables whose bodies read it - the tenant guard's tomb_lead_sources, on
+  // lead_sources, names leads in its body. The RENAME below reparses every trigger and view in the
+  // schema, and SQLite refuses to parse one that names a table that does not exist - and `leads` does
+  // not exist between the DROP and the RENAME - so the rebuild fails outright on any database that
+  // carries such a trigger. Capture every dependent verbatim, drop the ones on other tables first,
+  // and recreate them all once `leads` is back: the database keeps exactly the indexes and triggers
+  // it had, none invented and none lost.
+  const dependents = (db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ('index', 'trigger', 'view')").all() as { type: string; name: string; tbl_name: string; sql: string }[])
+    .filter(o => o.tbl_name === 'leads' || /\bleads\b/.test(o.sql))
+  const dropName = (o: { type: string; name: string }) => `DROP ${o.type.toUpperCase()} IF EXISTS "${o.name.replaceAll('"', '""')}"`
+  db.pragma('foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      for (const o of dependents) if (o.tbl_name !== 'leads') db.exec(dropName(o))
+      db.exec(widened)
+      db.exec('INSERT INTO leads_new SELECT * FROM leads')
+      db.exec('DROP TABLE leads')
+      db.exec('ALTER TABLE leads_new RENAME TO leads')
+      for (const o of dependents) db.exec(o.sql)
+    })()
+  } finally {
+    db.pragma('foreign_keys = ON')
+  }
 }
 
 export function createJob(db: Database.Database, userId: string, input: ScanInput & { id?: string }, runBudget: string | null = null): string {
