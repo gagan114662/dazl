@@ -62,7 +62,7 @@ const FIELD_PAGE = `<html><body><h1>Tax Accountant</h1><p>Birchwood Tax LLP is h
   Website
 </dt><dd class="grid-item"><a href="https://bwlp.ca/" target="_blank">https://bwlp.ca/</a></dd></div></dl></body></html>`
 const SRC = 'https://jobs.example-board.ca/job/tax-accountant-birchwood-llp-4411'
-async function crawlField(sites: Record<string, Record<string, string>>) {
+async function crawlField(sites: Record<string, Record<string, string>>, page = FIELD_PAGE) {
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Calgary, Alberta'] }), job)
@@ -70,7 +70,7 @@ async function crawlField(sites: Record<string, Record<string, string>>) {
     .run('L1', job, 'Birchwood Tax LLP', null, 'Hiring a Tax Accountant in Calgary', SRC, 'Birchwood Tax LLP is hiring a Tax Accountant in Calgary, Alberta', 90, 70, null)
   const get: sc.Get = async url => {
     const u = new URL(url); const host = u.hostname.replace(/^www\./, '')
-    if (url === SRC) return { status: 200, body: FIELD_PAGE, finalUrl: url }
+    if (url === SRC) return { status: 200, body: page, finalUrl: url }
     const site = sites[host]
     if (!site) return null
     if (u.pathname === '/robots.txt') return { status: 200, body: 'User-agent: *\nAllow: /', finalUrl: url }
@@ -100,4 +100,34 @@ test('#2145 end to end control: the field names the right firm in another city, 
   const r = await crawlField({ 'bwlp.ca': { '/': '<html><body><h1>Birchwood Tax LLP</h1><p>Suite 5, 40 Queen St, Halifax, NS B3J 1A1</p></body></html>', '/contact': '<html><body>partners@bwlp.ca</body></html>' } })
   assert.equal(r.domain, null)
   assert.deepEqual(r.emails, [])
+})
+
+test('#2145 end to end control: a Website field a visitor cannot see (commented, scripted, templated, hidden) persists nothing', async () => {
+  const field = '<dl><dt>Website</dt><dd><a href="https://bwlp.ca/">bwlp.ca</a></dd></dl>'
+  const live = { 'bwlp.ca': { '/': HOME_OK, '/contact': '<html><body>Email our partner: partners@bwlp.ca</body></html>' } }
+  const wrap = (inner: string) => `<html><body><h1>Tax Accountant</h1><p>Birchwood Tax LLP is hiring a Tax Accountant in Calgary, Alberta.</p>${inner}</body></html>`
+  for (const inner of [`<!-- ${field} -->`, `<script>var f = '${field}'</script>`, `<template>${field}</template>`, `<div hidden>${field}</div>`, `<div aria-hidden="true">${field}</div>`, `<div style="display: none">${field}</div>`]) {
+    const r = await crawlField(live, wrap(inner))
+    assert.equal(r.domain, null, inner)
+    assert.deepEqual(r.emails, [], inner)
+  }
+  const r = await crawlField(live, wrap(`<div hidden><p>x</p></div>${field}`))
+  assert.equal(r.domain, 'bwlp.ca')
+})
+
+test('#2145 end to end: a plain unlinked address (bare or with https://) in a visible Website field names the site; the same text in body copy does not', async () => {
+  const live = { 'bwlp.ca': { '/': HOME_OK, '/contact': '<html><body>Email our partner: partners@bwlp.ca</body></html>' } }
+  const wrap = (inner: string) => `<html><body><h1>Tax Accountant</h1><p>Birchwood Tax LLP is hiring a Tax Accountant in Calgary, Alberta.</p>${inner}</body></html>`
+  for (const v of ['https://bwlp.ca/', 'http://www.bwlp.ca', 'bwlp.ca']) {
+    const r = await crawlField(live, wrap(`<dl><div><dt>\n  Website\n</dt><dd>${v}</dd></div></dl>`))
+    assert.equal(r.domain, 'bwlp.ca', v)
+    assert.deepEqual(r.emails, ['partners@bwlp.ca'], v)
+  }
+  for (const inner of ['<p>Website: https://bwlp.ca/</p>', '<p>Questions? See https://bwlp.ca/ for details.</p>', '<ul><li>Website https://bwlp.ca/</li></ul>']) {
+    const r = await crawlField(live, wrap(inner))
+    assert.equal(r.domain, null, inner)
+  }
+  // a plain value is still gated by identity and place
+  const other = await crawlField({ 'bwlp.ca': { '/': '<html><body><h1>Northline Marketing</h1><p>Suite 5, Calgary, AB</p></body></html>' } }, wrap('<dl><dt>Website</dt><dd>https://bwlp.ca/</dd></dl>'))
+  assert.equal(other.domain, null)
 })
