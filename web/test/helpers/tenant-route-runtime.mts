@@ -130,6 +130,16 @@ test('tenant B cannot read or change tenant A rows through the real route handle
   assert.equal((await monitorDELETE(req(`/api/monitors/${mon}`, 'DELETE'), ctx({ id: mon }))).status, 401)
   assert.equal(snapshot(db), before)
 
+  setUser(B)
+  const cancel = (jobId: string) => cancelPOST(req('/api/scan/cancel', 'POST', { job_id: jobId }))
+  const foreignCancellation = await cancel(pending)
+  const missingCancellation = await cancel(hex())
+  assert.equal(foreignCancellation.status, 404)
+  assert.equal(missingCancellation.status, 404)
+  assert.equal(foreignCancellation.headers.get('content-type'), missingCancellation.headers.get('content-type'))
+  assert.equal(await foreignCancellation.text(), await missingCancellation.text())
+  assert.equal(snapshot(db), before, 'denied cancellation changes no rows')
+
   // Positive controls: the same calls as tenant A really change A's rows, so a handler that always rejects cannot pass.
   setUser(A)
   assert.equal((await outreachPATCH(req(`/api/outreach/${draft}`, 'PATCH', { subject: 'A edit', body: 'A edited body text long enough to pass the guard here.' }), ctx({ id: draft }))).status, 200)
