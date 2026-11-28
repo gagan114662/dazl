@@ -33,3 +33,8 @@ test('#1955 the check-email screen offers a resend for the address it already kn
   // control: the no-script fallback keeps pointing at password sign-in
   assert.match(form, /Sign in with your password/)
 })
+
+test('#1955 bulk session revocation uses a label that also fits when the current session was kept', () => {
+  const panel = src('../app/app/settings/audit-panel.tsx')
+  assert.match(panel, /'session\.revoked_all': 'Revoked sessions'/)
+})
