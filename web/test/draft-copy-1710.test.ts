@@ -213,3 +213,34 @@ test('#1710 control: a short dated signal of an unrecognisable kind keeps today\
   assert.match(d.body, /At dazl, we offer HR software \(SaaS\) in the UK\./)
   assert.ok(wordCount(d) <= 120, `body is ${wordCount(d)} words, over the 120 cap`)
 })
+
+// Lane D's negative controls on PR #2157 + Qodo's HIGH finding: the bridge must come from the
+// text the opener actually cites, and an offer for an unrelated vertical must not claim the tie.
+test('#1710 control: a recognized signal with an unrelated vertical offer gets no bridge', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    signal: 'Cedar Studio is hiring a bookkeeper',
+    evidence_excerpt: 'Cedar Studio is hiring a bookkeeper',
+  }), 'dazl', 'commercial refrigeration maintenance for grocery stores')
+  assert.doesNotMatch(d.body, /outside help pays off|A hiring push/, 'no tie is claimed for an unrelated offer')
+  assert.match(d.body, /At dazl, we offer commercial refrigeration maintenance for grocery stores\./)
+})
+
+test('(Qodo) the bridge kind comes from the cited excerpt, never the separately stored signal', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Northline Logistics',
+    signal: 'Northline Logistics is hiring SDRs',
+    evidence_excerpt: 'Northline Logistics raised £2m in funding from a regional investor',
+  }), 'dazl', OFFER)
+  assert.match(d.body, /New funding usually means a busy stretch/, 'the bridge follows the cited funding')
+  assert.doesNotMatch(d.body, /hiring push/, 'an uncited signal never selects the bridge')
+})
+
+test('#1710 a vertical offer that shares the signal\'s own words still gets the bridge', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Fernway Handling',
+    signal: 'Fernway Handling is hiring',
+    evidence_excerpt: 'Fernway Handling is hiring forklift technicians',
+  }), 'dazl', 'forklift maintenance plans')
+  assert.match(d.body, /outside help pays off/, 'the offer shares the signal\'s words, so the tie is supported')
+})

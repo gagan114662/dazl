@@ -176,6 +176,24 @@ function offerSentence(name: string, offer: string): string {
   return `At ${name}, we offer ${lowerFirst(o)}.`
 }
 
+// Shared stop words for the offer-to-signal word overlap check; a shared filler word is
+// not evidence of fit.
+const FIT_STOP = new Set(['that', 'this', 'with', 'from', 'about', 'their', 'they', 'have', 'been', 'will', 'when', 'more', 'some', 'only', 'into', 'also', 'than', 'then', 'over', 'after', 'before', 'which', 'your', 'what', 'where', 'would', 'could', 'should', 'there', 'these', 'those', 'other', 'every', 'each'])
+const GENERIC_OFFER = /\b(?:software|saas|platform|services?|solutions?|consult\w*|agenc\w*|marketing|sales|advert\w*|tools?|apps?|automation|support|train\w*|design|staff\w*|recruit\w*|account\w*|bookkeep\w*|finance|financial|insur\w*|logistics?|transport\w*)\b/i
+const KIND_FIT: Record<keyof typeof KIND_BRIDGE, RegExp> = {
+  hiring: /\b(?:hir\w*|recruit\w*|talent|jobs?|staff\w*|team\w*|people|headcount|candidate\w*|onboard\w*|payroll|workforce|hr\b|sales)\b/i,
+  funding: /\b(?:fund\w*|capital|invest\w*|growth|scal\w*|series|rais\w*|budget|financ\w*|cash|revenue|bank\w*)\b/i,
+  move: /\b(?:mov\w*|relocat\w*|office\w*|space|facilit\w*|premises|location\w*|headquarters|site|setup|propert\w*|lease|build\w*|expand\w*|furnish\w*|clean\w*|security|network|phone|internet)\b/i,
+  launch: /\b(?:launch\w*|releas\w*|product\w*|feature\w*|customer\w*|market\w*|attention|brand\w*|audience|press|website|web\b|seo|content)\b/i,
+}
+// True when the seller's offer may claim relevance to the moment the cited signal describes.
+function offerFits(kind: keyof typeof KIND_BRIDGE, offer: string, seen: string): boolean {
+  if (GENERIC_OFFER.test(offer) || KIND_FIT[kind].test(offer)) return true
+  const signalWords = new Set((seen.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? []).filter(w => !FIT_STOP.has(w)))
+  const offerWords = offer.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? []
+  return offerWords.some(w => signalWords.has(w))
+}
+
 export function composeDraftCopy(lead: DraftCopyLead, businessName: string, positioning = ''): { subject: string; body: string } {
   const name = clean(businessName, 150)
   if (!name) throw new DraftCopyError('seller_context_required')
@@ -221,10 +239,18 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
           : company && seen.startsWith(company) ? `I saw ${seen}.` : `I saw that ${cited}.`
   // When the signal's kind is recognisable from its own words, a one-clause bridge ties the
   // seller's offer to why that moment matters; the offer keeps its own words and an
-  // unrecognisable kind gets no bridge.
+  // unrecognisable kind gets no bridge. The kind is read from the text the opener actually
+  // cites (the machine-checked excerpt), never from the separately stored lead.signal: a
+  // signal field that describes a different event must not select a bridge the draft never
+  // mentions. The bridge claims the seller's offer is relevant to that moment, so it is
+  // omitted when the claim is unsupported: a generic business offer (software, services,
+  // marketing) may claim it for any business moment, while an offer for a specific niche or
+  // equipment domain only bridges when its own words share the cited signal's words or the
+  // kind's domain. Lexical and conservative on purpose: an unsupported tie reads worse than
+  // no tie at all.
   const offerLine = offerSentence(name, offer)
-  const kind = seen ? SIGNAL_KINDS.find(([re]) => re.test(`${seen} ${lead.signal ?? ''}`))?.[1] ?? null : null
-  const pitch = kind ? `${KIND_BRIDGE[kind]} ${offerLine}` : offerLine
+  const kind = seen ? SIGNAL_KINDS.find(([re]) => re.test(seen))?.[1] ?? null : null
+  const pitch = kind && offerFits(kind, offer, seen) ? `${KIND_BRIDGE[kind]} ${offerLine}` : offerLine
   return {
     subject: `Quick question for ${company || contactName || 'you'}`.slice(0, 150),
     body: `Hi ${who},\n\n${opener}\n\n${pitch}\n\nOpen to a quick chat?\n\nThanks,`,
