@@ -1161,7 +1161,7 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 const lastHit = new Map<string, number>()
 
 type LocationPage = { url: string; statements: string[]; offices: { heading: string; address: string; ownSection: boolean }[]; footerOffices: { heading: string; address: string }[]; hiringMarkets: { heading: string; employer: string }[] }
-type LocationProof = { url: string; excerpt: string }
+type LocationProof = { url: string; excerpt: string; posting?: true }
 
 function subpageLocationFacts(url: string, body: string): LocationPage {
   // Keep prose statements and office entries separate. A page can list several offices or quote a customer.
@@ -1261,6 +1261,28 @@ function publishedDisplayOffice(pages: LocationPage[], where: string[], company:
   }
   return key.length >= 3 && pages.some(p => p.statements.some(s => office(s) && declaresOwner(s)) ||
     p.offices.some(o => o.ownSection && officeHeading(o.heading, o.address) && office(o.address)))
+}
+
+function postingStatements(text: string): string[] {
+  return text.split(/(?<!\b(?:inc|ltd|corp|co)\.)(?<=[.!?])\s+/i)
+}
+
+function postingLocationConflicts(statements: string[], where: string[], company: string): boolean {
+  return statements.some(statement => placeAgreement(statement, where, company) === 'mismatch')
+}
+
+function contactOfficeConflicts(pages: LocationPage[], where: string[], company: string): boolean {
+  const key = norm(company)
+  const conflicts = (address: string) => ownAddressElsewhere(address, where) ||
+    placeAgreement(address, where, company) === 'mismatch'
+  return pages.some(({ statements, offices, footerOffices }) =>
+    statements.some(statement => {
+      const owner = /^([^,:]{3,160}),\s*\d/.exec(statement)?.[1]
+      return ((!!owner && norm(owner) === key) || FIRST_PERSON_OFFICE.test(statement)) &&
+        !FOREIGN_SUBJECT.test(statement) && conflicts(statement)
+    }) ||
+    offices.some(({ address, ownSection }) => ownSection && conflicts(address)) ||
+    footerOffices.some(({ address }) => conflicts(address)))
 }
 
 function siteLocationProof(pages: LocationPage[], where: string[], company: string, alternateOfficeOnly: boolean, guessed: boolean): LocationProof | undefined {
@@ -2141,10 +2163,17 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
       const ownPosting = atsPostingRef(l.source_url)
       const ownRef = !anchored ? ownPosting : null
+      const orgSite = ownPosting?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
+      const postingLocationProof = new Map<string, LocationProof>()
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
         const named = rec && rec !== 'missing' ? [...recordNamedSites(`${rec.header} ${rec.description}`, l.company), ...[recordCompanyDomain(rec.company, l.company)].filter((s): s is string => !!s)] : []
+        if (rec && rec !== 'missing' && rec.location && placeAgreement(rec.location, where, l.company) === 'agrees' &&
+            !postingLocationConflicts(postingStatements(rec.html ? plainText(visibleMarkup(rec.description)) : rec.description), where, l.company)) {
+          const employerSite = (ev?.status === 200 && ev.finalUrl === l.source_url ? orgSite : null) ?? recordCompanyDomain(rec.company, l.company)
+          if (employerSite) postingLocationProof.set(employerSite, { url: l.source_url, excerpt: rec.location, posting: true })
+        }
         for (const site of [...new Set(named)]) {
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
@@ -2152,7 +2181,6 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       }
       // Qodo #1515: read whether or not the posting also links a site: a stale or dead company-labelled link must not hide the employer's
       // own setting. With a link it is tried after the linked sites (as structured data is above); the homepage name check decides either way.
-      const orgSite = ownPosting?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
       if (orgSite) {
         if (!basisOf.has(orgSite)) { basisOf.set(orgSite, 'evidence_link_domain_label'); sourceOf.set(orgSite, l.source_url) }
         if (anchored) { if (!sites.includes(orgSite)) sites.push(orgSite) }
@@ -2286,6 +2314,22 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         locationProof = !unread(r) && basis !== 'evidence_own_domain' && (!homeLocationOk || vHome === 'mismatch' || homeElsewhere)
           ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome === 'mismatch' || (vHome !== 'scope_unconfirmed' && (vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))), guessed)
           : undefined
+        // The posting can supply location only for a site it explicitly names and whose
+        // homepage passes the identity check without contradicting that location.
+        if (!unread(r) && !guessed && !homeLocationOk && !locationProof && vHome === 'unconfirmed' && !homeElsewhere &&
+            !contactOfficeConflicts(r.locationPages ?? [], where, l.company)) {
+          locationProof = postingLocationProof.get(cand)
+          if (!locationProof && ev?.status === 200 && ev.finalUrl === l.source_url &&
+              postingNamedSites(l.company, ev.body, registrable(new URL(ev.finalUrl).hostname)).includes(cand)) {
+            const companyName = l.company.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const affirmativeHiring = new RegExp(`^\\s*${companyName}\\s+(?:is hiring|is recruiting|seeks)\\b`, 'iu')
+            const statements = visibleMarkup(ev.body).split(/<\/(?:p|li|h[1-6]|div|td|dd)\s*>/i)
+              .flatMap(block => postingStatements(plainText(block)))
+            const sentence = !postingLocationConflicts(statements, where, l.company) && statements.find(part => affirmativeHiring.test(part) && !/\b(?:not|never|no longer|except|excluding)\b/i.test(part) &&
+                placeAgreement(part, where, l.company) === 'agrees' && !ownAddressElsewhere(part, where))
+            if (sentence) locationProof = { url: ev.finalUrl, excerpt: sentence.trim(), posting: true }
+          }
+        }
         // A site the lead's evidence LINKS to, whose domain label is the company's name, is bound to the company by that link. With no
         // requested place there is nothing to compare it against: a place the evidence page happens to name is not the request's (prod
         // run df4f657f refused linked sites "vs the requested place"). Text-only links and guessed (name_probe) sites keep every check.
@@ -2349,7 +2393,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const proofPage = locationProof && db.prepare('SELECT fetched_at FROM crawl_pages WHERE tenant_id = ? AND scan_job_id = ? AND site = ? AND url = ?')
           .get(tenantId, jobId, site, locationProof.url) as { fetched_at: number } | undefined
         const checkedAt = proofPage?.fetched_at ?? Math.floor((deps.now ?? Date.now()) / 1000)
-        const proofLabel = locationProof ? `identity-check-v2: first-party location evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
+        const proofLabel = locationProof ? `identity-check-v2: ${locationProof.posting ? 'employer posting' : 'first-party'} location evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
         addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: proofLabel.slice(0, 200), confidence: null, source_url: locationProof?.url ?? `https://${site}/`, source_date: new Date(checkedAt * 1000).toISOString().slice(0, 10), retrieved_at: checkedAt })
       }
       for (const t of r.tech ?? []) {
