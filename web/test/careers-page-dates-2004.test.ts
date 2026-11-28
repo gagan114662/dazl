@@ -56,3 +56,13 @@ test('#2004 careers page end to end: the rail does not stop the page’s own typ
   assert.equal(checked.date, '2026-11-12')
   assert.equal(checked.date_on_page, true)
 })
+
+test('#2004 careers page: a rail node on the same path but a different posting (query) does not date the lead', () => {
+  const url = 'https://careers.example.test/jobs?posting=sdr'
+  const own = JSON.stringify({ '@context': 'https://schema.org', '@type': 'JobPosting', title: 'Sales Development Representative', url, datePosted: '2026-11-12' })
+  const other = JSON.stringify({ '@context': 'https://schema.org', '@type': 'JobPosting', title: 'Account Executive', url: 'https://careers.example.test/jobs?posting=ae', datePosted: '2026-11-20' })
+  const body = page([other, own], 'Sales Development Representative. Account Executive. We are hiring.')
+  const s = structuredDay(body, NOW, true, new URL(url))
+  assert.equal(s?.day, '2026-11-12', "the page's own posting, not the same-path rail node")
+  assert.equal(datesThisPosting(s!, 'Sales Development Representative. Account Executive. We are hiring.', new URL(url)), true)
+})

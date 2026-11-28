@@ -358,7 +358,11 @@ function namesThisPage(url: string | null, pageUrl: URL | null): boolean {
   if (!url || !pageUrl) return false
   try {
     const a = new URL(url, pageUrl)
-    return a.hostname.replace(/^www\./, '') === pageUrl.hostname.replace(/^www\./, '') && a.pathname.replace(/\/+$/, '') === pageUrl.pathname.replace(/\/+$/, '')
+    if (a.hostname.replace(/^www\./, '') !== pageUrl.hostname.replace(/^www\./, '')) return false
+    if (a.pathname.replace(/\/+$/, '') !== pageUrl.pathname.replace(/\/+$/, '')) return false
+    // A posting whose identity is in the query (?posting=this vs ?posting=other) is a different page from a related one on the same path.
+    // Only when BOTH sides carry a query must it match, so a tracking parameter on one side still names the same page.
+    return !a.search || !pageUrl.search || a.search === pageUrl.search
   } catch { return false }
 }
 // A page can carry another posting's markup (a careers index, a related-jobs rail): a JobPosting node dates this lead when it names this
