@@ -257,6 +257,10 @@ export function identityNorm(company: string): string {
 }
 // The page's own name fields (title, h1, og:site_name), uncapped by the 30k text cut. Used by the identity check, so a name that is only
 // mentioned in a bio or a testimonial is not the firm's name.
+// #2145: "L Bloxham" (initial + surname, suffix dropped) is the firm "Lesley Bloxham Professional Corporation" on its own homepage. A single-letter
+// initial matches a given name that starts with that letter only when the surname is 4+ characters and is the very next whole word, and only in
+// the page's own name fields (title, h1, og:site_name): a person named in a bio or testimonial on another firm's site is not this firm.
+const fold = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
 export function homeHeading(rawHtml: string): string {
   const html = visibleMarkup(rawHtml.slice(0, 400_000))
   const parts: string[] = []
@@ -264,19 +268,23 @@ export function homeHeading(rawHtml: string): string {
   for (const m of html.slice(0, 400_000).matchAll(/<meta\b[^>]*\bproperty\s*=\s*["']og:site_name["'][^>]*\bcontent\s*=\s*["']([^"']{1,200})["']/gi)) { if (parts.length < 8) parts.push(m[1]) }
   return parts.join(' | ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 2000)
 }
-// Does the page carry the lead's firm name? The full name (suffix kept) anywhere on the page is enough, as before. When a professional-form
-// suffix was dropped (#2145), the shorter stem could also sit inside a different firm's name ("Summit Partners Wealth Management"), so the stem
-// must be a whole name field: a title/h1/og:site_name segment that, once its own form tail is dropped, is exactly the stem.
 export function nameOnPage(company: string, homeNorm: string, heading = ''): boolean {
   if (homeNorm.includes(norm(company))) return true
   const stem = identityNorm(company)
-  if (stem === norm(company)) return false
-  for (const seg of heading.split(/\s[|\u2013\u2014\u00b7:-]\s|[|\u2013\u2014\u00b7]/)) {
-    let t = seg.trim()
-    for (let i = 0; i < 3; i++) { const n = t.replace(FORM_TAIL, ''); if (n === t) break; t = n }
-    if (norm(t) === stem) return true
+  if (stem !== norm(company)) {
+    for (const seg of heading.split(/\s[|\u2013\u2014\u00b7:-]\s|[|\u2013\u2014\u00b7]/)) {
+      let t = seg.trim()
+      for (let i = 0; i < 3; i++) { const n = t.replace(FORM_TAIL, ''); if (n === t) break; t = n }
+      if (norm(t) === stem) return true
+    }
   }
-  return false
+  let t = company.trim()
+  for (let i = 0; i < 3; i++) { const n = t.replace(FORM_TAIL, ''); if (n === t) break; t = n }
+  const words = fold(t).split(/[^a-z0-9]+/).filter(Boolean)
+  if (words.length < 2 || words[0].length !== 1 || !/^[a-z]$/.test(words[0])) return false
+  const surname = words.slice(1).join('[\\s\'\u2019\u2010\u2011-]+')
+  if (words.slice(1).join('').length < 4 || words.slice(1).some(w => !/^[a-z]+$/.test(w))) return false
+  return new RegExp(`(?<![a-z0-9])${words[0]}[a-z]{1,}[\\s,.-]+${surname}(?![a-z0-9]|['\u2019\u2010\u2011-][a-z0-9])`).test(fold(heading))
 }
 const SOCIAL = /(^|\.)(facebook|instagram|linkedin|twitter|x|youtube|tiktok|wikipedia|google|bing|apple|medium|github|crunchbase|pitchbook|glassdoor|indeed|bloomberg|reuters|techcrunch|forbes|yelp|tripadvisor|eventbrite|wa|t|bit|goo|lnkd)\.[a-z.]+$/i
 
