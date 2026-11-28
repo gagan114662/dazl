@@ -5,7 +5,7 @@ import { runPgMigrations } from '../lib/db/migrate-pg.ts'
 import { freshSchema, PG_URL, pgSkip } from './helpers/pg-test.ts'
 import Database from 'better-sqlite3'
 import { migrateAutopilot } from '../lib/outreach/autopilot.ts'
-import { migrateOutreach } from '../lib/outreach/store.ts'
+import { migrateOutreach, norm } from '../lib/outreach/store.ts'
 import { migrateBounceLedger, applyBounceVerdict, applyBounceVerdictInTx, bounceCount, replySyncBounceCallbacks } from '../lib/outreach/bounce-ledger.ts'
 import type { DsnVerdict } from '../lib/outreach/dsn.ts'
 
@@ -81,12 +81,14 @@ test('Postgres reply-sync callbacks preserve tenant audit fields and run bounce 
     assert.deepEqual(await store.all('SELECT tenant_id, action, detail, lead_id, message_id, created_at FROM autopilot_audit'), [
       { tenant_id: 'A', action: 'bounce_review', detail: '🙂'.repeat(200), lead_id: 'lead', message_id: 'm1', created_at: 42 },
     ])
-    const verdict = perm('m1', 'lead@x.example')
+    const verdict = perm('m1', 'Lead@X.Example')
     const apply = (gmailId: string) => store.tx(tx =>
       applyBounceVerdictInTx(tx, 'A', verdict, 'dsn', gmailId, 42, callbacks.recordBounce))
     assert.equal(await apply('provider-1'), 'recorded')
     assert.equal(await apply('provider-2'), 'duplicate')
     assert.deepEqual(await store.all('SELECT tenant_id, email FROM suppressions'), [{ tenant_id: 'A', email: 'lead@x.example' }])
+    assert.deepEqual(await store.all('SELECT recipient FROM bounce_records'), [{ recipient: 'lead@x.example' }])
+    assert.ok(await store.get('SELECT 1 FROM suppressions WHERE tenant_id = ? AND email = ?', ['A', norm('LEAD@x.example')]))
   } finally {
     await store.close()
     await drop()

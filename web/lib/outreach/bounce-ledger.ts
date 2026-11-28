@@ -8,6 +8,7 @@ import type { Db, Tx, TxBody } from '../db/client.ts'
 import type Database from 'better-sqlite3'
 import { recordBounce } from './autopilot.ts'
 import type { DsnVerdict } from './dsn.ts'
+import { norm } from './store.ts'
 
 export function migrateBounceLedger(db: Database.Database): void {
   db.exec(`
@@ -26,10 +27,10 @@ const INSERT_BOUNCE_SQL = `INSERT INTO bounce_records
   VALUES (?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT (tenant_id, outreach_message_id, recipient) DO NOTHING`
 
-function bounceParameters(tenantId: string, verdict: Extract<DsnVerdict, { kind: 'permanent' }>,
+function bounceParameters(tenantId: string, messageId: string, recipient: string,
   source: string, sourceGmailId: string | null, now: number,
 ) {
-  return [tenantId, verdict.outreachMessageId, verdict.recipient.toLowerCase(), '5xx', source, sourceGmailId, now]
+  return [tenantId, messageId, recipient, '5xx', source, sourceGmailId, now]
 }
 
 export type RecordBounceInTx = (tx: Tx, tenantId: string, recipient: string, now: number) => TxBody<void>
@@ -52,9 +53,11 @@ export function* applyBounceVerdictInTx(tx: Tx, tenantId: string, verdict: DsnVe
 ): TxBody<BounceApplication> {
   if (verdict.kind === 'hold') return 'held'
   if (verdict.kind !== 'permanent') return 'ignored'
-  const result = yield* tx.run(INSERT_BOUNCE_SQL, bounceParameters(tenantId, verdict, source, sourceGmailId, now))
+  const recipient = norm(verdict.recipient)
+  const result = yield* tx.run(INSERT_BOUNCE_SQL,
+    bounceParameters(tenantId, verdict.outreachMessageId, recipient, source, sourceGmailId, now))
   if (result.changes !== 1) return 'duplicate'
-  yield* record(tx, tenantId, verdict.recipient, now)
+  yield* record(tx, tenantId, recipient, now)
   return 'recorded'
 }
 
@@ -70,7 +73,7 @@ export function applyBounceVerdict(db: Database.Database, tenantId: string, verd
   // of the same DSN records and suppresses as it should. 'record' is injectable for failure tests only.
   return db.transaction((): BounceApplication => {
     const r = db.prepare('INSERT OR IGNORE INTO bounce_records (tenant_id, outreach_message_id, recipient, status, source, source_gmail_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(...bounceParameters(tenantId, verdict, source, sourceGmailId, now))
+      .run(...bounceParameters(tenantId, verdict.outreachMessageId, verdict.recipient.toLowerCase(), source, sourceGmailId, now))
     if (r.changes !== 1) return 'duplicate'
     record(db, tenantId, verdict.recipient, now)
     return 'recorded'
