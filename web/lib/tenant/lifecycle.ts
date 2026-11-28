@@ -39,10 +39,10 @@ import { displayAuditDetail } from '../outreach/stop-reason.ts'
 export type DeletionState = 'requested' | 'revoked' | 'cancelled' | 'erased' | 'completed'
 const ORDER: DeletionState[] = ['requested', 'revoked', 'cancelled', 'erased', 'completed']
 // Credentials and sign-in state: removed first, so nothing can act as the tenant while the rest is erased.
-export const CREDENTIAL_TABLES = ['sessions', 'oauth_states', 'oauth_identities', 'gmail_accounts', 'tenant_llm_keys', 'tenant_connectors']
+export const CREDENTIAL_TABLES = ['sessions', 'oauth_states', 'oauth_identities', 'gmail_accounts', 'mailbox_connections', 'tenant_llm_keys', 'tenant_connectors']
 // Left out of an export entirely (token material, no value to the tenant) and redacted columns.
 export const EXPORT_EXCLUDED: Record<string, string> = { sessions: 'session tokens (hashed); never exported', oauth_states: 'one-time OAuth state and PKCE verifiers; never exported' }
-export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token)$|secret/
+export const REDACTED_COLUMN = /^(password_hash|salt|ciphertext|refresh_ct|token_hash|claim_token|smtp_password_encrypted|imap_password_encrypted)$|secret/
 // Kept whatever the policy: append-only audit records that hold no tenant content (lib/scan/evidence-copies.ts: who
 // purged evidence, why, and counts). Reported on the tombstone as retained, like any policy retention.
 export const ALWAYS_RETAINED: Record<string, string> = {

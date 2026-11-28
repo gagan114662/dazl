@@ -2,6 +2,7 @@ import PlanPanel from './plan-panel'
 import AdvancedPanel from './advanced-panel'
 import LinkedInExtensionPanel from './linkedin-extension-panel'
 import GmailPanel from './gmail-panel'
+import SmtpForm from './email/smtp-form'
 import AutopilotPanel from './autopilot-panel'
 import RepliesPanel from './replies-panel'
 import CrmPanel from './crm-panel'
@@ -55,7 +56,7 @@ async function SettingsBody() {
       <CompetitorsPanel />
       <LinkedInExtensionPanel />
       <div id="social" className="scroll-mt-6"><AdvancedPanel /></div>
-      <div id="gmail" className="scroll-mt-6"><GmailPanel /></div>
+      <div id="gmail" className="scroll-mt-6"><GmailPanel />{user && can(user.role, 'configure') && <SmtpForm />}</div>
       <div id="autopilot" className="scroll-mt-6"><AutopilotPanel /></div>
       <div id="replies" className="scroll-mt-6"><RepliesPanel /></div>
       <div id="crm" className="scroll-mt-6"><CrmPanel /></div>
