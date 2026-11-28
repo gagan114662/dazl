@@ -1,0 +1,48 @@
+# Keep the workflow display name so the required check context stays unchanged after the split.
+name: acceptance-gate
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
+concurrency:
+  group: no-closing-keywords-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+jobs:
+  # Builders never use GitHub closing keywords (repo rule; owner comment on #569, 2026-11-02): a merged PR must not
+  # auto-close an issue that has not been verified live. Fails if the PR body or any PR commit message has one.
+  no-closing-keywords:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: PR body and commit messages use Refs, never Closes/Fixes/Resolves
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d)
+          trap 'rm -rf -- "$scratch"' EXIT
+          export CHECK_DIR="$scratch"
+          gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[].commit.message' > "$scratch/commits.txt"
+          printf '%s\n' "$BODY" > "$scratch/body.txt"
+          node -e '
+            const fs = require("fs");
+            // GitHub closing keywords followed by #N, owner/repo#N or an issues URL (the forms GitHub acts on).
+            const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+(?:#\d+|[\w.-]+\/[\w.-]+#\d+|https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)/gi;
+            let bad = 0;
+            for (const [where, f] of [["the PR body", process.env.CHECK_DIR + "/body.txt"], ["a commit message", process.env.CHECK_DIR + "/commits.txt"]]) {
+              for (const m of fs.readFileSync(f, "utf8").matchAll(re)) {
+                bad++;
+                console.log(`::error::closing keyword in ${where}: "${m[0]}". Use "Refs #N"; the reviewer/owner closes issues after live proof.`);
+              }
+            }
+            if (bad) process.exit(1);
+            console.log("No closing keyword in the PR body or its commit messages.");
+          '
