@@ -1161,7 +1161,7 @@ const sleepAbort = (ms: number, signal?: AbortSignal) => new Promise<boolean>((r
 const lastHit = new Map<string, number>()
 
 type LocationPage = { url: string; statements: string[]; offices: { heading: string; address: string; ownSection: boolean }[]; footerOffices: { heading: string; address: string }[]; hiringMarkets: { heading: string; employer: string }[] }
-type LocationProof = { url: string; excerpt: string }
+type LocationProof = { url: string; excerpt: string; posting?: true }
 
 function subpageLocationFacts(url: string, body: string): LocationPage {
   // Keep prose statements and office entries separate. A page can list several offices or quote a customer.
@@ -2141,11 +2141,16 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
       const ownPosting = atsPostingRef(l.source_url)
       const ownRef = !anchored ? ownPosting : null
+      const postingLocationProof = new Map<string, LocationProof>()
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
         const named = rec && rec !== 'missing' ? [...recordNamedSites(`${rec.header} ${rec.description}`, l.company), ...[recordCompanyDomain(rec.company, l.company)].filter((s): s is string => !!s)] : []
+        const location = rec && rec !== 'missing' ? rec.location : ''
         for (const site of [...new Set(named)]) {
+          if (location && placeAgreement(location, where, l.company) === 'agrees') {
+            postingLocationProof.set(site, { url: l.source_url, excerpt: location, posting: true })
+          }
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
@@ -2286,6 +2291,19 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         locationProof = !unread(r) && basis !== 'evidence_own_domain' && (!homeLocationOk || vHome === 'mismatch' || homeElsewhere)
           ? siteLocationProof(r.locationPages ?? [], where, l.company, vHome === 'mismatch' || (vHome !== 'scope_unconfirmed' && (vHome !== 'unconfirmed' || !!firstPlaceLabel(r.homeText ?? ''))), guessed)
           : undefined
+        // The posting can supply location only for a site it explicitly names and whose
+        // homepage passes the identity check without contradicting that location.
+        if (!unread(r) && !guessed && !homeLocationOk && !locationProof && vHome === 'unconfirmed' && !homeElsewhere) {
+          locationProof = postingLocationProof.get(cand)
+          if (!locationProof && ev?.status === 200 && ev.finalUrl === l.source_url &&
+              postingNamedSites(l.company, ev.body, registrable(new URL(ev.finalUrl).hostname)).includes(cand)) {
+            const companyName = norm(l.company)
+            const sentence = plainText(visibleMarkup(ev.body)).slice(0, 6000).split(/(?<=[.!?])\s+|\n+/).find(part =>
+              companyName.length >= 4 && norm(part).includes(companyName) &&
+              placeAgreement(part, where, l.company) === 'agrees' && !ownAddressElsewhere(part, where))
+            if (sentence) locationProof = { url: ev.finalUrl, excerpt: sentence.trim(), posting: true }
+          }
+        }
         // A site the lead's evidence LINKS to, whose domain label is the company's name, is bound to the company by that link. With no
         // requested place there is nothing to compare it against: a place the evidence page happens to name is not the request's (prod
         // run df4f657f refused linked sites "vs the requested place"). Text-only links and guessed (name_probe) sites keep every check.
@@ -2349,7 +2367,7 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
         const proofPage = locationProof && db.prepare('SELECT fetched_at FROM crawl_pages WHERE tenant_id = ? AND scan_job_id = ? AND site = ? AND url = ?')
           .get(tenantId, jobId, site, locationProof.url) as { fetched_at: number } | undefined
         const checkedAt = proofPage?.fetched_at ?? Math.floor((deps.now ?? Date.now()) / 1000)
-        const proofLabel = locationProof ? `identity-check-v2: first-party location evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
+        const proofLabel = locationProof ? `identity-check-v2: ${locationProof.posting ? 'employer posting' : 'first-party'} location evidence: ${locationProof.excerpt}` : 'identity-check-v2: homepage names the company and the place or address agrees'
         addEnrichment(db, tenantId, l.id, { connector: 'sitecrawl', kind: 'domain_check', value: `${site}|identity_checked`, label: proofLabel.slice(0, 200), confidence: null, source_url: locationProof?.url ?? `https://${site}/`, source_date: new Date(checkedAt * 1000).toISOString().slice(0, 10), retrieved_at: checkedAt })
       }
       for (const t of r.tech ?? []) {
