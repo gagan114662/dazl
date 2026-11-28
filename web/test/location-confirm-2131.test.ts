@@ -13,19 +13,19 @@ const page = (link: string, desc = '') => html(`<h1>Tax Accountant</h1><h2>Birch
 const postingId = '7387a987-24f3-424c-8dd3-bb7ed16f95e0'
 const atsSource = `https://jobs.ashbyhq.com/birchwood/${postingId}`
 
-async function run(evidence: string, sites: Record<string, Record<string, string>>, atsLocation?: string) {
+async function run(evidence: string, sites: Record<string, Record<string, string>>, atsLocation?: string, company = 'Birchwood Tax LLP', description = 'Birchwood Tax LLP is hiring. Learn more at birchwoodtaxllp.ca.') {
   const source = atsLocation === undefined ? SRC : atsSource
   const db = new Database(':memory:'); migrateScan(db); migrateConnectors(db)
   const job = createJob(db, 'A', { business_name: 'S', industry: 'x', location: 'y' })
   db.prepare("UPDATE scan_jobs SET status = 'running', icp = ? WHERE id = ?").run(JSON.stringify({ summary: 's', where: ['Calgary, Alberta'] }), job)
   db.prepare('INSERT INTO leads (id,scan_job_id,company,contact,signal,source_url,evidence_excerpt,confidence,score,review_reason) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .run('L1', job, 'Birchwood Tax LLP', null, 'Hiring a Tax Accountant in Calgary', source, 'Birchwood Tax LLP is hiring a Tax Accountant in Calgary, Alberta', 90, 70, null)
+    .run('L1', job, company, null, 'Hiring a Tax Accountant in Calgary', source, 'Birchwood Tax LLP is hiring a Tax Accountant in Calgary, Alberta', 90, 70, null)
   const get: sc.Get = async url => {
     const u = new URL(url); const host = u.hostname.replace(/^www\./, '')
     if (url === 'https://api.ashbyhq.com/posting-api/job-board/birchwood' && atsLocation !== undefined) {
       return { status: 200, body: JSON.stringify({ jobs: [{ id: postingId, isListed: true,
         title: 'Tax Accountant', location: atsLocation, jobUrl: source,
-        descriptionPlain: 'Birchwood Tax LLP is hiring. Learn more at birchwoodtaxllp.ca.' }] }), finalUrl: url }
+        descriptionPlain: description }] }), finalUrl: url }
     }
     if (url === source) return { status: 200, body: evidence, finalUrl: url }
     const site = sites[host]
@@ -63,15 +63,34 @@ test('never uses a lead summary to supply a place absent from the posting', asyn
   assert.equal(await run(posting, { [site]: { '/': noPlace } }), null)
 })
 
+const atsEmployerPage = html('<h1>Jobs</h1><script type="application/json">{"organization":{"name":"Birchwood Tax LLP","publicWebsite":"https://birchwoodtaxllp.ca/"}}</script>')
+
 test('uses the employer ATS record when it names its site and states the requested place', async () => {
-  assert.equal(await run(html('<h1>Jobs</h1>'), { 'birchwoodtaxllp.ca': { '/': noPlace } }, 'Calgary, Alberta'), 'birchwoodtaxllp.ca')
+  assert.equal(await run(atsEmployerPage, { 'birchwoodtaxllp.ca': { '/': noPlace } }, 'Calgary, Alberta'), 'birchwoodtaxllp.ca')
 })
 
 test('holds a record-named site when only the lead summary states the place', async () => {
-  assert.equal(await run(html('<h1>Jobs</h1>'), { 'birchwoodtaxllp.ca': { '/': noPlace } }, ''), null)
+  assert.equal(await run(atsEmployerPage, { 'birchwoodtaxllp.ca': { '/': noPlace } }, ''), null)
 })
 
 test('holds a named site when the posting location appears only in hidden markup', async () => {
   const posting = html(`<h1>Tax Accountant</h1><h2>Birchwood Tax LLP</h2>${namedLink}<div hidden>Birchwood Tax LLP is hiring in Calgary, Alberta.</div>`)
   assert.equal(await run(posting, { [site]: { '/': noPlace } }), null)
+})
+
+test('holds a named site when the employer explicitly denies operating in the requested place', async () => {
+  const posting = html(`<p>Birchwood Tax LLP does not operate in Calgary, Alberta.</p>${namedLink}`)
+  assert.equal(await run(posting, { [site]: { '/': noPlace } }), null)
+})
+
+test('does not use ATS location to confirm another same-named firm mentioned in passing', async () => {
+  const description = 'Our training partner is Birchwood Tax LLP at birchwoodtaxllp.ca.'
+  assert.equal(await run(html('<h1>Jobs</h1>'), { 'birchwoodtaxllp.ca': { '/': noPlace } },
+    'Calgary, Alberta', 'Birchwood Tax LLP', description), null)
+})
+
+test('recognizes a hiring statement with a period in the legal company name', async () => {
+  const posting = html(`<p>Birchwood Tax Inc. is hiring a Tax Accountant in Calgary, Alberta.</p>${namedLink}`)
+  assert.equal(await run(posting, { [site]: { '/': html('<h1>Birchwood Tax Inc.</h1>') } },
+    undefined, 'Birchwood Tax Inc.'), site)
 })

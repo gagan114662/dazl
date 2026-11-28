@@ -2141,23 +2141,23 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
       // still decides. Never a guess: a record that names no such domain adds nothing (a company name written as a domain, "Uare.ai", is the record naming it).
       const ownPosting = atsPostingRef(l.source_url)
       const ownRef = !anchored ? ownPosting : null
+      const orgSite = ownPosting?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
       const postingLocationProof = new Map<string, LocationProof>()
       if (ownRef && !deps.signal?.aborted) {
         let rec: ReturnType<typeof atsRecord> = null
         try { const page = await evidenceGet(atsRecordUrl(ownRef)); rec = page ? atsRecord(JSON.parse(page.body), ownRef) : null } catch { rec = null }
         const named = rec && rec !== 'missing' ? [...recordNamedSites(`${rec.header} ${rec.description}`, l.company), ...[recordCompanyDomain(rec.company, l.company)].filter((s): s is string => !!s)] : []
-        const location = rec && rec !== 'missing' ? rec.location : ''
+        if (rec && rec !== 'missing' && rec.location && placeAgreement(rec.location, where, l.company) === 'agrees') {
+          const employerSite = (ev?.status === 200 && ev.finalUrl === l.source_url ? orgSite : null) ?? recordCompanyDomain(rec.company, l.company)
+          if (employerSite) postingLocationProof.set(employerSite, { url: l.source_url, excerpt: rec.location, posting: true })
+        }
         for (const site of [...new Set(named)]) {
-          if (location && placeAgreement(location, where, l.company) === 'agrees') {
-            postingLocationProof.set(site, { url: l.source_url, excerpt: location, posting: true })
-          }
           if (!basisOf.has(site)) { basisOf.set(site, 'evidence_link_domain_label'); sourceOf.set(site, l.source_url) }
           if (!structured.includes(site) && !sites.includes(site)) structured.push(site)
         }
       }
       // Qodo #1515: read whether or not the posting also links a site: a stale or dead company-labelled link must not hide the employer's
       // own setting. With a link it is tried after the linked sites (as structured data is above); the homepage name check decides either way.
-      const orgSite = ownPosting?.kind === 'ashby' && ev?.body ? ashbyOrgWebsite(ev.body, l.company) : null
       if (orgSite) {
         if (!basisOf.has(orgSite)) { basisOf.set(orgSite, 'evidence_link_domain_label'); sourceOf.set(orgSite, l.source_url) }
         if (anchored) { if (!sites.includes(orgSite)) sites.push(orgSite) }
@@ -2297,10 +2297,12 @@ export async function crawlJob(db: Database.Database, tenantId: string, jobId: s
           locationProof = postingLocationProof.get(cand)
           if (!locationProof && ev?.status === 200 && ev.finalUrl === l.source_url &&
               postingNamedSites(l.company, ev.body, registrable(new URL(ev.finalUrl).hostname)).includes(cand)) {
-            const companyName = norm(l.company)
-            const sentence = plainText(visibleMarkup(ev.body)).slice(0, 6000).split(/(?<=[.!?])\s+|\n+/).find(part =>
-              companyName.length >= 4 && norm(part).includes(companyName) &&
-              placeAgreement(part, where, l.company) === 'agrees' && !ownAddressElsewhere(part, where))
+            const companyName = l.company.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const affirmativeHiring = new RegExp(`^\\s*${companyName}\\s+(?:is hiring|is recruiting|seeks)\\b`, 'iu')
+            const sentence = visibleMarkup(ev.body).slice(0, 24_000).split(/<\/(?:p|li|h[1-6]|div|td|dd)\s*>/i)
+              .flatMap(block => plainText(block).split(/(?<!\b(?:inc|ltd|corp|co)\.)(?<=[.!?])\s+/i))
+              .find(part => affirmativeHiring.test(part) && !/\b(?:not|never|no longer|except|excluding)\b/i.test(part) &&
+                placeAgreement(part, where, l.company) === 'agrees' && !ownAddressElsewhere(part, where))
             if (sentence) locationProof = { url: ev.finalUrl, excerpt: sentence.trim(), posting: true }
           }
         }
