@@ -32,7 +32,7 @@ const LABEL: Record<string, string> = {
   'member.left': 'Left the workspace', 'member.removed': 'Removed a member', 'member.role_changed': 'Changed a member role',
   'outreach.test_send': 'Sent a test message', 'pipeline.accepted': 'Accepted a lead', 'pipeline.feedback_reset': 'Reset lead feedback',
   'play.run_now': 'Ran a play now', 'reopen.send': 'Reopened sending',
-  'session.revoked': 'Signed out a session', 'session.revoked_all': 'Signed out all sessions', 'worker.enqueue': 'Queued a worker job',
+  'session.revoked': 'Signed out a session', 'session.revoked_all': 'Revoked sessions', 'worker.enqueue': 'Queued a worker job',
 }
 const label = (a: string) => LABEL[a] ?? (a.startsWith('autopilot.') ? `Autopilot: ${a.slice(10)}` : a)
 const when = (s: number) => new Date(s * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
