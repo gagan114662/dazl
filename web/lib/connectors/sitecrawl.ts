@@ -396,9 +396,34 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
   // refusal never stops the name guesses or the web search (crawlJob).
   const anchors = out.length
   for (const h of jsonLdCompanySites(company, evidenceHtml, own)) push(h, labelMatches(nameLabel(h), want) ? 'evidence_link_domain_label' : 'evidence_link_text')
+  // #2145: a site the posting page names for the employer, when no structured record gave one. Same standing as a structured site.
+  if (out.length === anchors) for (const h of postingNamedSites(company, evidenceHtml, own)) push(h, 'evidence_link_text')
   // main's cap of 2 applies to the page's own links; a structured-data site keeps its own slot after them (review of #1219: with 2 anchored
   // company-named links it was cut off), so a lead tries at most 2 linked sites and 1 structured one
   return [...out.slice(0, Math.min(anchors, 2)), ...out.slice(anchors, anchors + 1).map(o => ({ ...o, structured: true }))]
+}
+// #2145: the site a posting page itself names for the employer, when the name label does not already make it a company link: (a) a link
+// labelled as the employer's website ("Visit employer website"), (b) a "Website:" header field, link or plain text, (c) a host or e-mail domain
+// in the page text whose name label is the company's. Only candidates: the caller marks one `structured`, so the homepage-name check and the
+// place check still decide and the name guesses still run. Social, directory, board, government and the page's own host are never one.
+const EMPLOYER_SITE_LABEL = /^(?:(?:visit|view|see|go to)\s+)?(?:the\s+)?(?:employer|company|organi[sz]ation|firm|our|their)(?:'s)?\s+(?:web\s?site|site|homepage|home page)$/i
+const HOST_IN_TEXT = /(?:^|[^a-z0-9.-])(?:https?:\/\/)?(?:[a-z0-9._%+-]+@)?((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?![a-z0-9-])/gi
+export function postingNamedSites(company: string, html: string, pageHost = ''): string[] {
+  const want = norm(company)
+  const out: string[] = []
+  const add = (raw: string, needsName: boolean) => {
+    let host: string; try { host = registrable(new URL(/^https?:\/\//i.test(raw) ? raw.replace(/&amp;/g, '&') : `https://${raw}`).hostname) } catch { return }
+    if (!host || !siteHostOk(host) || host === pageHost || SOCIAL.test(host) || NOT_OWN_SITE.has(nameLabel(host)) || NOT_A_COMPANY_TLD.test(host) || out.includes(host)) return
+    if (needsName && !(want.length >= 4 && labelMatches(nameLabel(host), want))) return
+    out.push(host)
+  }
+  for (const m of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["'](https?:\/\/[^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
+    if (EMPLOYER_SITE_LABEL.test(m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())) add(m[1], false)
+  }
+  const text = html.length <= 800_000 ? html.replace(/<(?:script|style)\b[\s\S]*?<\/(?:script|style)>/gi, ' ').replace(/<a\b[^>]*\bhref\s*=\s*["']([^"']*)["'][^>]*>/gi, ' $1 ').replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&') : ''
+  for (const m of text.matchAll(/\bweb\s?site\s*:\s*(\S+)/gi)) add(m[1].replace(/[),.;]+$/, ''), false)
+  if (want.length >= 4) for (const m of text.matchAll(HOST_IN_TEXT)) add(m[1], true)
+  return out.slice(0, 1)
 }
 // The JSON-LD blocks of a page, found by a linear scan (never a backtracking pattern over the whole page: a page of unclosed "<script" tags
 // must not cost quadratic time). At most 20 blocks; a block is at most the page (the crawl caps a page at 800 KB).
