@@ -94,7 +94,7 @@ export default function SmtpForm() {
       <h2 id="smtp-title" className="font-semibold">Connect a mailbox with SMTP</h2>
       {mailbox && <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
         <p>Connected as {mailbox.username}</p>
-        <button type="button" disabled={saving} onClick={disconnect} className="border px-3 py-2">Disconnect mailbox</button>
+        <button type="button" disabled={saving} onClick={disconnect} className="min-h-11 border px-3 py-2">Disconnect mailbox</button>
       </div>}
       <form method="post" onSubmit={submit} className="mt-3 flex max-w-sm flex-col gap-3 text-sm">
         <label className="flex flex-col gap-1">SMTP host
@@ -113,7 +113,7 @@ export default function SmtpForm() {
           <input type="password" required maxLength={1024} autoComplete="new-password" value={password}
             onChange={event => setPassword(event.target.value)} className="border p-2" />
         </label>
-        <button type="submit" disabled={saving || loadingMailbox} className="self-start border px-3 py-2">
+        <button type="submit" disabled={saving || loadingMailbox} className="min-h-11 self-start border px-3 py-2">
           {saving ? 'Connecting…' : 'Connect mailbox'}
         </button>
         <p role="status">{status}</p>
