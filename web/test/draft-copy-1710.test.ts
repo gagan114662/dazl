@@ -166,3 +166,50 @@ test('(Qodo) a title abbreviation is never treated as the sentence end of a fact
   assert.doesNotMatch(d.body, /by Dr\.\n/)
   assert.doesNotMatch(d.body, /led by Dr\.$/)
 })
+
+// Quest's Nov 27 live-check shapes, fictionalized: a press-release headline excerpt (headline grammar,
+// no finite clause) and a long hiring-plus-funding news sentence, both with a verified date. The
+// composer must not glue either onto "I saw that on <date>," and the offer must be tied to why the
+// signal matters. Fictional firms; the excerpt shapes are samples, not live reads.
+const wordCount = (d: { body: string }) => d.body.split(/\s+/).filter(Boolean).length
+
+test('#1710 a press-release headline is never pasted after the date: the dated news is named in words', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Northline Logistics',
+    signal: 'Northline Logistics is relocating its headquarters',
+    evidence_excerpt: 'October 30, 2026, Northline Logistics to Move Regional Headquarters to the Harbour District at the End of 2026',
+    event_date: '2026-10-30', event_date_proof: 'page_bound',
+  }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /I saw that on/, 'the date-glue wrapper is gone for a restructured signal')
+  assert.doesNotMatch(d.body, /to Move Regional Headquarters/, 'the headline is not pasted raw')
+  assert.match(d.body, /I saw the October 30, 2026 news about Northline Logistics\./, 'the dated news is named, not glued')
+  assert.match(d.body, /outside help pays off. At dazl, we offer/, 'the offer is tied to why a move matters')
+  assert.ok(wordCount(d) <= 120, `body is ${wordCount(d)} words, over the 120 cap`)
+})
+
+test('#1710 a long news sentence renders as its main clause, with the offer tied to the hiring', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Fernway Handling',
+    signal: 'Fernway Handling is hiring',
+    evidence_excerpt: 'November 24, 2026, Fernway Handling is creating around 10 new roles after securing more than £1m in funding from a regional bank to acquire premises neighbouring its York base and invest in new electric forklift trucks',
+    event_date: '2026-11-24', event_date_proof: 'page_bound',
+  }), 'dazl', 'HR software (SaaS) in the UK')
+  assert.doesNotMatch(d.body, /I saw that on/)
+  assert.doesNotMatch(d.body, /to acquire premises|after securing/, 'the subordinate detail is not pasted whole')
+  assert.match(d.body, /I saw the November 24, 2026 news that Fernway Handling is creating around 10 new roles\./)
+  assert.match(d.body, /outside help pays off. At dazl, we offer HR software/, 'the offer is tied to the hiring')
+  assert.ok(wordCount(d) <= 120, `body is ${wordCount(d)} words, over the 120 cap`)
+})
+
+test('#1710 control: a short dated signal of an unrecognisable kind keeps today\'s wording and gets no bridge', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Fernway Handling',
+    signal: 'Fernway Handling won a regional safety award',
+    evidence_excerpt: 'Fernway Handling won a regional safety award for its depot crew',
+    event_date: '2026-11-24', event_date_proof: 'page_bound',
+  }), 'dazl', 'HR software (SaaS) in the UK')
+  assert.match(d.body, /I saw that on November 24, 2026, Fernway Handling won a regional safety award for its depot crew\./)
+  assert.doesNotMatch(d.body, /outside help pays off/, 'no bridge is invented for an unrecognisable kind')
+  assert.match(d.body, /At dazl, we offer HR software \(SaaS\) in the UK\./)
+  assert.ok(wordCount(d) <= 120, `body is ${wordCount(d)} words, over the 120 cap`)
+})

@@ -13,6 +13,10 @@
 // - Quoted text is cut at a sentence end when one fits the budget, never mid-clause, and an
 //   all-caps source line is sentence-cased (short abbreviations keep their caps), so no paste
 //   dangles unfinished or shouts.
+// - A signal the composer restructures (a long sentence's main clause) opens as "I saw the <date>
+//   news that <clause>.", a headline-shaped fragment ("Company to Move ...") is never pasted, and
+//   a recognisable signal kind (hiring, funding, a move, a launch) gains a one-clause bridge that
+//   ties the offer to why that moment matters.
 //
 import { eventDayVerified } from '../scan/scoreboard.ts'
 import { evidenceStateOf } from './evidence-state.ts'
@@ -112,6 +116,56 @@ const baseVerb = (w: string): string | null => {
 // The stored offer is a profile line, not a sentence. Frame it without adding claims:
 // "we ..." stays a we-sentence; a verb-led line becomes "we <verb> ..."; anything else is something the
 // seller offers ("we offer <line>").
+// #1710 (Quest's Nov 27 live check): the composer glued the saved excerpt onto "I saw that on
+// <date>," so a press-release headline pasted as grammar ("Company to Move ...") and a long news
+// sentence pasted whole. The signal now renders from the excerpt's own words, kept verbatim: the
+// first sentence, and for a long one only its main clause (cut at the first subordinating
+// boundary). A fragment with no finite clause and a sentence with no clean cut are not pasted at
+// all; the caller names the dated news instead. Nothing is added and no facts are invented.
+const LEADING_DATE = /^(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:,\s*\d{4})?,?\s+/i
+const SUB_WORD = /^(?:after|before|when|while|although|though|because|since|following|amid|despite|which|who|whose|where)$/i
+const REPORTING_TAIL = /^(?:that|said|says|told|noted|added|warned)$/i
+const HEADLINE_SHAPE = /^(?:[A-Z][\w'’&.-]*[\s,]+){1,4}[Tt]o\s+[A-Z]/
+function firstSentenceOf(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean)
+  for (let i = 8; i < words.length; i++) {
+    if (/[.!?]$/.test(words[i]) && !NOT_SENTENCE_END.test(words.slice(0, i + 1).join(' '))) return words.slice(0, i + 1).join(' ')
+  }
+  return text
+}
+// A kept clause needs at least five words so a cut never strands a stub; an uncuttable long
+// sentence returns no text at all rather than a fragment or an ellipsis.
+function signalClause(raw: string): { text: string; kept: boolean } {
+  const t = raw.replace(LEADING_DATE, '').trim()
+  const fs = firstSentenceOf(t)
+  const words = fs.split(/\s+/).filter(Boolean)
+  if (words.length <= 26) return { text: fs.replace(/\.+$/, ''), kept: true }
+  for (let i = 5; i < words.length - 3; i++) {
+    const bare = words[i].replace(/[.,;:]$/, '')
+    const isSub = SUB_WORD.test(bare) || (bare === 'and' && /,$/.test(words[i - 1]))
+    if (!isSub || REPORTING_TAIL.test(words[i - 1].replace(/[.,;:]$/, ''))) continue
+    const clause = words.slice(0, i).join(' ').replace(/[,;:]$/, '').trim()
+    if (clause.split(/\s+/).length >= 5) return { text: clause, kept: false }
+    break
+  }
+  return { text: '', kept: false }
+}
+// The signal kind decides the bridge (general English categories read from the signal's own
+// words, never a company, place or query). Hiring wins over funding: the roles being created
+// are the fact a sender can act on. The bridge adds no fact about the prospect.
+const KIND_BRIDGE = {
+  hiring: 'A hiring push like that is exactly when outside help pays off.',
+  funding: 'New funding usually means a busy stretch, and that is when outside help pays off.',
+  move: 'A move like that means a long list of things to set up, and that is when outside help pays off.',
+  launch: 'A launch like that brings a spike of attention, and that is when outside help pays off.',
+} as const
+const SIGNAL_KINDS: [RegExp, keyof typeof KIND_BRIDGE][] = [
+  [/\b(?:hir(?:e|es|ing|ed)|recruit\w*|new roles|openings?|headcount|is creating|adding|added|adds)\b/i, 'hiring'],
+  [/\b(?:funding|funded|funds|rais(?:e|es|ed|ing)|invest(?:s|ed|ing|ment)(?:s)?)\b/i, 'funding'],
+  [/\b(?:mov(?:e|es|ed|ing)|relocat\w*|headquarters|expand\w*|premises|new (?:office|location|facility|site))\b/i, 'move'],
+  [/\b(?:launch\w*|unveil\w*|releas\w*|rolls out)\b/i, 'launch'],
+]
+
 function offerSentence(name: string, offer: string): string {
   const o = cutProse(offer, 35).replace(/\.+$/, '')
   if (/^we\b/i.test(o)) return `At ${name}, ${lowerFirst(o)}.`
@@ -141,19 +195,38 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
     human_confirmed_at: lead.human_confirmed_at ?? null,
   }
   const excerpt = !lead.review_reason && evidenceStateOf(evidence) === 'machine' ? evidence.evidence_excerpt ?? '' : ''
-  const seen = cutProse(clean(excerpt, 400, true), 40).replace(/\.+$/, '')
+  const rawSignal = clean(excerpt, 400, true)
+  const parts = rawSignal ? signalClause(rawSignal) : { text: '', kept: true }
+  const seen = parts.text
   const signalDay = seen && lead.event_date && eventDayVerified(lead)
     ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(lead.event_date))
     : null
+  // A headline-shaped excerpt and a sentence too tangled to cut cleanly are never pasted; the
+  // draft references the dated news instead. A signal the composer restructured opens in the
+  // natural news frame, and a short unchanged signal keeps the established wording.
+  const newsRef = `I saw the ${signalDay ? `${signalDay} ` : 'recent '}news about ${company || contactName || 'your company'}.`
+  const cited = company && seen.startsWith(company) ? seen : lowerFirstSafe(seen, company)
   const opener = !seen
-    ? `I came across ${company || 'your company'} and thought it was worth writing directly.`
-    : signalDay
-      ? `I saw that on ${signalDay}, ${company && seen.startsWith(company) ? seen : lowerFirstSafe(seen, company)}.`
-      : company && seen.startsWith(company)
-        ? `I saw ${seen}.`
-        : `I saw that ${lowerFirstSafe(seen, company)}.`
+    ? rawSignal
+      ? newsRef
+      : `I came across ${company || 'your company'} and thought it was worth writing directly.`
+    : HEADLINE_SHAPE.test(seen)
+      ? newsRef
+      : parts.kept
+        ? signalDay
+          ? `I saw that on ${signalDay}, ${cited}.`
+          : company && seen.startsWith(company) ? `I saw ${seen}.` : `I saw that ${cited}.`
+        : signalDay
+          ? `I saw the ${signalDay} news that ${cited}.`
+          : company && seen.startsWith(company) ? `I saw ${seen}.` : `I saw that ${cited}.`
+  // When the signal's kind is recognisable from its own words, a one-clause bridge ties the
+  // seller's offer to why that moment matters; the offer keeps its own words and an
+  // unrecognisable kind gets no bridge.
+  const offerLine = offerSentence(name, offer)
+  const kind = seen ? SIGNAL_KINDS.find(([re]) => re.test(`${seen} ${lead.signal ?? ''}`))?.[1] ?? null : null
+  const pitch = kind ? `${KIND_BRIDGE[kind]} ${offerLine}` : offerLine
   return {
     subject: `Quick question for ${company || contactName || 'you'}`.slice(0, 150),
-    body: `Hi ${who},\n\n${opener}\n\n${offerSentence(name, offer)}\n\nOpen to a quick chat?\n\nThanks,`,
+    body: `Hi ${who},\n\n${opener}\n\n${pitch}\n\nOpen to a quick chat?\n\nThanks,`,
   }
 }
