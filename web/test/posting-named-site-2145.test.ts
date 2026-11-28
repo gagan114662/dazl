@@ -54,7 +54,7 @@ test('#2145 control: a named site whose homepage is another business is refused'
 
 test('#2145 control: a named site with the firm\'s name that is in another city is refused', async () => {
   const halifax = html('<h1>Birchwood Tax LLP</h1><p>Suite 5, 40 Queen St, Halifax, NS B3J 1A1</p>')
-  const d = await run(page('<a href="https://birchwoodtax.ca/">Visit employer website</a>'), { 'birchwoodtax.ca': { '/': halifax } })
+  const d = await run(page('<a href="https://birchwoodlp.ca/">Visit employer website</a>'), { 'birchwoodlp.ca': { '/': halifax } })
   assert.equal(d, null)
 })
 
