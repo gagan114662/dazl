@@ -437,7 +437,7 @@ export function visibleMarkup(html: string): string {
   return out.join('')
 }
 // #2145: the site a posting page itself names for the employer, when the name label does not already make it a company link: a link
-// labelled as the employer's website ("Visit employer website"). A "Website:" field or a host in running text is NOT taken here: test/jobbank-printed-domain-crawl-1910 requires a printed site
+// labelled as the employer's website ("Visit employer website"). A "Website:" sentence or a host in running text is NOT taken here (only a dt/dd or table-row field is): test/jobbank-printed-domain-crawl-1910 requires a printed site
 // to count only on an exact Job Bank posting read, and cited-homepage-identity refuses a bare mention. Only candidates: the caller marks one `structured`, so the homepage-name check and the
 // place check still decide and the name guesses still run. Social, directory, board, government and the page's own host are never one.
 const EMPLOYER_SITE_LABEL = /^(?:(?:visit|view|see|go to)\s+)?(?:the\s+)?(?:employer|company|organi[sz]ation|firm|our|their)(?:'s)?\s+(?:web\s?site|site|homepage|home page)$/i
@@ -452,6 +452,13 @@ export function postingNamedSites(company: string, html: string, pageHost = ''):
   }
   for (const m of visibleMarkup(html).matchAll(/<a\b[^>]*\bhref\s*=\s*["'](https?:\/\/[^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
     if (EMPLOYER_SITE_LABEL.test(m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())) add(m[1], false)
+  }
+  // A template field of the posting, not poster-written text: <dt>Website</dt><dd>host</dd> or a table row <th|td>Website</th|td><td>host</td>.
+  for (const m of html.matchAll(/<(dt|th|td)\b[^>]*>([\s\S]{0,80}?)<\/\1>\s*<(dd|td)\b[^>]*>([\s\S]{0,300}?)<\/\3>/gi)) {
+    if (!/^(?:employer\s+|company\s+)?web\s?site\s*:?$/i.test(m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())) continue
+    const href = /<a\b[^>]*\bhref\s*=\s*["'](https?:\/\/[^"']+)["']/i.exec(m[4])?.[1]
+    const value = m[4].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    if (href) add(href, false); else if (/^[^\s/]+\.[a-z]{2,}(?:\/\S*)?$/i.test(value)) add(value, false)
   }
   return out.slice(0, 1)
 }
