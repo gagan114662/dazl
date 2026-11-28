@@ -15,12 +15,25 @@ concurrency:
 jobs:
   never-again:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install parser dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts
+      - name: no-hardcoded-fixtures
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node .github/scripts/no-hardcoded-fixtures.mjs "$BASE" "$(git rev-parse HEAD)"
       - name: NEVER-AGAIN doc + live-check gate tests (.github/scripts)
         run: node --test '.github/scripts/*.test.mjs'
       - name: No build on the box (ops/test_never_again.py)
