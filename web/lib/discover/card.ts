@@ -131,7 +131,7 @@ export const signalStale = (eventDate: string | null | undefined, now: Date = ne
 // What holds a discovery lead whatever its contact: rejected, a required check, an unconfirmed proof page, no date, a signal more than
 // a year old, not graded a fit.
 // One list, read by Approve (email) and by the LinkedIn route below.
-type ProofLead = Parameters<typeof eventDayVerified>[0] & { timing_note?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; human_confirmed_from?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
+type ProofLead = Parameters<typeof eventDayVerified>[0] & { timing_note?: string | null; quarantined_at?: number | null; gate_held?: boolean | null; review_reason?: string | null; human_confirmed_from?: string | null; human_confirmed_at?: number | null; date_status?: string | null; event_date?: string | null; fit?: number | null; intent?: number | null }
 export function discoverProofHold(l: ProofLead, now: Date = new Date()): string | null {
   if (l.quarantined_at) return 'Rejected. Undo to use it again.'
   if (l.gate_held) return 'A required check has not passed. Research only.'
@@ -145,6 +145,14 @@ export function discoverProofHold(l: ProofLead, now: Date = new Date()): string 
   if (!l.event_date) return 'The signal has no date, so its timing is unknown. Open the proof to check it.'
   if (!hasDiscoveryEventDate(l)) return 'The event date is unconfirmed. Research only.'
   if (signalStale(l.event_date, now)) return 'The signal is more than a year old. It stays here as background; it is not a reason to write now.'
+  // #1926: the stored proof token is the one source of truth for a stored date — the same rule the page's
+  // timing split reads (timingUnconfirmedReason). But this hold judges only the rows the writer itself marked
+  // as never verified: the writer stores date_status 'unverified' exactly when it could not verify the day,
+  // so a dated row carrying that verdict and no accepted token — a row stored before the writer kept one, or
+  // a board record's day on a signal it cannot date — is unconfirmed, however good its contact is. A row whose
+  // stored verdict is 'verified', or that carries no verdict at all, is not this hold's to judge. A lead the
+  // person confirmed themselves is spared, as the page split spares it.
+  if (l.date_status === 'unverified' && !eventDayVerified(l, { now }) && l.human_confirmed_at == null) return 'The event date is unconfirmed. Research only.'
   if (l.fit === 0 && l.intent === null) return 'Graded as not a fit for your profile.'
   return null
 }

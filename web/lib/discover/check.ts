@@ -18,7 +18,11 @@ import { atsDate, careersAtsDate } from './ats-dates.ts'
 export type ProofState = 'confirmed' | 'listed' | 'company_not_on_page' | 'unseen' | 'gone'
 // date_source distinguishes a date taken from an opened source from the search index's day for the page itself.
 // date_on_page records whether the exact calendar day was found in the proof page's text.
-export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; date_proof?: 'ats_structured' | null; date_record_url?: string | null; signal_by?: 'claude'; proof_check?: 'spend_cap' | 'unavailable' }
+// date_proof names how the checker itself confirmed the day, when it did: 'ats_structured' for a board record's
+// day, 'page_bound' for a hiring day counted back from a printed relative age, 'page_structured' for a hiring
+// day the page's own markup states. The writer stores a token for the day (a page-proven day is stored
+// 'page_bound', the leads column's vocabulary), and a stored row is then judged by its token alone (#1926).
+export interface CheckedLead extends DiscoveredLead { proof: ProofState; proof_read_by: 'reader' | 'dazl' | null; quote_on_page: boolean; signal_seen: boolean; claim_lacks: string[]; date_on_page: boolean; date_on_page_field?: string | null; page_age: string | null; date: string | null; date_source: 'page' | 'index' | null; date_proof?: 'ats_structured' | 'page_bound' | 'page_structured' | null; date_record_url?: string | null; signal_by?: 'claude'; proof_check?: 'spend_cap' | 'unavailable' }
 // A lead is shown when its proof is confirmed or listed (launch brief, Step 3). Everything else about it only changes its label.
 // ...and something the run actually saw speaks of the SIGNAL, not just of the company (signal_seen, set by the checks below):
 //   - a page whose text was read: the words the run quoted as evidence are in that text, and in one place where they stand the page's
@@ -275,8 +279,11 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
   ).map(mention => mention.day))] : []
   const statedDay = hiring ? (posted.length === 1 ? posted[0] : null)
     : dayOnPage(lead.signal_date, body) && eventDateBound(lead.signal_date, body, lead.evidence_quote ?? '', lead.company).bound ? lead.signal_date : null
-  let day = statedDay
-  if (!day && hiring && posted.length <= 1) day = relativeDay(body, now, true)
+  // A day counted back from a printed relative age is proven by the page itself — the age is printed on it —
+  // so dateProof names that proof ('page_bound', the scoreboard's token) and the writer can store it (#1926).
+  // A stated calendar day needs no token here: date_on_page already carries it.
+  let day = statedDay, dateProof: CheckedLead['date_proof'] = null
+  if (!day && hiring && posted.length <= 1) { day = relativeDay(body, now, true); if (day) dateProof = 'page_bound' }
   if (!day && !hiring) {
     const boundDays = new Set<string>()
     for (const statement of said) {
@@ -292,7 +299,7 @@ function judge(lead: DiscoveredLead, body: string, by: 'reader' | 'dazl', page_a
     if (boundDays.size === 1) day = [...boundDays][0]
   }
   return { ...lead, ...(day ? { date: day, date_source: 'page' as const } : indexDate(page_age, now)), proof: named ? 'confirmed' : 'company_not_on_page', proof_read_by: by, page_age,
-    quote_on_page: said.length > 0, signal_seen: named && citedStatements.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null }
+    quote_on_page: said.length > 0, signal_seen: named && citedStatements.some(s => statesSignal(lead.signal, lead.company, s)), claim_lacks: nearest.missing, date_on_page: statedDay !== null, date_proof: dateProof }
 }
 
 // For metered Discovery, the judge decides whether the cited text supports the claim. A refusal or unavailable judge leaves it held.
@@ -496,7 +503,11 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
     if (embedded) out = { ...out, date: embedded.date, date_source: 'page', date_proof: 'ats_structured', date_record_url: embedded.sourceUrl }
     else {
       const day = embeddedDay(raw, now, isDiscoveryHiringLead(c))
-      if (day) out = { ...out, date: day, date_source: 'page' }
+      // A hiring posting's own datePosted, stated in the page's markup, is a day the checker confirmed:
+      // 'page_structured' names that proof, so the writer stores it (#1926). The non-hiring fallbacks in
+      // embeddedDay (a typed or bare datePublished, a meta tag) name no token: a publication day the typed
+      // path did not take is not this lead's proof (#2004), and its stored row stays unproven, as before.
+      if (day) out = { ...out, date: day, date_source: 'page', ...(isDiscoveryHiringLead(c) ? { date_proof: 'page_structured' as const } : {}) }
     }
   }
   if (needProfile) { const profile = profileOnPage(raw, c.person!); if (profile) out = { ...out, linkedin_url: profile } }
@@ -504,7 +515,22 @@ async function fromPage(c: CheckedLead, html: string | null, u: URL | null, fetc
 }
 export async function checkLead(lead: DiscoveredLead, seen: SeenPage[] = [], fetchImpl: typeof fetch = fetch, timeoutMs = 12_000, now: Date = new Date(), ask?: AskSignal): Promise<CheckedLead> {
   const checked = await readLead(lead, seen, fetchImpl, timeoutMs, now, ask)
-  if (discoveryHiringDateProven(checked, INDEX_DATE_MAX_AGE_DAYS, now)) return checked
+  // The proven gate's own vocabulary predates the page tokens: it weighs only a board record's day
+  // (ats_structured), so it is handed the checked lead with any page token read as none. Its verdict is
+  // unchanged — a page token never counted toward it.
+  if (discoveryHiringDateProven({ ...checked, date_proof: checked.date_proof === 'ats_structured' ? 'ats_structured' : null }, INDEX_DATE_MAX_AGE_DAYS, now)) {
+    // #1926 (Ziggy's ruling): a day the checker confirmed from the page's own markup or a printed relative age
+    // carries its proof token (date_proof), and the writer stores it, so a stored row is judged by its token
+    // alone. The return reads as on the page only when the page's own statement corroborates the day the run
+    // itself stated (signal_date): two independent statements of the same day are the checker confirming that
+    // day. A derived day the run never stated — or one that differs from the day it stated — keeps
+    // date_on_page's meaning (the exact calendar day found in the page's text), which is what the run's
+    // alternate adoption (lib/discover/run.ts: an unbound machine-readable date is adopted only when the
+    // board's own record names the same day) and the #1910/#2004 suites read. A board record's day
+    // (ats_structured) never flips: the page text does not carry it.
+    return (checked.date_proof === 'page_bound' || checked.date_proof === 'page_structured') && checked.date !== null && checked.date === checked.signal_date
+      ? { ...checked, date_on_page: true } : checked
+  }
   return { ...checked, date: null, date_source: null, date_on_page: false }
 }
 

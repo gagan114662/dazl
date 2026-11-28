@@ -58,7 +58,10 @@ const LEADS = [
   }),
   lead('2'.repeat(24), 'Former Dental', { contact: 'hello@formerdental.example', enrichments: [row('person', 'Pat Lee, Former practice owner')] }),
   // #1837: the full three-action row (Approve held - no email; Message on LinkedIn; Reject) under a long one-line summary.
-  lead('3'.repeat(24), 'Northgate Dental', { signal: 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter', why: null, source_kind: 'discover', enrichments: [{ connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: null, source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }, { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz', label: 'linked from a public page', source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }] }),
+  // #1926: the row is writer-shaped - its day was proven from the page's own markup, so it carries the
+  // page_structured token and the verified verdict the writer pairs with a token. A token-less row with an
+  // unverified verdict is a legacy row, and the card holds those in Research.
+  lead('3'.repeat(24), 'Northgate Dental', { signal: 'Northgate Dental opened a second office in Columbus, OH and is expanding its front-desk team across both locations this quarter', why: null, source_kind: 'discover', date_status: 'verified', event_date_proof: 'page_structured', event_date_proof_note: 'the day is stated in the proof page\'s own markup', enrichments: [{ connector: 'discover', kind: 'person', value: 'Dana Ruiz, Practice Owner', label: null, source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }, { connector: 'discover', kind: 'linkedin', value: 'https://www.linkedin.com/in/dana-ruiz', label: 'linked from a public page', source_url: 'https://northgate.example/team', source_date: '2026-10-20', confidence: null }] }),
 ]
 let outreachMode = 'ok'
 let heldMode = false; const retryCalls = []
