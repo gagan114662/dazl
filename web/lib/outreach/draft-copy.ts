@@ -13,6 +13,10 @@
 // - Quoted text is cut at a sentence end when one fits the budget, never mid-clause, and an
 //   all-caps source line is sentence-cased (short abbreviations keep their caps), so no paste
 //   dangles unfinished or shouts.
+// - A signal the composer restructures (a long sentence's main clause) opens as "I saw the <date>
+//   news that <clause>.", a headline-shaped fragment ("Company to Move ...") is never pasted, and
+//   a recognisable signal kind (hiring, funding, a move, a launch) gains a one-clause bridge that
+//   ties the offer to why that moment matters.
 //
 import { eventDayVerified } from '../scan/scoreboard.ts'
 import { evidenceStateOf } from './evidence-state.ts'
@@ -112,6 +116,85 @@ const baseVerb = (w: string): string | null => {
 // The stored offer is a profile line, not a sentence. Frame it without adding claims:
 // "we ..." stays a we-sentence; a verb-led line becomes "we <verb> ..."; anything else is something the
 // seller offers ("we offer <line>").
+// #1710 (Quest's Nov 27 live check): the composer glued the saved excerpt onto "I saw that on
+// <date>," so a press-release headline pasted as grammar ("Company to Move ...") and a long news
+// sentence pasted whole. The signal now renders from the excerpt's own words, kept verbatim: the
+// first sentence, and for a long one only its main clause (cut at the first subordinating
+// boundary). A fragment with no finite clause and a sentence with no clean cut are not pasted at
+// all; the caller names the dated news instead. Nothing is added and no facts are invented.
+const LEADING_DATE = /^(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:,\s*\d{4})?,?\s+/i
+const SUB_WORD = /^(?:after|before|when|while|although|though|because|since|following|amid|despite|which|who|whose|where)$/i
+const REPORTING_TAIL = /^(?:that|said|says|told|noted|added|warned|showed|show|revealed|reported|stated|declared|confirmed|denied|denies|announced|explained|insisted|admitted|argued|believes|expects|predicts|suggests|suggested|disclosed|claims|claim)$/i
+// A relative-clause cut ("X and Y, which have ...") often strands the subject without a
+// predicate (CodeRabbit): the retained words name companies, not a clause. A relative cut is
+// kept only when the retained words already read as a clause with a finite verb.
+const RELATIVE_WORD = /^(?:which|who|whose|where)$/i
+const CLAUSE_VERB = /\b(?:is|are|was|were|be|been|has|have|had|will|would|can|could|announc\w*|said|says|say|show\w*|revealed|report\w*|confirm\w*|open\w*|launch\w*|acquir\w*|rais\w*|hir\w*|mov\w*|won|sign\w*|publish\w*|unveil\w*|complet\w*|expand\w*|secur\w*|began|begin|start\w*|plan\w*|agre\w*|appoint\w*|doubl\w*|grew|grow\w*|becam\w*|becom\w*|lead\w*|led|serv\w*|offer\w*|provid\w*|deliver\w*|operat\w*|run\w*|mak\w*|build\w*|sell\w*|creat\w*|add\w*|introduc\w*|debut\w*|enter\w*|filed)\b/i
+const HEADLINE_SHAPE = /^(?:[A-Z][\w'’&.-]*[\s,]+){1,4}[Tt]o\s+[A-Z]/
+const HEADLINE_SHAPE_SOFT = /^(?:[A-Z][\w'’&.-]*[\s,]+){2,4}[Tt]o\s+[a-z]+\s+[A-Z0-9]/
+// An all-caps source headline: word TO word, checked on the raw excerpt only (the cleaned text
+// is sentence-cased and its capitals are gone).
+const HEADLINE_SHAPE_SHOUT = /\b\S+\s+TO\s+\S+/
+const allCaps = (t: string): boolean => { const letters = t.replace(/[^a-zA-Z]/g, ''); return letters.length >= 6 && letters === letters.toUpperCase() }
+function firstSentenceOf(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean)
+  for (let i = 0; i < words.length; i++) {
+    if (/[.!?]$/.test(words[i]) && !/^[A-Za-z]\.$/.test(words[i]) && !NOT_SENTENCE_END.test(words.slice(0, i + 1).join(' '))) return words.slice(0, i + 1).join(' ')
+  }
+  return text
+}
+// A kept clause needs at least five words so a cut never strands a stub; an uncuttable long
+// sentence returns no text at all rather than a fragment or an ellipsis.
+function signalClause(raw: string): { text: string; kept: boolean } {
+  const t = raw.replace(LEADING_DATE, '').trim()
+  const fs = firstSentenceOf(t)
+  const words = fs.split(/\s+/).filter(Boolean)
+  if (words.length <= 26) return { text: fs.replace(/\.+$/, ''), kept: true }
+  for (let i = 5; i < words.length - 3; i++) {
+    const bare = words[i].replace(/[.,;:]$/, '')
+    const isSub = SUB_WORD.test(bare) || (bare === 'and' && /,$/.test(words[i - 1]))
+    if (!isSub || REPORTING_TAIL.test(words[i - 1].replace(/[.,;:]$/, ''))) continue
+    const clause = words.slice(0, i).join(' ').replace(/[,;:]$/, '').trim()
+    if (RELATIVE_WORD.test(bare) && !CLAUSE_VERB.test(clause)) continue
+    if (clause.split(/\s+/).length >= 5) {
+      // Boundaries scanned later yield longer clauses, so the first valid cut is the
+      // shortest; past the 26-word budget nothing shorter exists and nothing is pasted.
+      if (clause.split(/\s+/).length > 26) return { text: '', kept: false }
+      return { text: clause, kept: false }
+    }
+    break
+  }
+  return { text: '', kept: false }
+}
+// The signal kind decides the bridge (general English categories read from the signal's own
+// words, never a company, place or query). Hiring wins over funding: the roles being created
+// are the fact a sender can act on. The bridge adds no fact about the prospect.
+const KIND_BRIDGE = {
+  hiring: 'A hiring push like that is exactly when outside help pays off.',
+  funding: 'New funding usually means a busy stretch, and that is when outside help pays off.',
+  move: 'A move like that means a long list of things to set up, and that is when outside help pays off.',
+  launch: 'A launch like that brings a spike of attention, and that is when outside help pays off.',
+} as const
+const SIGNAL_KINDS: [RegExp, keyof typeof KIND_BRIDGE][] = [
+  [/\b(?:hir(?:e|es|ing|ed)|recruit\w*|new roles|headcount|jobs?|vacanc\w*|positions?)\b/i, 'hiring'],
+  // "opening" alone names any kind of opening (an office opening is a move); it reads as
+  // hiring only with a staffing object nearby (CodeRabbit).
+  [/\bopen(?:ing|ings)\b[^.;]{0,40}?\b(?:job|jobs|role|roles|position|positions|staff|hire|hiring|career|careers|employee)\b/i, 'hiring'],
+  // Weak action verbs read as hiring only with a staffing object nearby (CodeRabbit):
+  // "added a glossary" is not a hiring event, "added 10 new roles" is.
+  [/\b(?:added|adding|adds|is creating)\b[^.;]{0,60}?\b(?:roles?|jobs?|staff|people|headcount|team\w*|position\w*|sdr\w*|engineers?|salespeople|hire\w*|recruit\w*|technicians?|operators?|workers?)\b/i, 'hiring'],
+  [/\b(?:funding|funded|funds|invest(?:s|ed|ing|ment)(?:s)?)\b/i, 'funding'],
+  // "raised" alone names any kind of raising (prices, a flag); it reads as funding only
+  // with fundraising context nearby (CodeRabbit).
+  [/\brais(?:e|es|ed|ing)\b[^.;]{0,40}?\b(?:fund(?:ing|s|rais\w*)|series\s+[abc]\b|seed|investment|invest\w*|round|capital|valuation)\b/i, 'funding'],
+  [/\b(?:mov(?:e|es|ed|ing)|relocat\w*|expand\w*|new (?:office|location|facility|site))\b/i, 'move'],
+  // A location noun alone names no event ("published its annual report from its headquarters");
+  // it reads as a move only with move, opening or expansion context nearby (CodeRabbit).
+  [/\b(?:headquarters|hq|premises)\b[^.;]{0,40}?\b(?:mov\w+|relocat\w*|expand\w*|expansion|open\w*|new (?:office|location|facility|site))\b/i, 'move'],
+  [/\b(?:mov\w+|relocat\w*|expand\w*|expansion|open\w*|new (?:office|location|facility|site))\b[^.;]{0,40}?\b(?:headquarters|hq|premises)\b/i, 'move'],
+  [/\b(?:launch\w*|unveil\w*|releas\w*|rolls out)\b/i, 'launch'],
+]
+
 function offerSentence(name: string, offer: string): string {
   const o = cutProse(offer, 35).replace(/\.+$/, '')
   if (/^we\b/i.test(o)) return `At ${name}, ${lowerFirst(o)}.`
@@ -120,6 +203,29 @@ function offerSentence(name: string, offer: string): string {
   const base = baseVerb((firstRaw ?? '').toLowerCase().replace(/[^a-z]/g, ''))
   if (base) return `At ${name}, we ${base}${rest.length ? ` ${rest.join(' ')}` : ''}.`
   return `At ${name}, we offer ${lowerFirst(o)}.`
+}
+
+// Shared stop words for the offer-to-signal word overlap check; a shared filler word is
+// not evidence of fit.
+const FIT_STOP = new Set(['that', 'this', 'with', 'from', 'about', 'their', 'they', 'have', 'been', 'will', 'when', 'more', 'some', 'only', 'into', 'also', 'than', 'then', 'over', 'after', 'before', 'which', 'your', 'what', 'where', 'would', 'could', 'should', 'there', 'these', 'those', 'other', 'every', 'each'])
+const GENERIC_OFFER = /\b(?:software|saas|platform|services?|solutions?|consult\w*|agenc\w*|marketing|sales|advert\w*|tools?|apps?|automation|support|train\w*|design|staff\w*|recruit\w*|account\w*|bookkeep\w*|finance|financial|insur\w*|logistics?|transport\w*)\b/i
+// A specialized or equipment-domain offer never rides the generic shortcut (CodeRabbit):
+// "services" in "commercial refrigeration maintenance services" does not make it fit any
+// business moment; it needs the kind's domain or a shared word with the cited signal.
+const SPECIFIC_OFFER = /\b(?:refrigerat\w*|hvac|machin\w*|equipment|industrial|manufactur\w*|automot\w*|dental|medic\w*|clinic\w*|construction|roof\w*|plumb\w*|electric\w*|catering|grocery|restaurant|hospitality|apparel|furniture|farm\w*|agricultur\w*|bakery|forklift\w*|veterinar\w*|legal|salon|realt\w*)\b/i
+const KIND_FIT: Record<keyof typeof KIND_BRIDGE, RegExp> = {
+  hiring: /\b(?:hir\w*|recruit\w*|talent|jobs?|staff\w*|team\w*|people|headcount|candidate\w*|onboard\w*|payroll|workforce|hr\b|sales)\b/i,
+  funding: /\b(?:fund\w*|capital|invest\w*|growth|scal\w*|series|rais\w*|budget|financ\w*|cash|revenue|bank\w*)\b/i,
+  move: /\b(?:mov\w*|relocat\w*|office\w*|space|facilit\w*|premises|location\w*|headquarters|site|setup|propert\w*|lease|build\w*|expand\w*|furnish\w*|clean\w*|security|network|phone|internet)\b/i,
+  launch: /\b(?:launch\w*|releas\w*|product\w*|feature\w*|customer\w*|market\w*|attention|brand\w*|audience|press|website|web\b|seo|content)\b/i,
+}
+// True when the seller's offer may claim relevance to the moment the cited signal describes.
+function offerFits(kind: keyof typeof KIND_BRIDGE, offer: string, seen: string): boolean {
+  if (!SPECIFIC_OFFER.test(offer) && GENERIC_OFFER.test(offer)) return true
+  if (KIND_FIT[kind].test(offer)) return true
+  const signalWords = new Set((seen.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? []).filter(w => !FIT_STOP.has(w)))
+  const offerWords = offer.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? []
+  return offerWords.some(w => signalWords.has(w))
 }
 
 export function composeDraftCopy(lead: DraftCopyLead, businessName: string, positioning = ''): { subject: string; body: string } {
@@ -141,19 +247,55 @@ export function composeDraftCopy(lead: DraftCopyLead, businessName: string, posi
     human_confirmed_at: lead.human_confirmed_at ?? null,
   }
   const excerpt = !lead.review_reason && evidenceStateOf(evidence) === 'machine' ? evidence.evidence_excerpt ?? '' : ''
-  const seen = cutProse(clean(excerpt, 400, true), 40).replace(/\.+$/, '')
-  const signalDay = seen && lead.event_date && eventDayVerified(lead)
+  const rawSignal = clean(excerpt, 400, true)
+  // The headline guard also reads the excerpt before casing: an all-caps source line reaches the
+  // opener sentence-cased, with its interior capitals gone, so the shape check on the cleaned
+  // text alone can miss it (Qodo).
+  const rawForShape = excerpt.replace(/https?:\/\/\S+/gi, ' ').replace(/\bwww\.\S+/gi, ' ').replace(LEADING_DATE, '').trim()
+  const parts = rawSignal ? signalClause(rawSignal) : { text: '', kept: true }
+  const seen = parts.text
+  const signalDay = lead.event_date && eventDayVerified(lead)
     ? new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(lead.event_date))
     : null
+  // A headline-shaped excerpt and a sentence too tangled to cut cleanly are never pasted; the
+  // draft references the dated news instead. A signal the composer restructured opens in the
+  // natural news frame, and a short unchanged signal keeps the established wording.
+  const newsRef = `I saw the ${signalDay ? `${signalDay} ` : 'recent '}news about ${company || contactName || 'your company'}.`
+  const cited = company && seen.startsWith(company) ? seen : lowerFirstSafe(seen, company)
+  const isHeadline = HEADLINE_SHAPE.test(seen) || HEADLINE_SHAPE_SOFT.test(seen) || HEADLINE_SHAPE.test(rawForShape) || HEADLINE_SHAPE_SOFT.test(rawForShape) || (allCaps(rawForShape) && HEADLINE_SHAPE_SHOUT.test(rawForShape))
   const opener = !seen
-    ? `I came across ${company || 'your company'} and thought it was worth writing directly.`
-    : signalDay
-      ? `I saw that on ${signalDay}, ${company && seen.startsWith(company) ? seen : lowerFirstSafe(seen, company)}.`
-      : company && seen.startsWith(company)
-        ? `I saw ${seen}.`
-        : `I saw that ${lowerFirstSafe(seen, company)}.`
+    ? rawSignal
+      ? newsRef
+      : `I came across ${company || 'your company'} and thought it was worth writing directly.`
+    : isHeadline
+      ? newsRef
+      : parts.kept
+        ? signalDay
+          ? `I saw that on ${signalDay}, ${cited}.`
+          : company && seen.startsWith(company) ? `I saw ${seen}.` : `I saw that ${cited}.`
+        : signalDay
+          ? `I saw the ${signalDay} news that ${cited}.`
+          : company && seen.startsWith(company) ? `I saw ${seen}.` : `I saw that ${cited}.`
+  // When the signal's kind is recognisable from its own words, a one-clause bridge ties the
+  // seller's offer to why that moment matters; the offer keeps its own words and an
+  // unrecognisable kind gets no bridge. The kind is read from the text the opener actually
+  // cites (the machine-checked excerpt), never from the separately stored lead.signal: a
+  // signal field that describes a different event must not select a bridge the draft never
+  // mentions. The bridge claims the seller's offer is relevant to that moment, so it is
+  // omitted when the claim is unsupported: a generic business offer (software, services,
+  // marketing) may claim it for any business moment, while an offer for a specific niche or
+  // equipment domain only bridges when its own words share the cited signal's words or the
+  // kind's domain. Lexical and conservative on purpose: an unsupported tie reads worse than
+  // no tie at all.
+  const offerLine = offerSentence(name, offer)
+  const kindHit = seen ? SIGNAL_KINDS.find(([re]) => re.test(seen)) : null
+  // A negated statement ("is not hiring any new staff") is the absence of the event, not the
+  // event; no bridge is selected from it (CodeRabbit). Checking the whole cited clause is the
+  // conservative read: it can only suppress a bridge, never add one.
+  const kind = kindHit && seen && !/\b(?:not|no|never|without|hardly|won't|isn't|aren't|doesn't|don't|didn't|hasn't|haven't)\b/i.test(seen) ? kindHit[1] : null
+  const pitch = kind && offerFits(kind, offer, seen) ? `${KIND_BRIDGE[kind]} ${offerLine}` : offerLine
   return {
     subject: `Quick question for ${company || contactName || 'you'}`.slice(0, 150),
-    body: `Hi ${who},\n\n${opener}\n\n${offerSentence(name, offer)}\n\nOpen to a quick chat?\n\nThanks,`,
+    body: `Hi ${who},\n\n${opener}\n\n${pitch}\n\nOpen to a quick chat?\n\nThanks,`,
   }
 }
