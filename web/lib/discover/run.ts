@@ -12,6 +12,7 @@ import { configuredSearchAllowance, createSearchBudget, searchAllowance } from '
 import { meterSignalJudge, signalJudge, type SignalJudge } from './entail.ts'
 import { checkEmailSource, checkLeads, isShown, postingRecord, type CheckedLead } from './check.ts'
 import { dropUnseenProfile, enrichLeads, mergeEnriched, needsEnrichment } from './enrich.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 
 export interface DiscoveryBudget { maxUsd: number; maxSearches?: number; maxFetches?: number; enrichLeads?: number; wantShown?: number }
 // pages: every URL the run's searches and page reads returned (the scan lane looks for LinkedIn posts among them).
@@ -156,7 +157,11 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       accountingUncertain ||= judge?.usage.accountingUncertain === true
       if (second.stop === 'search_cap') stop = 'search_cap'
       note = second.note ?? note
-    } catch { accountingUncertain = true }
+    } catch (e) {
+      // #2124: a SpendRefused is thrown BEFORE the request is sent - nothing was dispatched or billed, so it is a clean refusal, not
+      // accounting_uncertain. Only a genuine failure (a request that may have been billed) marks the attempt uncertain.
+      if (!(e instanceof SpendRefused)) accountingUncertain = true
+    }
   }
   // People, websites and published emails for the leads that lack them: the shown ones first, then the ones that wait for the person's
   // review (owner, 2026-11-24). A lead in review with no contact cannot be acted on once the person accepts it, and a free search at
@@ -189,7 +194,11 @@ export async function runDiscovery(input: DiscoverInput, budget: DiscoveryBudget
       emailDropped += merged.filter(item => item.dropped).length
       leads = merged.map(item => item.lead)
 
-    } catch { accountingUncertain = true }
+    } catch (e) {
+      // #2124: a SpendRefused is thrown BEFORE the request is sent - nothing was dispatched or billed, so it is a clean refusal, not
+      // accounting_uncertain. Only a genuine failure (a request that may have been billed) marks the attempt uncertain.
+      if (!(e instanceof SpendRefused)) accountingUncertain = true
+    }
   }
   if (judge) {
     add({ usd: judge.usage.usd, searches: 0, requests: judge.usage.requests })

@@ -1,6 +1,7 @@
 // One yes/no question to Claude's small model about a claim's cited on-page proof.
 import Anthropic from '@anthropic-ai/sdk'
 import type { AskSignal } from './check.ts'
+import { SpendRefused } from '../llm/spend-guard.ts'
 
 export const ENTAIL_MODEL = process.env.DAZL_DISCOVER_ENRICH_MODEL?.trim() || 'claude-haiku-5-5'
 const PRICE = { input: 0.1, output: 0.5 }   // US$ per million tokens, as the people pass prices the same model
@@ -29,7 +30,7 @@ export function signalJudge(deps: { apiKey: string; fetch?: typeof fetch; signal
     usage.usd = Math.round((usage.usd + ((res.usage.input_tokens ?? 0) * PRICE.input + (res.usage.output_tokens ?? 0) * PRICE.output) / 1e6) * 10000) / 10000
     if (res.stop_reason === 'refusal') return 'unavailable'
     return saysYes(res.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join(''))
-    } catch (e) { usage.accountingUncertain = true; throw e }
+    } catch (e) { if (!(e instanceof SpendRefused)) usage.accountingUncertain = true; throw e } // #2124: a refusal sent nothing
   }
   return { ask, usage }
 }
