@@ -156,7 +156,12 @@ function signalClause(raw: string): { text: string; kept: boolean } {
     if (!isSub || REPORTING_TAIL.test(words[i - 1].replace(/[.,;:]$/, ''))) continue
     const clause = words.slice(0, i).join(' ').replace(/[,;:]$/, '').trim()
     if (RELATIVE_WORD.test(bare) && !CLAUSE_VERB.test(clause)) continue
-    if (clause.split(/\s+/).length >= 5) return { text: clause, kept: false }
+    if (clause.split(/\s+/).length >= 5) {
+      // Boundaries scanned later yield longer clauses, so the first valid cut is the
+      // shortest; past the 26-word budget nothing shorter exists and nothing is pasted.
+      if (clause.split(/\s+/).length > 26) return { text: '', kept: false }
+      return { text: clause, kept: false }
+    }
     break
   }
   return { text: '', kept: false }
@@ -178,8 +183,15 @@ const SIGNAL_KINDS: [RegExp, keyof typeof KIND_BRIDGE][] = [
   // Weak action verbs read as hiring only with a staffing object nearby (CodeRabbit):
   // "added a glossary" is not a hiring event, "added 10 new roles" is.
   [/\b(?:added|adding|adds|is creating)\b[^.;]{0,60}?\b(?:roles?|jobs?|staff|people|headcount|team\w*|position\w*|sdr\w*|engineers?|salespeople|hire\w*|recruit\w*|technicians?|operators?|workers?)\b/i, 'hiring'],
-  [/\b(?:funding|funded|funds|rais(?:e|es|ed|ing)|invest(?:s|ed|ing|ment)(?:s)?)\b/i, 'funding'],
-  [/\b(?:mov(?:e|es|ed|ing)|relocat\w*|headquarters|expand\w*|premises|new (?:office|location|facility|site))\b/i, 'move'],
+  [/\b(?:funding|funded|funds|invest(?:s|ed|ing|ment)(?:s)?)\b/i, 'funding'],
+  // "raised" alone names any kind of raising (prices, a flag); it reads as funding only
+  // with fundraising context nearby (CodeRabbit).
+  [/\brais(?:e|es|ed|ing)\b[^.;]{0,40}?\b(?:fund(?:ing|s|rais\w*)|series\s+[abc]\b|seed|investment|invest\w*|round|capital|valuation)\b/i, 'funding'],
+  [/\b(?:mov(?:e|es|ed|ing)|relocat\w*|expand\w*|new (?:office|location|facility|site))\b/i, 'move'],
+  // A location noun alone names no event ("published its annual report from its headquarters");
+  // it reads as a move only with move, opening or expansion context nearby (CodeRabbit).
+  [/\b(?:headquarters|hq|premises)\b[^.;]{0,40}?\b(?:mov\w+|relocat\w*|expand\w*|expansion|open\w*|new (?:office|location|facility|site))\b/i, 'move'],
+  [/\b(?:mov\w+|relocat\w*|expand\w*|expansion|open\w*|new (?:office|location|facility|site))\b[^.;]{0,40}?\b(?:headquarters|hq|premises)\b/i, 'move'],
   [/\b(?:launch\w*|unveil\w*|releas\w*|rolls out)\b/i, 'launch'],
 ]
 

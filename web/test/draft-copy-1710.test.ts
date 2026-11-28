@@ -369,3 +369,29 @@ test('(CodeRabbit) an all-caps headline after a mixed-case date prefix is still 
   assert.doesNotMatch(d.body, /headquarters/i, 'the shouting headline is not pasted')
   assert.match(d.body, /I saw the October 30, 2026 news about Northline Logistics\./)
 })
+
+// CodeRabbit round 4 on PR #2157 (three findings on 6d4217d1d), all verified against the code.
+test('(CodeRabbit) a retained clause past the 26-word budget is never pasted', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio has opened a new regional office in Manchester to support its growing customer base across the United Kingdom and provide faster local service to small independent businesses after securing a long term lease with the building owner.',
+  }), 'dazl', OFFER)
+  assert.doesNotMatch(d.body, /to support its growing customer base/, 'the cut never runs past the 26-word budget')
+  assert.match(d.body, /I saw the recent news about Cedar Studio\./, 'with no valid cut, the draft references the news instead')
+})
+
+test('(CodeRabbit) raised prices is not a funding event', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio raised prices for its subscription plans.',
+  }), 'dazl', 'CRM software for B2B teams')
+  assert.doesNotMatch(d.body, /New funding usually means/, 'a price increase is not a funding event')
+})
+
+test('(CodeRabbit) a headquarters mention without a move is not a move event', () => {
+  const d = composeDraftCopy(lead({
+    company: 'Cedar Studio',
+    evidence_excerpt: 'Cedar Studio published its annual report from its headquarters in London.',
+  }), 'dazl', 'CRM software for B2B teams')
+  assert.doesNotMatch(d.body, /A move like that/, 'no move, no move bridge')
+})
