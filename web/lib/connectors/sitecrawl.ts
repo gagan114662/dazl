@@ -402,6 +402,40 @@ export function findCompanySitesWithBasis(company: string, evidenceHtml: string,
   // company-named links it was cut off), so a lead tries at most 2 linked sites and 1 structured one
   return [...out.slice(0, Math.min(anchors, 2)), ...out.slice(anchors, anchors + 1).map(o => ({ ...o, structured: true }))]
 }
+// #2145: only what a visitor can see. Drops comments, script/style/noscript/template/svg blocks and any element that is hidden (hidden attribute,
+// aria-hidden="true", display:none / visibility:hidden inline, hidden/d-none classes) with everything inside it. One linear pass over the tags.
+const VOID_TAG = /^(?:area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr)$/
+export function visibleMarkup(html: string): string {
+  const src = html.slice(0, 2_000_000).replace(/<!--[\s\S]*?(?:-->|$)/g, ' ').replace(/<(script|style|noscript|template|svg)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
+  const out: string[] = []; const stack: Array<{ tag: string; hide: boolean }> = []
+  let hiddenDepth = 0, last = 0
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
+  for (let m: RegExpExecArray | null; (m = tagRe.exec(src)); ) {
+    if (!hiddenDepth) out.push(src.slice(last, m.index))
+    last = m.index + m[0].length
+    const tag = m[2].toLowerCase()
+    if (m[1]) {
+      const i = stack.map(e => e.tag).lastIndexOf(tag)
+      if (i >= 0) { for (const e of stack.splice(i)) if (e.hide) hiddenDepth-- }
+      if (!hiddenDepth) out.push(m[0])
+      continue
+    }
+    const attrs = m[3]
+    const bare = attrs.replace(/(["'])[^"']*\1/g, ' ')
+    const val = (n: string) => new RegExp(`\\b${n}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs)
+    const ariaM = val('aria-hidden'), styleM = val('style'), classM = val('class')
+    const style = styleM ? (styleM[1] ?? styleM[2] ?? styleM[3] ?? '') : ''
+    const cls = classM ? (classM[1] ?? classM[2] ?? classM[3] ?? '') : ''
+    const hide = /(?:^|\s)hidden(?:\s|=|\/|$)/i.test(bare) || (!!ariaM && (ariaM[1] ?? ariaM[2] ?? ariaM[3] ?? '').trim().toLowerCase() === 'true') ||
+      /display\s*:\s*none|visibility\s*:\s*hidden/i.test(style) || /(?:^|\s)(?:hidden|d-none|invisible|sr-only|visually-hidden)(?:\s|$)/i.test(cls)
+    const selfClose = VOID_TAG.test(tag) || /\/\s*$/.test(attrs)
+    if (!selfClose) { stack.push({ tag, hide }); if (hide) hiddenDepth++ }
+    else if (hide) { /* a hidden void element carries no text */ continue }
+    if (!hiddenDepth) out.push(m[0])
+  }
+  if (!hiddenDepth) out.push(src.slice(last))
+  return out.join('')
+}
 // #2145: the site a posting page itself names for the employer, when the name label does not already make it a company link: a link
 // labelled as the employer's website ("Visit employer website"). A "Website:" field or a host in running text is NOT taken here: test/jobbank-printed-domain-crawl-1910 requires a printed site
 // to count only on an exact Job Bank posting read, and cited-homepage-identity refuses a bare mention. Only candidates: the caller marks one `structured`, so the homepage-name check and the
@@ -416,7 +450,7 @@ export function postingNamedSites(company: string, html: string, pageHost = ''):
     if (needsName && !(want.length >= 4 && labelMatches(nameLabel(host), want))) return
     out.push(host)
   }
-  for (const m of html.matchAll(/<a\b[^>]*\bhref\s*=\s*["'](https?:\/\/[^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
+  for (const m of visibleMarkup(html).matchAll(/<a\b[^>]*\bhref\s*=\s*["'](https?:\/\/[^"'#]+)["'][^>]*>([\s\S]{0,120}?)<\/a>/gi)) {
     if (EMPLOYER_SITE_LABEL.test(m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())) add(m[1], false)
   }
   return out.slice(0, 1)

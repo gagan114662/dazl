@@ -62,3 +62,17 @@ test('#2145 control: a link without an employer-website label, and a host only m
   assert.equal(await run(page('<a href="https://birchwoodlp.ca/">Apply now</a>'), { 'birchwoodlp.ca': { '/': HOME_CALGARY, '/contact': html('Email: partners@birchwoodlp.ca') } }), null)
   assert.equal(await run(page('', '<p>Questions: hr@somevendor.ca, or see www.birchwoodlp.ca</p>'), { 'somevendor.ca': { '/': HOME_CALGARY }, 'birchwoodlp.ca': { '/': HOME_CALGARY } }), null)
 })
+
+test('#2145 control: an employer-website link that a visitor cannot see (commented, scripted, templated, hidden) is not a named site', async () => {
+  const live = { 'birchwoodlp.ca': { '/': HOME_CALGARY, '/contact': html('Email: partners@birchwoodlp.ca') } }
+  const a = '<a href="https://birchwoodlp.ca/">Visit employer website</a>'
+  assert.equal(await run(page(`<!-- ${a} -->`), live), null)
+  assert.equal(await run(page(`<script>var x = '${a}'</script>`), live), null)
+  assert.equal(await run(page(`<template>${a}</template>`), live), null)
+  assert.equal(await run(page(`<div hidden>${a}</div>`), live), null)
+  assert.equal(await run(page(`<div aria-hidden="true"><p>${a}</p></div>`), live), null)
+  assert.equal(await run(page(`<div style="display:none">${a}</div>`), live), null)
+  assert.equal(await run(page(`<div class="card d-none"><span>${a}</span></div>`), live), null)
+  // a visible sibling after a hidden block still counts
+  assert.equal(await run(page(`<div hidden><p>x</p></div><p>${a}</p>`), live), 'birchwoodlp.ca')
+})
